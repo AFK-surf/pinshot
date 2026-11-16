@@ -580,11 +580,69 @@ static void ps_post_action(LONG act) {
   if (h) PostMessageW(h, WM_APP, 0, 0);
 }
 
+static volatile LONG g_cap_hk_mode = 0;
+static volatile LONG g_pin_hk_mode = 0;
+static ULONGLONG g_last_hk_ms = 0;
+
+static void ps_trigger_capture_debounced(void) {
+  ULONGLONG now = GetTickCount64();
+  if (now - g_last_hk_ms < 250) return;
+  g_last_hk_ms = now;
+  ps_post_action(1);
+}
+
+static void ps_trigger_pin_front_debounced(void) {
+  ULONGLONG now = GetTickCount64();
+  if (now - g_last_hk_ms < 250) return;
+  g_last_hk_ms = now;
+  ps_bring_all_pins_front();
+}
+
+static LRESULT CALLBACK ps_ll_kbd_proc(int code, WPARAM wp, LPARAM lp) {
+  if (code == HC_ACTION && (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN)) {
+    const KBDLLHOOKSTRUCT *kb = (const KBDLLHOOKSTRUCT *)lp;
+    if ((kb->flags & LLKHF_INJECTED) == 0) {
+      int ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+      int shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+      int alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+      DWORD vk = kb->vkCode;
+      LONG cap_m = g_cap_hk_mode;
+      int hit_cap = 0;
+      if (cap_m == 0) {
+        hit_cap = (ctrl && shift && !alt && vk == 'A') || (!ctrl && !shift && !alt && vk == VK_F1);
+      } else if (cap_m == 1) {
+        hit_cap = (ctrl && shift && !alt && vk == 'A');
+      } else if (cap_m == 2) {
+        hit_cap = (!ctrl && !shift && !alt && vk == VK_F1);
+      } else if (cap_m == 3) {
+        hit_cap = (ctrl && alt && !shift && vk == 'A');
+      }
+      if (hit_cap) {
+        ps_trigger_capture_debounced();
+        return 1;
+      }
+      LONG pin_m = g_pin_hk_mode;
+      int hit_pin = 0;
+      if (pin_m == 0) {
+        hit_pin = (ctrl && shift && !alt && vk == 'P');
+      } else if (pin_m == 1) {
+        hit_pin = (!ctrl && !shift && !alt && vk == VK_F2);
+      }
+      if (hit_pin) {
+        ps_trigger_pin_front_debounced();
+        return 1;
+      }
+    }
+  }
+  return CallNextHookEx(NULL, code, wp, lp);
+}
+
 static void ps_apply_hotkeys(HWND h) {
   UnregisterHotKey(h, PS_HOTKEY_CAPTURE);
   UnregisterHotKey(h, PS_HOTKEY_CAPTURE_F1);
   UnregisterHotKey(h, PS_HOTKEY_PIN_FRONT);
   int cap_hk = ps_read_ini_int("hotkey_capture", 0);
+  g_cap_hk_mode = cap_hk;
   if (cap_hk == 0) {
     RegisterHotKey(h, PS_HOTKEY_CAPTURE, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'A');
     RegisterHotKey(h, PS_HOTKEY_CAPTURE_F1, MOD_NOREPEAT, VK_F1);
@@ -596,6 +654,7 @@ static void ps_apply_hotkeys(HWND h) {
     RegisterHotKey(h, PS_HOTKEY_CAPTURE, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'A');
   }
   int pin_hk = ps_read_ini_int("hotkey_pin_front", 0);
+  g_pin_hk_mode = pin_hk;
   if (pin_hk == 0) {
     RegisterHotKey(h, PS_HOTKEY_PIN_FRONT, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'P');
   } else if (pin_hk == 1) {
@@ -606,9 +665,9 @@ static void ps_apply_hotkeys(HWND h) {
 static LRESULT CALLBACK ps_tray_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_HOTKEY) {
     if (wp == PS_HOTKEY_CAPTURE || wp == PS_HOTKEY_CAPTURE_F1) {
-      ps_post_action(1);
+      ps_trigger_capture_debounced();
     } else if (wp == PS_HOTKEY_PIN_FRONT) {
-      ps_bring_all_pins_front();
+      ps_trigger_pin_front_debounced();
     }
     return 0;
   }
@@ -656,9 +715,10 @@ static DWORD WINAPI ps_tray_thread(LPVOID unused) {
   wc.lpszClassName = L"PinShotTrayMsg";
   RegisterClassExW(&wc);
 
-  HWND h = CreateWindowExW(0, wc.lpszClassName, L"PinShotTray", 0, 0, 0, 0, 0,
-                           HWND_MESSAGE, NULL, wc.hInstance, NULL);
+  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"PinShotTray", WS_POPUP, 0, 0, 0, 0,
+                           NULL, NULL, wc.hInstance, NULL);
   ps_apply_hotkeys(h);
+  HHOOK kbd_hook = SetWindowsHookExW(WH_KEYBOARD_LL, ps_ll_kbd_proc, wc.hInstance, 0);
 
   NOTIFYICONDATAW nid;
   ZeroMemory(&nid, sizeof(nid));
@@ -679,6 +739,7 @@ static DWORD WINAPI ps_tray_thread(LPVOID unused) {
     TranslateMessage(&m);
     DispatchMessageW(&m);
   }
+  if (kbd_hook) UnhookWindowsHookEx(kbd_hook);
   Shell_NotifyIconW(NIM_DELETE, &nid);
   return 0;
 }
