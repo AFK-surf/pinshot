@@ -275,13 +275,54 @@ void ps_set_opacity(int32_t alpha) {
   SetLayeredWindowAttributes(hwnd, 0, (BYTE)alpha, LWA_ALPHA);
 }
 
+void ps_set_topmost(int32_t on) {
+  HWND hwnd = ps_find_own_hwnd();
+  if (!hwnd) return;
+  SetWindowPos(hwnd, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  if (on) {
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+  }
+}
+
+static BOOL CALLBACK ps_pin_front_proc(HWND h, LPARAM lp) {
+  int32_t *count = (int32_t *)lp;
+  if (!IsWindowVisible(h)) return TRUE;
+  wchar_t cls[64];
+  if (!GetClassNameW(h, cls, 64) || wcscmp(cls, L"mbui") != 0) return TRUE;
+  wchar_t title[128];
+  if (!GetWindowTextW(h, title, 128) || wcscmp(title, L"PinShot Pin") != 0) return TRUE;
+  SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  BringWindowToTop(h);
+  SetForegroundWindow(h);
+  (*count)++;
+  return TRUE;
+}
+
+int32_t ps_bring_all_pins_front(void) {
+  int32_t count = 0;
+  EnumWindows(ps_pin_front_proc, (LPARAM)&count);
+  return count;
+}
+
+int64_t ps_now_us(void) {
+  static LARGE_INTEGER freq = {0};
+  if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return (int64_t)((now.QuadPart * 1000000LL) / freq.QuadPart);
+}
+
 // ---- Tray & Global Hotkey ----
 
 #define PS_WM_TRAY (WM_APP + 1)
 #define PS_HOTKEY_CAPTURE 101
 #define PS_HOTKEY_CAPTURE_F1 102
+#define PS_HOTKEY_PIN_FRONT 103
 #define PS_CMD_CAPTURE 201
 #define PS_CMD_PIN_CLIP 202
+#define PS_CMD_PIN_FRONT 204
 #define PS_CMD_EXIT 203
 
 static volatile LONG g_action = 0;
@@ -291,6 +332,8 @@ static LRESULT CALLBACK ps_tray_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) 
   if (msg == WM_HOTKEY) {
     if (wp == PS_HOTKEY_CAPTURE || wp == PS_HOTKEY_CAPTURE_F1) {
       InterlockedExchange(&g_action, 1);
+    } else if (wp == PS_HOTKEY_PIN_FRONT) {
+      ps_bring_all_pins_front();
     }
     return 0;
   }
@@ -304,6 +347,7 @@ static LRESULT CALLBACK ps_tray_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) 
       HMENU menu = CreatePopupMenu();
       AppendMenuW(menu, MF_STRING, PS_CMD_CAPTURE, L"\u622a\u5c4f (Ctrl+Shift+A / F1)");
       AppendMenuW(menu, MF_STRING, PS_CMD_PIN_CLIP, L"\u4ece\u526a\u8d34\u677f\u8d34\u56fe");
+      AppendMenuW(menu, MF_STRING, PS_CMD_PIN_FRONT, L"\u5c06\u8d34\u56fe\u7f6e\u9876\u5230\u524d\u53f0 (Ctrl+Shift+P)");
       AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
       AppendMenuW(menu, MF_STRING, PS_CMD_EXIT, L"\u9000\u51fa PinShot");
       SetForegroundWindow(h);
@@ -312,6 +356,7 @@ static LRESULT CALLBACK ps_tray_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) 
       DestroyMenu(menu);
       if (cmd == PS_CMD_CAPTURE) InterlockedExchange(&g_action, 1);
       else if (cmd == PS_CMD_PIN_CLIP) InterlockedExchange(&g_action, 2);
+      else if (cmd == PS_CMD_PIN_FRONT) ps_bring_all_pins_front();
       else if (cmd == PS_CMD_EXIT) InterlockedExchange(&g_action, 3);
     }
     return 0;
@@ -333,6 +378,7 @@ static DWORD WINAPI ps_tray_thread(LPVOID unused) {
                            HWND_MESSAGE, NULL, wc.hInstance, NULL);
   RegisterHotKey(h, PS_HOTKEY_CAPTURE, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'A');
   RegisterHotKey(h, PS_HOTKEY_CAPTURE_F1, MOD_NOREPEAT, VK_F1);
+  RegisterHotKey(h, PS_HOTKEY_PIN_FRONT, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'P');
 
   NOTIFYICONDATAW nid;
   ZeroMemory(&nid, sizeof(nid));

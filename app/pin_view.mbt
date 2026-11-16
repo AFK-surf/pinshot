@@ -26,12 +26,25 @@ let pin_path : Ref[String] = Ref("")
 let pin_png_bytes : Ref[Bytes] = Ref(b"")
 
 ///|
+let pin_topmost : @signals.Signal[Bool] = @signals.signal(true)
+
+///|
+fn pin_toggle_topmost() -> Unit {
+  let next = !pin_topmost.untracked()
+  pin_topmost.set(next)
+  ps_set_topmost(if next { 1 } else { 0 })
+}
+
+///|
 fn pin_apply_zoom(z : Double) -> Unit {
   let nz = clamp(z, 0.25, 4.0)
   pin_zoom.val = nz
   let nw = @cmp.maximum(48, (pin_base_w.val.to_double() * nz).round().to_int())
   let nh = @cmp.maximum(48, (pin_base_h.val.to_double() * nz).round().to_int())
   ps_show_popup(pin_x.val, pin_y.val, nw, nh)
+  if !pin_topmost.untracked() {
+    ps_set_topmost(0)
+  }
 }
 
 ///|
@@ -48,10 +61,21 @@ fn pin_window_view(root : @view.View) -> Unit {
     @view.Binding::{ keys: [@view.Stroke::{ code: 0x1B, mods: 0 }], action: "close", when: Always },
     @view.Binding::{ keys: [@view.Stroke::{ code: 'C'.to_int(), mods: 2 }], action: "copy", when: Always },
     @view.Binding::{ keys: [@view.Stroke::{ code: 'S'.to_int(), mods: 2 }], action: "save", when: Always },
+    @view.Binding::{ keys: [@view.Stroke::{ code: 'T'.to_int(), mods: 0 }], action: "toggle_topmost", when: Always },
+    @view.Binding::{ keys: [@view.Stroke::{ code: 'F'.to_int(), mods: 0 }], action: "front", when: Always },
   ])
   root.keymap(Is(bindings)) |> ignore
   root.on_action("close", fn(_) {
     pin_close()
+    true
+  }) |> ignore
+  root.on_action("toggle_topmost", fn(_) {
+    pin_toggle_topmost()
+    true
+  }) |> ignore
+  root.on_action("front", fn(_) {
+    pin_topmost.set(true)
+    ps_set_topmost(1)
     true
   }) |> ignore
   root.on_action("copy", fn(_) {
@@ -72,7 +96,9 @@ fn pin_window_view(root : @view.View) -> Unit {
     .grow(Is(1.0))
     .presses(Is(true))
     .moves_window(Is(true))
-    .edge(Is((1.5, 0x3B82F6CCL)))
+    .edge(By(fn() {
+      if pin_topmost.get() { (1.5, 0x3B82F6CCL) } else { (1.5, 0x71717AAAL) }
+    }))
     .on_wheel(fn(e) {
       if (e.mods & @ui.wheel_mod_ctrl) != 0 {
         let delta = if e.dy > 0.0 { 18 } else { -18 }
@@ -111,6 +137,7 @@ fn pin_window_view(root : @view.View) -> Unit {
       .margin(Is((0.0, 6.0, 6.0, 0.0)))
       .laid_nowhere(By(fn() { !card.pointer_within() }))
       |> ignore
+      tb_btn(pill, "置顶", fn() { pin_topmost.get() }, pin_toggle_topmost)
       tb_btn(pill, "1:1", fn() { false }, fn() { pin_apply_zoom(1.0) })
       tb_btn(pill, "复制", fn() { false }, fn() {
         if pin_png_bytes.val.length() > 0 {

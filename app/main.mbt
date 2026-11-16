@@ -46,8 +46,100 @@ fn resident_poll(root : @view.View) -> Unit {
 }
 
 ///|
+fn bench_ms(t0 : Int64, t1 : Int64) -> String {
+  let us = t1 - t0
+  let ms = us.to_double() / 1000.0
+  let whole = ms.to_int()
+  let frac = ((ms - whole.to_double()) * 100.0).round().to_int()
+  let fs = if frac < 10 { "0\{frac}" } else { "\{frac}" }
+  "\{whole}.\{fs} ms"
+}
+
+///|
+fn run_bench() -> Unit {
+  // 1. Screen capture benchmark (5 runs)
+  let t0 = ps_now_us()
+  let mut cap_ok = 0
+  for i = 0; i < 5; i = i + 1 {
+    if ps_capture_screen() == 1 {
+      cap_ok += 1
+    }
+  }
+  let t1 = ps_now_us()
+  let info = @utf8.decode_lossy(ps_capture_info()[:])
+  let bmp = ps_capture_bmp()
+  println("CAPTURE_INFO=\{info} bmp_bytes=\{bmp.length()} ok=\{cap_ok}/5 total=\{bench_ms(t0, t1)} avg=\{bench_ms(0L, (t1 - t0) / 5L)}")
+
+  // Parse monitor info for export benchmarks
+  let parts = info.split(",").map(fn(s) { s.to_owned() }).to_array()
+  if parts.length() >= 5 {
+    mon_x.val = parse_int_or(parts[0], 0)
+    mon_y.val = parse_int_or(parts[1], 0)
+    mon_w.val = parse_int_or(parts[2], 1920)
+    mon_h.val = parse_int_or(parts[3], 1080)
+    mon_scale.val = @cmp.maximum(1.0, parse_double_or(parts[4], 1.0))
+    win_w.set(mon_w.val.to_double() / mon_scale.val)
+    win_h.set(mon_h.val.to_double() / mon_scale.val)
+    frozen_bmp.val = bmp
+  }
+
+  // 2. Window enumeration benchmark (10 runs)
+  let ew0 = ps_now_us()
+  let mut wins_len = 0
+  for i = 0; i < 10; i = i + 1 {
+    wins_len = ps_enum_windows().length()
+  }
+  let ew1 = ps_now_us()
+  println("ENUM_WINDOWS bytes=\{wins_len} avg=\{bench_ms(0L, (ew1 - ew0) / 10L)}")
+
+  // 3. Export PNG benchmarks
+  let s = mon_scale.val
+  let cases : Array[(String, Double, Double, Bool)] = [
+    ("800x600_clean", 800.0 / s, 600.0 / s, false),
+    ("800x600_annotated", 800.0 / s, 600.0 / s, true),
+    ("1920x1080_clean", 1920.0 / s, 1080.0 / s, false),
+    ("3840x2160_full4k", win_w.untracked(), win_h.untracked(), false),
+  ]
+  for c in cases {
+    let (name, lw, lh, with_ann) = c
+    sel.set(Some({ x: 0.0, y: 0.0, w: lw, h: lh }))
+    if with_ann {
+      annotations.set([
+        { kind: Rect, x0: 40.0, y0: 40.0, x1: 220.0, y1: 140.0, color: 0xEF4444FFL, stroke: 3.0, step_num: 0, pts: [] },
+        { kind: Arrow, x0: 60.0, y0: 180.0, x1: 280.0, y1: 220.0, color: 0x3B82F6FFL, stroke: 3.0, step_num: 0, pts: [] },
+        { kind: Step, x0: 300.0, y0: 80.0, x1: 300.0, y1: 80.0, color: 0x10B981FFL, stroke: 3.0, step_num: 1, pts: [] },
+        { kind: Mosaic, x0: 100.0, y0: 100.0, x1: 260.0, y1: 200.0, color: 0xFFFFFFFFL, stroke: 3.0, step_num: 0, pts: [] },
+      ])
+    } else {
+      annotations.set([])
+    }
+    let e0 = ps_now_us()
+    let png = export_selection_png()
+    let e1 = ps_now_us()
+    let out_len = match png {
+      Some(b) => b.length()
+      None => 0
+    }
+    println("EXPORT_\{name} png_bytes=\{out_len} time=\{bench_ms(e0, e1)}")
+  }
+
+  // 4. Clipboard PNG read benchmark (5 runs)
+  let c0 = ps_now_us()
+  let mut cb_len = 0
+  for i = 0; i < 5; i = i + 1 {
+    cb_len = ps_clipboard_png().length()
+  }
+  let c1 = ps_now_us()
+  println("CLIPBOARD_READ bytes=\{cb_len} avg=\{bench_ms(0L, (c1 - c0) / 5L)}")
+}
+
+///|
 fn main {
   let args = parse_args()
+  if args.length() >= 1 && args[0] == "--bench" {
+    run_bench()
+    return
+  }
   if args.length() >= 6 && args[0] == "--pin" {
     let path = args[1]
     pin_path.val = path

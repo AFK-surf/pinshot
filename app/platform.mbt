@@ -34,6 +34,12 @@ extern "C" fn ps_hide_window() -> Unit = "ps_hide_window"
 extern "C" fn ps_set_opacity(alpha : Int) -> Unit = "ps_set_opacity"
 
 ///|
+extern "C" fn ps_set_topmost(on : Int) -> Unit = "ps_set_topmost"
+
+///|
+extern "C" fn ps_now_us() -> Int64 = "ps_now_us"
+
+///|
 extern "C" fn ps_tray_start() -> Int = "ps_tray_start"
 
 ///|
