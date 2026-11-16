@@ -1,0 +1,21 @@
+import {
+  "mbui/host",
+  "mbui/hostapi",
+  "mbui/ui",
+  "mbui/view",
+  "mbui/signals",
+  "mbui/pixels",
+  "moonbitlang/core/cmp",
+  "moonbitlang/core/math",
+  "moonbitlang/core/encoding/utf8",
+}
+
+options(
+  "is-main": true,
+  link: {
+    "native": {
+      "cc-link-flags": "",
+    },
+  },
+  "native-stub": [ "platform_win.c" ],
+)
