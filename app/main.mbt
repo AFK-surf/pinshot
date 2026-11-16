@@ -17,12 +17,7 @@ fn parse_args() -> Array[String] {
 }
 
 ///|
-fn now_ms(root : @view.View) -> Double {
-  root.cause_at()
-}
-
-///|
-fn resident_poll(root : @view.View) -> Unit {
+fn handle_resident_action() -> Unit {
   let act = ps_poll_action()
   if act == 1 && !overlay_visible.untracked() {
     if start_capture() {
@@ -40,11 +35,9 @@ fn resident_poll(root : @view.View) -> Unit {
     }
   } else if act == 3 {
     @ui.window_close_here(0)
-    return
   } else if act == 4 {
     load_settings()
   }
-  root.at_moment(now_ms(root) + 50.0, fn() { resident_poll(root) }, later=true) |> ignore
 }
 
 ///|
@@ -216,9 +209,10 @@ fn main {
         ps_trim_memory()
         tray_setup_done.val = true
       }
+    } else {
+      handle_resident_action()
     }
   }, tree=fn(root) {
     capture_overlay_view(root, false)
-    resident_poll(root)
   })
 }

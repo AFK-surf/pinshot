@@ -79,6 +79,7 @@ static uint8_t *g_cap_bmp = NULL;
 static int32_t g_cap_bmp_len = 0;
 static int g_cap_x = 0, g_cap_y = 0, g_cap_w = 0, g_cap_h = 0;
 static double g_cap_scale = 1.0;
+static HWND g_main_hwnd = NULL;
 
 static HWND ps_find_own_hwnd(void) {
   HWND best = NULL;
@@ -326,6 +327,7 @@ moonbit_bytes_t ps_enum_windows(void) {
 int32_t ps_setup_popup(int32_t x, int32_t y, int32_t w, int32_t h, int32_t topmost) {
   HWND hwnd = ps_find_own_hwnd();
   if (!hwnd) return 0;
+  g_main_hwnd = hwnd;
   LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
   style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
   style |= WS_POPUP;
@@ -571,6 +573,13 @@ void ps_notify_reload_settings(void) {
 static volatile LONG g_action = 0;
 static volatile LONG g_tray_started = 0;
 
+static void ps_post_action(LONG act) {
+  InterlockedExchange(&g_action, act);
+  HWND h = g_main_hwnd;
+  if (!h) h = ps_find_own_hwnd();
+  if (h) PostMessageW(h, WM_APP, 0, 0);
+}
+
 static void ps_apply_hotkeys(HWND h) {
   UnregisterHotKey(h, PS_HOTKEY_CAPTURE);
   UnregisterHotKey(h, PS_HOTKEY_CAPTURE_F1);
@@ -597,7 +606,7 @@ static void ps_apply_hotkeys(HWND h) {
 static LRESULT CALLBACK ps_tray_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_HOTKEY) {
     if (wp == PS_HOTKEY_CAPTURE || wp == PS_HOTKEY_CAPTURE_F1) {
-      InterlockedExchange(&g_action, 1);
+      ps_post_action(1);
     } else if (wp == PS_HOTKEY_PIN_FRONT) {
       ps_bring_all_pins_front();
     }
@@ -605,13 +614,13 @@ static LRESULT CALLBACK ps_tray_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) 
   }
   if (msg == PS_WM_RELOAD_CFG) {
     ps_apply_hotkeys(h);
-    InterlockedExchange(&g_action, 4);
+    ps_post_action(4);
     return 0;
   }
   if (msg == PS_WM_TRAY) {
     UINT ev = LOWORD(lp);
     if (ev == WM_LBUTTONUP || ev == NIN_SELECT) {
-      InterlockedExchange(&g_action, 1);
+      ps_post_action(1);
     } else if (ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU) {
       POINT pt;
       GetCursorPos(&pt);
@@ -626,11 +635,11 @@ static LRESULT CALLBACK ps_tray_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) 
       UINT cmd = (UINT)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_BOTTOMALIGN,
                                       pt.x, pt.y, 0, h, NULL);
       DestroyMenu(menu);
-      if (cmd == PS_CMD_CAPTURE) InterlockedExchange(&g_action, 1);
-      else if (cmd == PS_CMD_PIN_CLIP) InterlockedExchange(&g_action, 2);
+      if (cmd == PS_CMD_CAPTURE) ps_post_action(1);
+      else if (cmd == PS_CMD_PIN_CLIP) ps_post_action(2);
       else if (cmd == PS_CMD_PIN_FRONT) ps_bring_all_pins_front();
       else if (cmd == PS_CMD_SETTINGS) ps_launch_mode(L"--settings");
-      else if (cmd == PS_CMD_EXIT) InterlockedExchange(&g_action, 3);
+      else if (cmd == PS_CMD_EXIT) ps_post_action(3);
     }
     return 0;
   }
