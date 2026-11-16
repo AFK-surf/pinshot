@@ -63,3 +63,39 @@ extern "C" fn ps_delete_file(path : Bytes) -> Unit = "ps_delete_file"
 
 ///|
 extern "C" fn ps_clipboard_png() -> Bytes = "ps_clipboard_png"
+
+///|
+extern "C" fn ps_release_capture() -> Unit = "ps_release_capture"
+
+///|
+extern "C" fn ps_trim_memory() -> Unit = "ps_trim_memory"
+
+///|
+extern "C" fn ps_encode_crop_png(x : Int, y : Int, w : Int, h : Int) -> Bytes = "ps_encode_crop_png"
+
+///|
+#borrow(rgba)
+extern "C" fn ps_encode_rgba_png(w : Int, h : Int, rgba : FixedArray[Byte]) -> Bytes = "ps_encode_rgba_png"
+
+///|
+extern "C" fn ps_read_settings() -> Bytes = "ps_read_settings"
+
+///|
+#borrow(data)
+extern "C" fn ps_write_settings(data : Bytes) -> Int = "ps_write_settings"
+
+///|
+extern "C" fn ps_get_autostart() -> Int = "ps_get_autostart"
+
+///|
+extern "C" fn ps_set_autostart(on : Int) -> Int = "ps_set_autostart"
+
+///|
+extern "C" fn ps_default_save_dir() -> Bytes = "ps_default_save_dir"
+
+///|
+#borrow(png, dir)
+extern "C" fn ps_auto_save_png(png : Bytes, dir : Bytes) -> Int = "ps_auto_save_png"
+
+///|
+extern "C" fn ps_notify_reload_settings() -> Unit = "ps_notify_reload_settings"

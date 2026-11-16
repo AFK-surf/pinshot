@@ -255,6 +255,14 @@ fn export_selection_png() -> Bytes? {
   if cw <= 0 || ch <= 0 {
     return None
   }
+  let anns = annotations.untracked()
+  let compress = cfg_png_compress.untracked()
+  if anns.is_empty() && compress {
+    let fast = ps_encode_crop_png(px0, py0, cw, ch)
+    if fast.length() > 8 {
+      return Some(fast)
+    }
+  }
   let canvas = @pixels.Canvas::new(cw, ch)
   let dst = canvas.pixels()
   for y in 0..<ch {
@@ -272,7 +280,7 @@ fn export_selection_png() -> Bytes? {
     }
   }
   match annotations_vector(
-    annotations.untracked(),
+    anns,
     None,
     r.x,
     r.y,
@@ -289,6 +297,12 @@ fn export_selection_png() -> Bytes? {
       canvas.draw(cw, ch, overlay, (0, 0, cw, ch), (0.0, 0.0, cw.to_double(), ch.to_double()), premultiplied=true)
     }
     None => ()
+  }
+  if compress {
+    let compressed = ps_encode_rgba_png(cw, ch, canvas.pixels())
+    if compressed.length() > 8 {
+      return Some(compressed)
+    }
   }
   Some(@pixels.png(cw, ch, canvas.pixels()))
 }

@@ -41,6 +41,8 @@ fn resident_poll(root : @view.View) -> Unit {
   } else if act == 3 {
     @ui.window_close_here(0)
     return
+  } else if act == 4 {
+    load_settings()
   }
   root.at_moment(now_ms(root) + 50.0, fn() { resident_poll(root) }, later=true) |> ignore
 }
@@ -135,9 +137,17 @@ fn run_bench() -> Unit {
 
 ///|
 fn main {
+  load_settings()
   let args = parse_args()
   if args.length() >= 1 && args[0] == "--bench" {
     run_bench()
+    return
+  }
+  if args.length() >= 1 && args[0] == "--settings" {
+    @hostapi.window_setup(460.0, 400.0, 560.0, 510.0, inset=true)
+    @ui.run("PinShot 设置", fn(c) { c.set_clear(0x141417L) }, tree=fn(root) {
+      settings_window_view(root)
+    })
     return
   }
   if args.length() >= 6 && args[0] == "--pin" {
@@ -154,10 +164,17 @@ fn main {
     }
     @hostapi.window_setup(48.0, 48.0, pin_base_w.val.to_double(), pin_base_h.val.to_double(), inset=true)
     let pin_setup_done = Ref(false)
+    let init_top = if cfg_pin_topmost.untracked() { 1 } else { 0 }
+    let init_op = cfg_pin_opacity.untracked()
+    pin_topmost.set(init_top == 1)
+    pin_opacity.val = init_op
     @ui.run("PinShot Pin", fn(c) {
       c.set_clear(0x18181BL)
       if !pin_setup_done.val {
-        if ps_setup_popup(pin_x.val, pin_y.val, pin_base_w.val, pin_base_h.val, 1) == 1 {
+        if ps_setup_popup(pin_x.val, pin_y.val, pin_base_w.val, pin_base_h.val, init_top) == 1 {
+          if init_op < 255 {
+            ps_set_opacity(init_op)
+          }
           pin_setup_done.val = true
         }
       }
@@ -196,6 +213,7 @@ fn main {
     if !tray_setup_done.val {
       if ps_setup_popup(0, 0, 400, 300, 1) == 1 {
         ps_hide_window()
+        ps_trim_memory()
         tray_setup_done.val = true
       }
     }

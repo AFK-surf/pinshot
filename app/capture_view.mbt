@@ -6,6 +6,15 @@ fn finish_capture(exit_if_oneshot : Bool) -> Unit {
   ps_hide_window()
   if exit_if_oneshot {
     @ui.window_close_here(0)
+  } else {
+    let k = frozen_key.untracked()
+    if k != "" {
+      @ui.forget_image(k)
+      frozen_key.set("")
+    }
+    frozen_bmp.val = b""
+    ps_release_capture()
+    ps_trim_memory()
   }
 }
 
@@ -14,6 +23,9 @@ fn do_copy_capture(oneshot : Bool) -> Unit {
   match export_selection_png() {
     Some(png) => {
       @ui.clipboard_set_png(png)
+      if cfg_auto_save.untracked() {
+        ps_auto_save_png(png, cstr(cfg_save_dir.untracked())) |> ignore
+      }
       finish_capture(oneshot)
     }
     None => ()
