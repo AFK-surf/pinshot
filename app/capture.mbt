@@ -160,7 +160,8 @@ fn prepare_capture(x : Int, y : Int, w : Int, h : Int, dpi : Double) -> Unit {
   }
   ps_capture_open(1)
   ps_cloak(0, 1)
-  ps_place(0, x, y, w, h, 1, 1)
+  // (the keyboard taken but by the capture taken as the run starts: that one is never seen)
+  ps_place(0, x, y, w, h, 1, if warming.val { 0 } else { 1 })
 }
 
 ///|
@@ -179,7 +180,6 @@ fn capture_taken() -> Unit {
   }
   taken_at.val = ps_now_ms()
   windows_on.set(parse_windows(text_of(ps_windows())))
-  log("windows: " + text_of(ps_windows()).replace_all(old="\n", new=" | "))
   frozen_n.val += 1
   let key = "mem:frozen/\{frozen_n.val}"
   @ui.add_image(key, bytes)
@@ -201,6 +201,7 @@ fn close_capture() -> Unit {
     return
   }
   ps_capture_open(0)
+  warming.val = false
   // (out of sight at once; made small and drawn once so, then hidden: what drew it at the monitor's size, 4K's
   // buffers and all, let go of while nothing is captured)
   ps_cloak(0, 1)

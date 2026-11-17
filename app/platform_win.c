@@ -831,7 +831,7 @@ static void gpu_trim_now(void) {
     IDXGIDevice3_Trim(xd);
     IDXGIDevice3_Release(xd);
   }
-  SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+  if (!getenv("PINSHOT_KEEP_WS")) SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
 void ps_gpu_flush(void) {

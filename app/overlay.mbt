@@ -160,10 +160,18 @@ fn overlay_first_frame() -> Unit {
   }
   if started_with_settings.val {
     open_settings()
+  } else {
+    // (one capture taken out of sight as it starts, all of it as one is (the screen taken, the overlay at the
+    // monitor's size, the picture a texture, a frame drawn) and let go: the first the person takes is as quick as
+    // any, not ~50 ms slower; what it held given back after, as any capture's)
+    warming.val = true
+    ps_capture_ask()
   }
-  // (what starting took given back once it is up)
-  ps_gpu_flush()
 }
+
+///|
+/// Whether the capture under way is the one taken as the run starts (never seen).
+let warming : Ref[Bool] = Ref(false)
 
 ///|
 /// The overlay's tree, made once.
@@ -179,6 +187,12 @@ fn overlay_window(root : @view.View) -> Unit {
   }, fn(ready) {
     if ready && capturing.untracked() && !overlay_seen.untracked() {
       root.at_moment(root.cause_at() + 1.0, fn() {
+        if capturing.untracked() && warming.val {
+          // (drawn whole once as if seen, its magnifier and its words too, still out of sight; then let go)
+          overlay_seen.set(true)
+          root.at_moment(root.cause_at() + 60.0, fn() { if warming.val { close_capture() } }, later=true) |> ignore
+          return
+        }
         if capturing.untracked() && !overlay_seen.untracked() {
           ps_cloak(0, 0)
           overlay_seen.set(true)
