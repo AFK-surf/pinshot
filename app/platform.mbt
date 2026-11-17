@@ -25,6 +25,9 @@ extern "C" fn ps_start(again : Int) -> Int = "ps_start"
 extern "C" fn ps_tray_note(title : Bytes, text : Bytes) -> Unit = "ps_tray_note"
 
 ///|
+extern "C" fn ps_shutter() -> Unit = "ps_shutter"
+
+///|
 /// Whether the icon is in the notification area.
 extern "C" fn ps_tray_on() -> Int = "ps_tray_on"
 

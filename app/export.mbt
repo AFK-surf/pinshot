@@ -44,6 +44,7 @@ fn copy_out() -> Unit {
     return
   }
   exporting.val = "copy"
+  shutter()
   let t0 = ps_now_ms()
   match sel.untracked() {
     Some(r) => {
@@ -103,6 +104,7 @@ fn save_out() -> Unit {
         }
         if path != "" {
           ps_write_file(cstr(path), png) |> ignore
+          shutter()
           log("saved \{path}")
           close_capture()
         } else {
@@ -125,6 +127,7 @@ fn pin_out() -> Unit {
   }
   guard sel.untracked() is Some(r) else { return }
   exporting.val = "pin"
+  shutter()
   ps_cloak(0, 1)
   let m = mon.val
   picture_of_part(fn(png) {
@@ -142,3 +145,11 @@ let r_w : Ref[Int] = Ref(0)
 
 ///|
 let r_h : Ref[Int] = Ref(0)
+
+///|
+/// The shutter's sound, where the settings have it.
+fn shutter() -> Unit {
+  if settings.untracked().sound {
+    ps_shutter()
+  }
+}

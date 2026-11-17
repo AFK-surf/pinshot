@@ -14,6 +14,8 @@ struct Settings {
   ask_where : Bool
   save_dir : String
   keep_copies : Bool
+  /// a shutter's sound as a capture is copied, saved or pinned
+  sound : Bool
 }
 
 ///|
@@ -57,6 +59,7 @@ fn default_settings() -> Settings {
     ask_where: true,
     save_dir: text_of(ps_pictures_dir()),
     keep_copies: false,
+    sound: true,
   }
 }
 
@@ -69,6 +72,7 @@ let settings : @signals.Signal[Settings] = @signals.signal({
   ask_where: true,
   save_dir: "",
   keep_copies: false,
+  sound: true,
 })
 
 ///|
@@ -118,6 +122,7 @@ fn load_settings() -> Unit {
         ask_where: flag("ask_where", d.ask_where),
         save_dir: text("save_dir", d.save_dir),
         keep_copies: flag("keep_copies", d.keep_copies),
+        sound: flag("sound", d.sound),
       }
     }
     _ => d
@@ -137,6 +142,7 @@ fn save_settings() -> Unit {
   o["ask_where"] = Json::boolean(s.ask_where)
   o["save_dir"] = Json::string(s.save_dir)
   o["keep_copies"] = Json::boolean(s.keep_copies)
+  o["sound"] = Json::boolean(s.sound)
   ps_write_file(cstr(settings_path()), @utf8.encode(Json::object(o).stringify(indent=2))) |> ignore
 }
 
@@ -192,7 +198,7 @@ fn open_settings() -> Unit {
     return
   }
   settings_wid.val = wid
-  ps_center(wid, 540, 600)
+  ps_center(wid, 540, 650)
 }
 
 ///|
@@ -266,7 +272,15 @@ fn settings_page(root : @view.View) -> Unit {
       small_button(r, "打开", fn() { ps_reveal(cstr(settings.untracked().save_dir)) })
     })
   })
-  set_group(root, "启动", fn(g) {
+  set_group(root, "通用", fn(g) {
+    set_row(g, "复制、保存、贴图时播放快门音效", fn(r) {
+      switch(r, fn() { settings.get().sound }, fn(on) {
+        change_settings(fn(s) { { ..s, sound: on } })
+        if on {
+          ps_shutter()
+        }
+      })
+    })
     set_row(g, "开机时启动 PinShot", fn(r) {
       switch(r, fn() { autostart.get() }, fn(on) {
         if ps_set_autostart(if on { 1 } else { 0 }) == 1 {

@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <mmsystem.h>
 #include "moonbit.h"
 
 #pragma comment(lib, "user32.lib")
@@ -34,6 +36,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "dxguid.lib")
+#pragma comment(lib, "winmm.lib")
 
 // (mbui's Windows host, linked in the same program)
 extern void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
@@ -1127,4 +1130,58 @@ moonbit_bytes_t ps_clipboard_image(void) {
 void ps_quit(void) {
   tray_gone();
   ExitProcess(0);
+}
+
+// ---- the shutter's sound ----
+
+// A camera's shutter, made here (no recording of anyone's): two clicks 60 ms apart, each a burst of noise dying away in
+// a few ms over a low knock; 16-bit mono at 44.1 kHz, about 8 KB, made as it is first played and kept (PlaySound plays
+// it from memory, after the call returns).
+#define SND_RATE 44100
+#define SND_N (SND_RATE * 150 / 1000)
+static uint8_t snd_wav[44 + SND_N * 2];
+static int snd_made;
+
+static void snd_put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8), p[2] = (uint8_t)(v >> 16), p[3] = (uint8_t)(v >> 24); }
+
+static void snd_make(void) {
+  uint8_t *h = snd_wav;
+  memcpy(h, "RIFF", 4);
+  snd_put32(h + 4, 36 + SND_N * 2);
+  memcpy(h + 8, "WAVEfmt ", 8);
+  snd_put32(h + 16, 16);
+  h[20] = 1, h[21] = 0, h[22] = 1, h[23] = 0;  // PCM, mono
+  snd_put32(h + 24, SND_RATE);
+  snd_put32(h + 28, SND_RATE * 2);
+  h[32] = 2, h[33] = 0, h[34] = 16, h[35] = 0;
+  memcpy(h + 36, "data", 4);
+  snd_put32(h + 40, SND_N * 2);
+  uint32_t seed = 0x2545F491u;
+  double hp = 0, last = 0;
+  for (int i = 0; i < SND_N; i++) {
+    double t = (double)i / SND_RATE, v = 0;
+    const double at[2] = {0.0, 0.060}, loud[2] = {1.0, 0.7};
+    seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
+    double noise = (double)(seed & 0xFFFF) / 32768.0 - 1.0;
+    for (int k = 0; k < 2; k++) {
+      double d = t - at[k];
+      if (d < 0) continue;
+      v += loud[k] * (noise * exp(-d / 0.0035) * 0.8 + sin(2 * 3.14159265 * 190 * d) * exp(-d / 0.012) * 0.45);
+    }
+    // (the lowest of it taken off: a click, not a thud)
+    hp = 0.92 * (hp + v - last);
+    last = v;
+    double o = hp * 0.42;
+    if (o > 1) o = 1;
+    if (o < -1) o = -1;
+    int16_t q = (int16_t)(o * 32000);
+    snd_wav[44 + i * 2] = (uint8_t)q, snd_wav[45 + i * 2] = (uint8_t)((uint16_t)q >> 8);
+  }
+  snd_made = 1;
+}
+
+// The shutter's sound, played without waiting.
+void ps_shutter(void) {
+  if (!snd_made) snd_make();
+  PlaySoundW((LPCWSTR)snd_wav, NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 }
