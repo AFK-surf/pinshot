@@ -144,19 +144,32 @@ fn chrome_picture() -> @pixels.Vector? {
 }
 
 ///|
+/// The overlay's window made one of PinShot's own as its first frame is drawn (its window is there then): out of sight
+/// till a capture, before anything can open one.
+let overlay_owned : Ref[Bool] = Ref(false)
+
+///|
+fn overlay_first_frame() -> Unit {
+  if overlay_owned.val || @ui.current_window_id() != 0 {
+    return
+  }
+  overlay_owned.val = true
+  ps_own(0, 1) |> ignore
+  if !capturing.untracked() {
+    ps_hide(0)
+  }
+  if started_with_settings.val {
+    open_settings()
+  }
+  // (what starting took given back once it is up)
+  ps_gpu_flush()
+}
+
+///|
 /// The overlay's tree, made once.
 fn overlay_window(root : @view.View) -> Unit {
   overlay_root.val = Some(root)
   root.tree.hand_over_presses(false)
-  // (made one of PinShot's own once its window is there, after the first frame: out of sight till a capture)
-  root.at_moment(root.cause_at() + 1.0, fn() {
-    ps_own(0, 1) |> ignore
-    ps_hide(0)
-    if started_with_settings.val {
-      open_settings()
-    }
-  }, later=true)
-  |> ignore
   root.ground(Is(0x000000FFL)).keymap(Is(overlay_keys())) |> ignore
   overlay_actions(root)
   // (seen once its first frame with the picture is on the screen: the frame after the decode is told)
@@ -407,7 +420,13 @@ fn press_down(x : Double, y : Double) -> Unit {
             Number | Words => hand.set(Marking)
             t => {
               hand.set(Marking)
-              draft.set(Some(new_mark(t, [(x, y), (x, y)])))
+              let start = if t == Mosaic {
+                let cell = dmax(2.0, (mosaic_pt(size_now.untracked()) * mon_scale.untracked()).round())
+                ((x / cell).floor() * cell, (y / cell).floor() * cell)
+              } else {
+                (x, y)
+              }
+              draft.set(Some(new_mark(t, [start, start])))
             }
           }
         Some((hx, hy)) => hand.set(Sizing(hx, hy, r))
@@ -449,6 +468,23 @@ fn press_moved(x : Double, y : Double) -> Unit {
       match draft.untracked() {
         Some(m) => {
           let (cx, cy) = clamp_to_sel(x, y)
+          // (a mosaic's corner on its squares' grid: drawn again only as it crosses into another square)
+          let (cx, cy) = if m.tool == Mosaic {
+            let cell = dmax(2.0, (mosaic_pt(m.size) * mon_scale.untracked()).round())
+            let snap = fn(v : Double, from : Double) {
+              if v >= from {
+                (v / cell).ceil() * cell
+              } else {
+                (v / cell).floor() * cell
+              }
+            }
+            (snap(cx, m.pts[0].0), snap(cy, m.pts[0].1))
+          } else {
+            (cx, cy)
+          }
+          if m.tool == Mosaic && m.pts[m.pts.length() - 1] == (cx, cy) {
+            return
+          }
           let pts = if m.tool == Pen {
             let p = m.pts.copy()
             p.push((cx, cy))

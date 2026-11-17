@@ -79,33 +79,38 @@ double ps_now_ms(void) { return ps_ms(); }
 
 // ---- the screen, frozen ----
 //
-// The monitor the pointer is on, taken whole as a BMP file's bytes (rows from the top, 32 bits a pixel, BGRX: what mbui
-// makes a texture of as it is, patches/mbui-raw-bmp.patch) in a MoonBit Bytes made here on the UI thread, filled on a
-// thread of its own (GDI's BitBlt of the screen: what DWM composes, SDR; ~45 ms for 4K with HDR on), so the overlay is
-// put up at the monitor's size meanwhile: the app is told {"do":"prepare",...} as the shortcut is pressed and
-// {"do":"capture",...} once the picture is there; it takes it then (ps_capture_take), nothing copied again.
+// The monitor the pointer is on, taken whole into a DIB section of its own (rows from the top, 32 bits a pixel, BGRX)
+// on a thread of its own (GDI's BitBlt of the screen: what DWM composes, SDR; ~45-70 ms for 4K with HDR on), so the
+// overlay is put up at the monitor's size meanwhile: the app is told {"do":"prepare",...} as the shortcut is pressed
+// and {"do":"capture",...} once the picture is there. The pixels stay here, in the section, never copied: the app is
+// handed where they are (ps_capture_take: mbui makes the texture from there, patches/mbui-raw-bmp.patch), reads them
+// here (ps_pixel, ps_mean), and lets them go as the capture closes (ps_capture_release), the section freed a moment
+// later (a decode that might still read it done by then).
 
-#pragma pack(push, 1)
-typedef struct {
-  uint16_t type;
-  uint32_t size;
-  uint32_t reserved;
-  uint32_t offset;
-} BmpFileHead;
-#pragma pack(pop)
-
-#define BMP_HEAD (sizeof(BmpFileHead) + sizeof(BITMAPINFOHEADER))
 #define WM_PS_TAKEN (WM_APP + 42)
+#define PS_FREE_TIMER 7
 
-static moonbit_bytes_t cap_buf;  // the picture being taken or taken, the app's to take (an owned reference)
-static volatile LONG cap_busy;   // a taking under way (its thread fills cap_buf)
-static int cap_ok;               // the last taking's outcome
+typedef struct {
+  HBITMAP dib;
+  uint8_t *bits;
+  int w, h;
+} Shot;
+
+static Shot cap;               // the picture being taken or taken
+static Shot cap_old[4];        // pictures let go, freed at the timer
+static volatile LONG cap_busy;  // a taking under way (its thread fills cap)
+static int cap_ok;              // the last taking's outcome
 static int cap_x, cap_y, cap_w, cap_h, cap_dpi;
 static double cap_t0, cap_ms;  // when it was asked, how long the taking took
 static HWND tray_hwnd;
 static char *win_list;  // the windows on the monitor as it was taken (ps_windows)
 static size_t win_list_len;
 static void windows_listed(void);
+
+static void shot_free(Shot *s) {
+  if (s->dib) DeleteObject(s->dib);
+  memset(s, 0, sizeof *s);
+}
 
 static int monitor_under_pointer(void) {
   // (the screen's own pixels, whoever asks first: the run sets it as it starts, a bench does not start one)
@@ -130,29 +135,18 @@ static int monitor_under_pointer(void) {
   return 1;
 }
 
-// The taking itself, on its own thread: BitBlt into a DIB section, its rows copied after cap_buf's header.
+// The taking itself, on its own thread: BitBlt into the section made for it.
 static DWORD WINAPI cap_work(void *arg) {
   (void)arg;
   int ok = 0;
   HDC screen = GetDC(NULL);
   HDC mem = CreateCompatibleDC(screen);
-  BITMAPINFO bi;
-  memset(&bi, 0, sizeof bi);
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = cap_w;
-  bi.bmiHeader.biHeight = -cap_h;  // rows from the top
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  void *bits = NULL;
-  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-  if (dib && bits) {
-    HGDIOBJ old = SelectObject(mem, dib);
+  if (cap.dib) {
+    HGDIOBJ old = SelectObject(mem, cap.dib);
     ok = BitBlt(mem, 0, 0, cap_w, cap_h, screen, cap_x, cap_y, SRCCOPY) != 0;
     SelectObject(mem, old);
-    if (ok) memcpy((uint8_t *)cap_buf + BMP_HEAD, bits, (size_t)cap_w * cap_h * 4);
+    GdiFlush();
   }
-  if (dib) DeleteObject(dib);
   DeleteDC(mem);
   ReleaseDC(NULL, screen);
   cap_ok = ok;
@@ -162,39 +156,44 @@ static DWORD WINAPI cap_work(void *arg) {
   return 0;
 }
 
-// A taking begun (the UI thread's): the monitor found, its bytes made, the windows on it listed, the work handed to
-// its thread. 0 where one is under way already or there is no monitor.
+// A taking begun (the UI thread's): the monitor found, its section made, the windows on it listed, the work handed
+// to its thread. 0 where one is under way already or there is no monitor.
 static int cap_begin(void) {
   if (cap_busy) return 0;
   cap_t0 = ps_ms();
   if (!monitor_under_pointer()) return 0;
-  if (cap_buf) moonbit_decref(cap_buf);
-  size_t px = (size_t)cap_w * cap_h * 4;
-  cap_buf = moonbit_make_bytes_raw((int32_t)(BMP_HEAD + px));
-  BmpFileHead fh = {0x4D42, (uint32_t)(BMP_HEAD + px), 0, (uint32_t)BMP_HEAD};
-  BITMAPINFOHEADER ih;
-  memset(&ih, 0, sizeof ih);
-  ih.biSize = sizeof ih;
-  ih.biWidth = cap_w;
-  ih.biHeight = -cap_h;
-  ih.biPlanes = 1;
-  ih.biBitCount = 32;
-  ih.biCompression = BI_RGB;
-  memcpy(cap_buf, &fh, sizeof fh);
-  memcpy((uint8_t *)cap_buf + sizeof fh, &ih, sizeof ih);
+  // (one not taken by the app, or kept: gone)
+  shot_free(&cap);
+  BITMAPINFO bi;
+  memset(&bi, 0, sizeof bi);
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = cap_w;
+  bi.bmiHeader.biHeight = -cap_h;  // rows from the top
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void *bits = NULL;
+  cap.dib = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+  if (!cap.dib || !bits) {
+    shot_free(&cap);
+    return 0;
+  }
+  cap.bits = (uint8_t *)bits;
+  cap.w = cap_w, cap.h = cap_h;
   windows_listed();
   cap_ok = 0;
   InterlockedExchange(&cap_busy, 1);
   HANDLE t = CreateThread(NULL, 0, cap_work, NULL, 0, NULL);
   if (!t) {
     InterlockedExchange(&cap_busy, 0);
+    shot_free(&cap);
     return 0;
   }
   CloseHandle(t);
   return 1;
 }
 
-// The screen taken now, waited for here (a bench, the icon's menu): 1 when taken.
+// The screen taken now, waited for here (a bench): 1 when taken.
 int32_t ps_capture_now(void) {
   if (!cap_begin()) return 0;
   while (cap_busy) Sleep(1);
@@ -207,18 +206,71 @@ int32_t ps_capture_now(void) {
 
 // What was taken: "x,y,w,h,dpi,ms" (the monitor in the screen's pixels, its DPI, how long the taking took); "" none.
 moonbit_bytes_t ps_capture_info(void) {
-  if (!cap_buf || cap_busy) return moonbit_make_bytes(0, 0);
+  if (!cap.bits || cap_busy) return moonbit_make_bytes(0, 0);
   char s[128];
   snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms);
   return ps_text(s);
 }
 
-// The picture taken, as a BMP file's bytes, handed over (empty: none, or still being taken).
+// Where the picture taken is, as mbui is handed pixels kept elsewhere ("MBRAWPTR", their address, width, height, row
+// pitch): empty where there is none, or it is still being taken. Kept here till ps_capture_release.
 moonbit_bytes_t ps_capture_take(void) {
-  if (!cap_buf || cap_busy || !cap_ok) return moonbit_make_bytes(0, 0);
-  moonbit_bytes_t b = cap_buf;
-  cap_buf = NULL;
-  return b;
+  if (!cap.bits || cap_busy || !cap_ok) return moonbit_make_bytes(0, 0);
+  uint8_t d[28];
+  uint64_t at = (uint64_t)(uintptr_t)cap.bits;
+  int32_t w = cap.w, h = cap.h, pitch = cap.w * 4;
+  memcpy(d, "MBRAWPTR", 8);
+  memcpy(d + 8, &at, 8);
+  memcpy(d + 16, &w, 4);
+  memcpy(d + 20, &h, 4);
+  memcpy(d + 24, &pitch, 4);
+  return ps_bytes(d, sizeof d);
+}
+
+// The picture taken let go: freed a moment later (what decoded it is done by then).
+void ps_capture_release(void) {
+  if (!cap.dib || cap_busy) return;
+  for (int i = 0; i < 4; i++)
+    if (!cap_old[i].dib) {
+      cap_old[i] = cap;
+      memset(&cap, 0, sizeof cap);
+      if (tray_hwnd) SetTimer(tray_hwnd, PS_FREE_TIMER, 1500, NULL);
+      return;
+    }
+  shot_free(&cap);
+}
+
+static void cap_old_free(void) {
+  for (int i = 0; i < 4; i++) shot_free(&cap_old[i]);
+}
+
+// The colour of the pixel at (x, y) of the picture taken: 0xRRGGBB, -1 where there is none.
+int32_t ps_pixel(int32_t x, int32_t y) {
+  if (!cap.bits || cap_busy || x < 0 || y < 0 || x >= cap.w || y >= cap.h) return -1;
+  const uint8_t *p = cap.bits + ((size_t)y * cap.w + x) * 4;
+  return (p[2] << 16) | (p[1] << 8) | p[0];
+}
+
+// The mean colour (0xRRGGBB) of the `cell` square at (x, y) of the picture taken (what of it is on the picture), every
+// other pixel read where it is 8 or more, a little quantized so a flat ground's squares are one run; 0x808080 none.
+int32_t ps_mean(int32_t x, int32_t y, int32_t cell) {
+  if (!cap.bits || cap_busy) return 0x808080;
+  int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+  int x1 = x + cell > cap.w ? cap.w : x + cell, y1 = y + cell > cap.h ? cap.h : y + cell;
+  if (x1 <= x0 || y1 <= y0) return 0x808080;
+  int step = cell >= 8 ? 2 : 1;
+  unsigned r = 0, g = 0, b = 0, n = 0;
+  for (int yy = y0; yy < y1; yy += step) {
+    const uint8_t *p = cap.bits + ((size_t)yy * cap.w + x0) * 4;
+    for (int xx = x0; xx < x1; xx += step, p += 4 * step) {
+      b += p[0];
+      g += p[1];
+      r += p[2];
+      n++;
+    }
+  }
+  unsigned qr = r / n / 4 * 4 + 2, qg = g / n / 4 * 4 + 2, qb = b / n / 4 * 4 + 2;
+  return (int32_t)((qr << 16) | (qg << 8) | qb);
 }
 
 // ---- the windows on the screen ----
@@ -379,15 +431,15 @@ static void tray_menu(int x, int y) {
 }
 
 static char cap_by[16];
+static int capture_open;  // the app has a capture open (ps_capture_open)
 static void gpu_trim_now(void);
 #define WM_PS_TRIM (WM_APP + 43)
 
 static HWND own_window(int wid);
 
 static void capture_asked(const char *by) {
-  // (not while the overlay is up: it would be taken too)
-  HWND overlay = own_window(0);
-  if (overlay && IsWindowVisible(overlay)) return;
+  // (not while a capture is open: the overlay would be taken too)
+  if (capture_open) return;
   if (!cap_begin()) return;
   lstrcpynA(cap_by, by, sizeof cap_by);
   char json[192];
@@ -415,6 +467,12 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PS_TRIM:
       gpu_trim_now();
       return 0;
+    case WM_TIMER:
+      if (wp == PS_FREE_TIMER) {
+        KillTimer(h, PS_FREE_TIMER);
+        cap_old_free();
+      }
+      return 0;
     case WM_PS_TAKEN: {
       char json[128];
       snprintf(json, sizeof json, "{\"do\":\"capture\",\"ok\":%s,\"by\":\"%s\"}", wp ? "true" : "false", cap_by);
@@ -435,13 +493,21 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(h, msg, wp, lp);
 }
 
+// Whether the app has a capture open: no other is taken meanwhile (its shortcut pressed again does nothing).
+void ps_capture_open(int32_t on) { capture_open = on != 0; }
+
 // A capture asked for by the app (the icon's menu): as the shortcut.
 void ps_capture_ask(void) { capture_asked("menu"); }
 
 // The run begun: 1 it is the one run (its icon put, its window made), 0 another runs already (told `again`: 0 take
 // the screen, as its shortcut does; 1 open the settings; 2 quit): this one ends.
+extern int mb_atlas_size;
+
 int32_t ps_start(int32_t again) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  // (the glyphs' atlas as small as what PinShot writes needs: a toolbar's, a size's, the settings' words; mbui's own
+  // 4096 x 4096 is 64 MB of the GPU's, held from the first word drawn)
+  mb_atlas_size = 1024;
   one_run = CreateMutexW(NULL, TRUE, L"Local\\PinShot.OneRun");
   if (one_run && GetLastError() == ERROR_ALREADY_EXISTS) {
     HWND other = FindWindowW(PS_CLASS, NULL);
@@ -646,11 +712,18 @@ moonbit_bytes_t ps_pointer(void) {
 extern void *mb_render_context(void);
 extern void *mb_render_device(void);
 static void gpu_trim_now(void) {
+  const char *how = getenv("PINSHOT_TRIM");  // (a test's: "none", "flush", "trim", "ws"; all where unsaid)
+  if (how && !strcmp(how, "none")) return;
+  if (how && !strcmp(how, "ws")) {
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    return;
+  }
   ID3D11DeviceContext *ctx = (ID3D11DeviceContext *)mb_render_context();
   if (ctx) {
     ID3D11DeviceContext_ClearState(ctx);
     ID3D11DeviceContext_Flush(ctx);
   }
+  if (how && !strcmp(how, "flush")) return;
   ID3D11Device *dev = (ID3D11Device *)mb_render_device();
   IDXGIDevice3 *xd = NULL;
   if (dev && SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice3, (void **)&xd))) {
@@ -770,7 +843,7 @@ moonbit_bytes_t ps_save_dialog(int32_t wid, moonbit_bytes_t dir, moonbit_bytes_t
     IShellItem_Release(folder);
   }
   free(wd);
-  HWND owner = own_window(wid);
+  HWND owner = wid >= 0 ? own_window(wid) : NULL;
   if (SUCCEEDED(IFileSaveDialog_Show(d, owner))) {
     IShellItem *item = NULL;
     if (SUCCEEDED(IFileSaveDialog_GetResult(d, &item))) {
@@ -939,6 +1012,15 @@ moonbit_bytes_t ps_popup_menu(int32_t wid, moonbit_bytes_t lines) {
   if (chose > 0 && chose <= n) return ps_text(keys[chose - 1]);
   return moonbit_make_bytes(0, 0);
 }
+
+#pragma pack(push, 1)
+typedef struct {
+  uint16_t type;
+  uint32_t size;
+  uint32_t reserved;
+  uint32_t offset;
+} BmpFileHead;
+#pragma pack(pop)
 
 // The picture on the clipboard as a file's bytes: its PNG where it has one, else its bitmap as a BMP file; empty
 // where it holds none.

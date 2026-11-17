@@ -355,39 +355,9 @@ fn mosaic_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
 }
 
 ///|
-/// The mean colour (0xRRGGBB) of the `cell` square at (x, y) of the picture taken, read every other pixel, quantized
-/// a little so the squares of a flat ground are one run.
+/// The mean colour (0xRRGGBB) of the `cell` square at (x, y) of the picture taken (read where the native side keeps it).
 fn mean_color(x : Int, y : Int, cell : Int) -> Int {
-  let m = mon.val
-  let b = frozen.val
-  let x1 = clampi(x + cell, 0, m.w)
-  let y1 = clampi(y + cell, 0, m.h)
-  let x0 = clampi(x, 0, m.w)
-  let y0 = clampi(y, 0, m.h)
-  if x1 <= x0 || y1 <= y0 || b.length() < 54 + m.w * m.h * 4 {
-    return 0x808080
-  }
-  let step = if cell >= 8 { 2 } else { 1 }
-  let mut rs = 0
-  let mut gs = 0
-  let mut bs = 0
-  let mut n = 0
-  let mut yy = y0
-  while yy < y1 {
-    let mut o = 54 + (yy * m.w + x0) * 4
-    let mut xx = x0
-    while xx < x1 {
-      bs += b[o].to_int()
-      gs += b[o + 1].to_int()
-      rs += b[o + 2].to_int()
-      n += 1
-      o += 4 * step
-      xx += step
-    }
-    yy += step
-  }
-  let q = fn(v : Int) { v / n / 4 * 4 + 2 }
-  (q(rs) << 16) | (q(gs) << 8) | q(bs)
+  ps_mean(x, y, cell)
 }
 
 ///|

@@ -94,16 +94,21 @@ fn save_out() -> Unit {
     match png {
       Some(png) => {
         let s = settings.untracked()
+        // (the overlay hidden while the system's dialog is up: a dialog is not seen over a cloaked owner)
         let path = if s.ask_where {
-          text_of(ps_save_dialog(0, cstr(s.save_dir), cstr(file_name())))
+          ps_hide(0)
+          text_of(ps_save_dialog(-1, cstr(s.save_dir), cstr(file_name())))
         } else {
           s.save_dir + "\\" + file_name()
         }
         if path != "" {
           ps_write_file(cstr(path), png) |> ignore
+          log("saved \{path}")
           close_capture()
         } else {
           // (the dialog called off: back to the capture as it was)
+          let m = mon.val
+          ps_place(0, m.x, m.y, m.w, m.h, 1, 1)
           ps_cloak(0, 0)
         }
       }

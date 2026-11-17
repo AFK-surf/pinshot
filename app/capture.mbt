@@ -11,11 +11,6 @@ let mon : Ref[Rect] = Ref({ x: 0, y: 0, w: 0, h: 0 })
 let mon_scale : @signals.Signal[Double] = @signals.signal(1.0)
 
 ///|
-/// The picture taken (a BMP's bytes, BGRX rows from the top after its 54 bytes of header): what the pixels under the
-/// pointer and a mosaic's colours are read from. Empty between captures.
-let frozen : Ref[Bytes] = Ref(b"")
-
-///|
 /// The key the overlay shows the picture by ("" none): a new one each capture, so no decode of the last is shown.
 let frozen_key : @signals.Signal[String] = @signals.signal("")
 
@@ -117,15 +112,10 @@ fn inside(c : Rect, r : Rect) -> Bool {
 }
 
 ///|
-/// The colour of the pixel at (`x`, `y`) of the picture taken: 0xRRGGBB, -1 where there is none.
+/// The colour of the pixel at (`x`, `y`) of the picture taken: 0xRRGGBB, -1 where there is none (read where the
+/// native side keeps it).
 fn pixel_at(x : Int, y : Int) -> Int {
-  let m = mon.val
-  let b = frozen.val
-  if x < 0 || y < 0 || x >= m.w || y >= m.h || b.length() < 54 + m.w * m.h * 4 {
-    return -1
-  }
-  let o = 54 + (y * m.w + x) * 4
-  (b[o + 2].to_int() << 16) | (b[o + 1].to_int() << 8) | b[o].to_int()
+  ps_pixel(x, y)
 }
 
 ///|
@@ -168,6 +158,7 @@ fn prepare_capture(x : Int, y : Int, w : Int, h : Int, dpi : Double) -> Unit {
   if was != "" {
     @ui.forget_image(was)
   }
+  ps_capture_open(1)
   ps_cloak(0, 1)
   ps_place(0, x, y, w, h, 1, 1)
 }
@@ -183,18 +174,12 @@ fn capture_taken() -> Unit {
   }
   took_ms.val = info[5]
   taken_at.val = ps_now_ms()
-  frozen.val = bytes
   windows_on.set(parse_windows(text_of(ps_windows())))
   log("windows: " + text_of(ps_windows()).replace_all(old="\n", new=" | "))
   frozen_n.val += 1
   let key = "mem:frozen/\{frozen_n.val}"
-  if @ui.env("PINSHOT_NOIMG") == "" {
-    @ui.add_image(key, bytes)
-    frozen_key.set(key)
-  } else {
-    ps_cloak(0, 0)
-    overlay_seen.set(true)
-  }
+  @ui.add_image(key, bytes)
+  frozen_key.set(key)
 }
 
 ///|
@@ -207,6 +192,7 @@ fn close_capture() -> Unit {
   if !capturing.untracked() {
     return
   }
+  ps_capture_open(0)
   // (out of sight at once; made small and drawn once so, then hidden: what drew it at the monitor's size, 4K's
   // buffers and all, let go of while nothing is captured)
   ps_cloak(0, 1)
@@ -231,7 +217,7 @@ fn close_capture() -> Unit {
   reset_marks()
   frozen_key.set("")
   @signals.end_batch()
-  frozen.val = b""
+  ps_capture_release()
   windows_on.set([])
   if key != "" {
     @ui.forget_image(key)

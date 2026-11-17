@@ -1,15 +1,51 @@
+PinShot's patch to mbui's Windows host (libs/mbui/src/host/win_image.cpp), applied by scripts/fetch-stillfail.sh:
+a picture handed over that is an uncompressed top-down 32-bit BMP, or pixels named by their address
+(MBRAWPTR), becomes a texture as it is: no WIC conversion, no mips, no copy. A 4K screen frozen is a texture in a
+few ms (WIC's conversion and the mips took ~40 ms and 2 x 33 MB).
+
 diff --git a/libs/mbui/src/host/win_image.cpp b/libs/mbui/src/host/win_image.cpp
-index c37f4f6..0ec3bcf 100644
+index c37f4f6..b8b733b 100644
 --- a/libs/mbui/src/host/win_image.cpp
 +++ b/libs/mbui/src/host/win_image.cpp
-@@ -235,6 +235,44 @@ done:
+@@ -235,6 +235,75 @@ done:
    return srv;
  }
  
 +// An uncompressed 32-bit BMP whose rows run from the top (BI_RGB: what GDI gives of a screen taken) asked for at its own
 +// size or more: its pixels made the texture as they are (B8G8R8X8: the fourth byte not read), no WIC, no mips, so a
 +// 4K screen's 33 MB is a texture in a few ms rather than WIC's conversion and the mips' ~40 ms. NULL where it is not one.
++// Or pixels the program keeps itself, named by where they are rather than handed over ("MBRAWPTR", then their address,
++// width, height and row pitch: 8 + 8 + 4 + 4 + 4 bytes, BGRX rows from the top): made the texture from there, nothing
++// copied first. The program keeps them till the picture is ready (or failed).
 +static ID3D11ShaderResourceView *raw_bmp(const uint8_t *d, size_t n, int max_px, int *w, int *h) {
++  if (n >= 28 && !memcmp(d, "MBRAWPTR", 8)) {
++    uint64_t at;
++    int32_t pw, ph, pitch;
++    memcpy(&at, d + 8, 8);
++    memcpy(&pw, d + 16, 4);
++    memcpy(&ph, d + 20, 4);
++    memcpy(&pitch, d + 24, 4);
++    if (!at || pw <= 0 || ph <= 0 || pitch < pw * 4 || max_px < (pw > ph ? pw : ph)) return NULL;
++    D3D11_TEXTURE2D_DESC td = {};
++    td.Width = (UINT)pw;
++    td.Height = (UINT)ph;
++    td.MipLevels = 1;
++    td.ArraySize = 1;
++    td.Format = DXGI_FORMAT_B8G8R8X8_UNORM;
++    td.SampleDesc.Count = 1;
++    td.Usage = D3D11_USAGE_IMMUTABLE;
++    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
++    D3D11_SUBRESOURCE_DATA init = {(const void *)(uintptr_t)at, (UINT)pitch, 0};
++    ID3D11Device *dev = (ID3D11Device *)mb_render_device();
++    ID3D11Texture2D *tex = NULL;
++    ID3D11ShaderResourceView *srv = NULL;
++    if (dev && SUCCEEDED(dev->CreateTexture2D(&td, &init, &tex))) {
++      if (FAILED(dev->CreateShaderResourceView(tex, NULL, &srv))) srv = NULL;
++      tex->Release();
++    }
++    if (srv) *w = pw, *h = ph;
++    return srv;
++  }
 +  if (n < 54 || d[0] != 'B' || d[1] != 'M') return NULL;
 +  uint32_t off, hsize, comp;
 +  int32_t bw, bh;
@@ -47,7 +83,7 @@ index c37f4f6..0ec3bcf 100644
  static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
    Job *j = (Job *)arg;
    LARGE_INTEGER t0, t1, f;
-@@ -258,6 +296,9 @@ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
+@@ -258,6 +327,9 @@ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
      if (j->pdf) {
        srv = pdf_draw(wic, j->pdf, j->page, j->max_px, &w, &h, &ow, &oh);
        hr = E_ABORT;  // (drawn: nothing more to decode)

@@ -51,7 +51,10 @@ fn main {
   if again == 1 {
     started_with_settings.val = true
   }
-  @ui.run("PinShot", fn(c) { c.set_clear(0x000000L) }, tree=overlay_window)
+  @ui.run("PinShot", fn(c) {
+    c.set_clear(0x000000L)
+    overlay_first_frame()
+  }, tree=overlay_window)
 }
 
 ///|

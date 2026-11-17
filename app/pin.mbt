@@ -63,6 +63,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
     ps_opacity(wid, s.pin_alpha)
   }
   pins_hidden.val = false
+  log("pin \{w}x\{h} opened (\{pins.length()} open)")
 }
 
 ///|

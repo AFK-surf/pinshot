@@ -50,6 +50,10 @@ extern "C" fn ps_capture_now() -> Int = "ps_capture_now"
 extern "C" fn ps_capture_ask() -> Unit = "ps_capture_ask"
 
 ///|
+/// Whether a capture is open (none other is taken meanwhile).
+extern "C" fn ps_capture_open(on : Int) -> Unit = "ps_capture_open"
+
+///|
 /// A line in the run's log (pinshot.log in the settings' folder), its time before it.
 #borrow(line)
 extern "C" fn ps_log(line : Bytes) -> Unit = "ps_log"
@@ -64,8 +68,21 @@ fn log(line : String) -> Unit {
 extern "C" fn ps_capture_info() -> Bytes = "ps_capture_info"
 
 ///|
-/// The picture taken (a BMP file's bytes, rows from the top, BGRX), handed over and let go there.
+/// Where the picture taken is, as mbui takes pixels kept elsewhere ("MBRAWPTR"...): empty where there is none. Its
+/// pixels stay on the native side till ps_capture_release.
 extern "C" fn ps_capture_take() -> Bytes = "ps_capture_take"
+
+///|
+/// The picture taken let go.
+extern "C" fn ps_capture_release() -> Unit = "ps_capture_release"
+
+///|
+/// The colour of the pixel at (x, y) of the picture taken: 0xRRGGBB, -1 where there is none.
+extern "C" fn ps_pixel(x : Int, y : Int) -> Int = "ps_pixel"
+
+///|
+/// The mean colour (0xRRGGBB) of the `cell` square at (x, y) of the picture taken.
+extern "C" fn ps_mean(x : Int, y : Int, cell : Int) -> Int = "ps_mean"
 
 ///|
 /// The windows on the monitor taken, the front first: "x,y,w,h" lines in its pixels (a window's parts after it).
