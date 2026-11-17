@@ -21,6 +21,8 @@ mkdir -p "$ROOT/out"
 RES="$ROOT/out/pinshot.res"
 (cd "$ROOT/assets" && rc.exe -nologo -fo "$(cygpath -w "$RES")" pinshot.rc)
 cd "$ROOT/deps/stillfail/libs/mbui"
+# (linked again every time: moon does not see the .res change, and an icon changed alone would be left out)
+rm -f out/win/app/_build/native/*/build/stillfail/pinshot/pinshot.exe
 set +e
 MBUI_WIN_RES="$RES" MODE=$MODE MBUI_APP_MOD=../../apps/mbui APP=pinshot scripts/win.sh build > "$ROOT/out/build.log" 2>&1
 code=$?
