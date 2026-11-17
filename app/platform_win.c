@@ -800,6 +800,9 @@ moonbit_bytes_t ps_window_rect(int32_t wid) {
   return ps_text(s);
 }
 
+// Whether Shift is held now.
+int32_t ps_shift_down(void) { return GetKeyState(VK_SHIFT) < 0; }
+
 // The pointer on the screen: "x,y" (pixels).
 moonbit_bytes_t ps_pointer(void) {
   POINT p;

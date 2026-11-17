@@ -10,6 +10,7 @@ enum Tool {
   Box
   Oval
   Arrow
+  Line
   Pen
   Mosaic
   Number
@@ -160,7 +161,7 @@ fn new_mark(t : Tool, pts : Array[(Double, Double)]) -> Mark {
 /// A mark that is too small to keep (a click where a drag was meant).
 fn too_small(m : Mark) -> Bool {
   match m.tool {
-    Box | Oval | Mosaic | Arrow => {
+    Box | Oval | Mosaic | Arrow | Line => {
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
       (x1 - x0).abs() < 3.0 && (y1 - y0).abs() < 3.0
@@ -220,6 +221,14 @@ fn mark_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
       [stroke_layer(oval_path(dmin(x0, x1), dmin(y0, y1), (x1 - x0).abs(), (y1 - y0).abs()), m.color, w)]
     }
     Arrow => [fill_layer(arrow_path(m.pts[0], m.pts[m.pts.length() - 1], w), m.color)]
+    Line => {
+      let (ax, ay) = m.pts[0]
+      let (bx, by) = m.pts[m.pts.length() - 1]
+      [
+        stroke_layer("M\{num(ax)} \{num(ay)}L\{num(bx)} \{num(by)}", m.color, w),
+        fill_layer(circle_path(ax, ay, w / 2.0) + circle_path(bx, by, w / 2.0), m.color),
+      ]
+    }
     Pen => {
       let sb = StringBuilder()
       for i, p in m.pts {
@@ -366,4 +375,27 @@ test "arrow path closes" {
   assert_true(d.has_prefix("M"))
   assert_true(d.has_suffix("z"))
   assert_eq(arrow_path((0.0, 0.0), (0.0, 0.0), 4.0), "")
+}
+
+///|
+/// The end of a line or an arrow from (`ax`, `ay`) to (`x`, `y`) kept to a multiple of 45 degrees (Shift held: straight
+/// across, straight up and down, or diagonal), as far as the pointer along it.
+fn snap45(ax : Double, ay : Double, x : Double, y : Double) -> (Double, Double) {
+  let dx = x - ax
+  let dy = y - ay
+  let len = (dx * dx + dy * dy).sqrt()
+  if len < 0.5 {
+    return (x, y)
+  }
+  let step = @math.PI / 4.0
+  let a = (@math.atan2(dy, dx) / step).round() * step
+  (ax + len * @math.cos(a), ay + len * @math.sin(a))
+}
+
+///|
+test "snap45" {
+  let (x, y) = snap45(0.0, 0.0, 100.0, 7.0)
+  assert_true((y).abs() < 0.001 && x > 99.0)
+  let (x2, y2) = snap45(0.0, 0.0, 3.0, 100.0)
+  assert_true(x2.abs() < 0.001 && y2 > 99.0)
 }

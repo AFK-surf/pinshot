@@ -17,7 +17,8 @@ let bar_rule : Double = 9.0
 let bar_tools : Array[(Tool, String, String)] = [
   (Box, "box", "矩形"),
   (Oval, "oval", "椭圆"),
-  (Arrow, "arrow", "箭头"),
+  (Arrow, "arrow", "箭头（按住 Shift 水平、垂直或 45°）"),
+  (Line, "line", "直线（按住 Shift 水平、垂直或 45°）"),
   (Pen, "pen", "画笔"),
   (Mosaic, "mosaic", "马赛克"),
   (Number, "number", "序号"),
@@ -26,7 +27,7 @@ let bar_tools : Array[(Tool, String, String)] = [
 
 ///|
 fn bar_width() -> Double {
-  bar_pad * 2.0 + bar_button * 13.0 + bar_rule * 2.0
+  bar_pad * 2.0 + bar_button * 14.0 + bar_rule * 2.0
 }
 
 ///|
@@ -267,6 +268,7 @@ fn glyph(name : String) -> @pixels.Vector {
     "box" => lines(["M3.5 4.5h11v9h-11z"])
     "oval" => lines([oval_path(2.5, 4.0, 13.0, 10.0)])
     "arrow" => lines(["M4 14 14 4", "M7.5 4H14v6.5"])
+    "line" => lines(["M3.5 14.5 14.5 3.5"])
     "pen" => lines(["M3.5 14.5l1-3.5 8-8 2.5 2.5-8 8z", "M11 4.5l2.5 2.5"])
     "mosaic" =>
       {

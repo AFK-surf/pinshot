@@ -136,6 +136,10 @@ extern "C" fn ps_opacity(wid : Int, alpha : Int) -> Unit = "ps_opacity"
 extern "C" fn ps_window_rect(wid : Int) -> Bytes = "ps_window_rect"
 
 ///|
+/// Whether Shift is held now (1).
+extern "C" fn ps_shift_down() -> Int = "ps_shift_down"
+
+///|
 /// The pointer on the screen: "x,y" (pixels).
 extern "C" fn ps_pointer() -> Bytes = "ps_pointer"
 

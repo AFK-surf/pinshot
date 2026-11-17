@@ -485,6 +485,13 @@ fn press_moved(x : Double, y : Double) -> Unit {
           if m.tool == Mosaic && m.pts[m.pts.length() - 1] == (cx, cy) {
             return
           }
+          // (a line or an arrow with Shift held: straight across, up and down, or at 45 degrees)
+          let (cx, cy) = if (m.tool == Line || m.tool == Arrow) && ps_shift_down() == 1 {
+            let (sx, sy) = snap45(m.pts[0].0, m.pts[0].1, cx, cy)
+            clamp_to_sel(sx, sy)
+          } else {
+            (cx, cy)
+          }
           let pts = if m.tool == Pen {
             let p = m.pts.copy()
             p.push((cx, cy))
