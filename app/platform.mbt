@@ -31,6 +31,11 @@ extern "C" fn ps_shutter() -> Unit = "ps_shutter"
 extern "C" fn ps_shadow(wid : Int) -> Unit = "ps_shadow"
 
 ///|
+/// Window `wid` moved with the pointer (the press under way: the system's move, as a title bar's), the press let go
+/// of as the move ends.
+extern "C" fn ps_move_window(wid : Int) -> Unit = "ps_move_window"
+
+///|
 /// Window `wid`, `w` by `h` points, under the pointer (kept on its monitor), its corners round, over the others,
 /// shown without the keyboard.
 extern "C" fn ps_toast_place(wid : Int, w : Int, h : Int) -> Unit = "ps_toast_place"

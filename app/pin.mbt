@@ -291,10 +291,21 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
     .cursor(Is(Some(Arrow)))
     .on_drag(fn(d) {
       if d.kind == Down {
-        @hostapi.window_drag()
+        // (the second press of a double click closes it: told here, mbui's double press is not told of a node that
+        // drags)
+        let t = ps_now_ms()
+        let (lw, lt, lx, ly) = pin_last_down.val
+        if lw == wid && t - lt <= 500.0 && (d.x - lx).abs() <= 4.0 && (d.y - ly).abs() <= 4.0 {
+          pin_last_down.val = (0, 0.0, 0.0, 0.0)
+          close_pin(wid)
+          return
+        }
+        pin_last_down.val = (wid, t, d.x, d.y)
+        // (moved by the system's own move, the press then let go of as the move ends: mbui hears no release from
+        // it, and took the next press for one, every other press not moving the pin)
+        ps_move_window(wid)
       }
     }, whole=true)
-    .on_double_press(fn() { close_pin(wid) })
     .on_menu(fn(_) { pin_menu(p) })
     .on_wheel(fn(w) {
       // (Ctrl: how clear; else the zoom, a notch 10% of it)
@@ -435,3 +446,7 @@ fn pin_active(wid : Int, on : Bool) -> Unit {
   p.active_at.set(ps_now_ms())
   p.flash.set(1.0)
 }
+
+///|
+/// The last press on a pin: its window, when, where (points): the first of a double click.
+let pin_last_down : Ref[(Int, Double, Double, Double)] = Ref((0, 0.0, 0.0, 0.0))

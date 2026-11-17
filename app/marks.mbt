@@ -114,6 +114,8 @@ fn add_mark(m : Mark) -> Unit {
   let next = marks.untracked().copy()
   next.push(m)
   marks.set(next)
+  // (picked as it is made: its colour, its thickness, Delete, the arrows its at once; the user, 2026-11-17)
+  selected.set(Some(m.id))
 }
 
 ///|
@@ -473,7 +475,21 @@ fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool
     Mosaic => {
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
-      inside && x >= dmin(x0, x1) && x <= dmax(x0, x1) && y >= dmin(y0, y1) && y <= dmax(y0, y1)
+      let (l, t, r, b) = (dmin(x0, x1), dmin(y0, y1), dmax(x0, x1), dmax(y0, y1))
+      let within = x >= l && x <= r && y >= t && y <= b
+      // (anywhere in it with the move tool held; else by its edge, a few points either side, as a box's: inside it a
+      // mosaic or another mark is drawn)
+      let near = x >= l - reach && x <= r + reach && y >= t - reach && y <= b + reach
+      (inside && within) ||
+      (
+        near &&
+        (
+          (x - l).abs() <= reach ||
+          (x - r).abs() <= reach ||
+          (y - t).abs() <= reach ||
+          (y - b).abs() <= reach
+        )
+      )
     }
     Number => {
       let (cx, cy) = m.pts[0]

@@ -497,6 +497,7 @@ static char cap_by[16];
 static int capture_open;  // the app has a capture open (ps_capture_open): 1 the person's, 2 the one taken as it starts
 static char ask_waiting[16];  // a capture asked for while the one taken as it starts was open: asked as that closes
 #define WM_PS_ASK (WM_APP + 45)
+#define WM_PS_MOVE (WM_APP + 46)
 static void gpu_trim_now(void);
 #define WM_PS_TRIM (WM_APP + 43)
 
@@ -685,6 +686,20 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
       SetTimer(h, 0x5053, 16, NULL);
       break;
     }
+    case WM_PS_MOVE: {
+      // (the system's move, as a title bar's, while the button is held; then the press let go of where it ends:
+      // the move's loop takes the button's release, which mbui never hears)
+      // (none where the button is up already: the press was a click, its release heard)
+      if (GetKeyState(VK_LBUTTON) >= 0) return 0;
+      POINT p;
+      GetCursorPos(&p);
+      ReleaseCapture();
+      SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(p.x, p.y));
+      GetCursorPos(&p);
+      ScreenToClient(h, &p);
+      PostMessageW(h, WM_LBUTTONUP, 0, MAKELPARAM(p.x, p.y));
+      return 0;
+    }
     case WM_TIMER:
       if (wp == 0x5053) {
         INT_PTR n = (INT_PTR)GetPropW(h, L"PinShot.Frames");
@@ -711,6 +726,12 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
 }
 
 static HWND own_window(int wid) { return (HWND)mb_app_hwnd_of(wid); }
+
+// Window `wid` moved with the pointer as its title bar would be (once the app's handling of the press is over).
+void ps_move_window(int32_t wid) {
+  HWND h = own_window(wid);
+  if (h) PostMessageW(h, WM_PS_MOVE, 0, 0);
+}
 
 // Window `wid` to be closed by the app now (mbui posts it WM_CLOSE, which is let through for it alone).
 void ps_let_close(int32_t wid) {
