@@ -149,6 +149,34 @@ static int mon_hdr(HMONITOR mon, float *white) {
     wl.header.id = paths[i].targetInfo.id;
     if (DisplayConfigGetDeviceInfo(&wl.header) == ERROR_SUCCESS && wl.SDRWhiteLevel >= 1000)
       *white = (float)wl.SDRWhiteLevel / 1000.0f;
+    // (a monitor asleep or turned off at its button says 80 nits, its white unknown: the last it said awake kept;
+    // ScreenReplay found the same, 2026-11-15)
+    // Kept on disk too (%APPDATA%\PinShot\sdr-white.txt): a run started while the monitor sleeps has it.
+    static float last_white = -1;
+    wchar_t path[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", path, MAX_PATH);
+    int have_path = n > 0 && n < MAX_PATH - 40;
+    if (have_path) wcscat_s(path, MAX_PATH, L"\\PinShot\\sdr-white.txt");
+    if (last_white < 0) {
+      last_white = 0;
+      FILE *f = NULL;
+      if (have_path && _wfopen_s(&f, path, L"r") == 0 && f) {
+        if (fscanf_s(f, "%f", &last_white) != 1) last_white = 0;
+        fclose(f);
+      }
+    }
+    if (*white > 1.001f) {
+      if (*white != last_white && have_path) {
+        FILE *f = NULL;
+        if (_wfopen_s(&f, path, L"w") == 0 && f) {
+          fprintf(f, "%.3f\n", *white);
+          fclose(f);
+        }
+      }
+      last_white = *white;
+    } else if (last_white > 1.001f) {
+      *white = last_white;
+    }
     return 1;
   }
   return 0;
