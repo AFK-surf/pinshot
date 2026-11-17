@@ -1,6 +1,6 @@
-out/
-build.raw
-*.res
 *.obj
 *.pdb
+*.res
+build.raw
 deps/
+out/

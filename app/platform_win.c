@@ -1101,7 +1101,19 @@ moonbit_bytes_t ps_stamp(void) {
 
 #define RUN_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 
+// The system's capture told how a package may keep the screen (capture_wgc.cpp, on its threads): its sessions made
+// again on the icon's window's thread, as when the monitors change.
+void ps_wgc_wake(void) {
+  if (tray_hwnd) PostMessageW(tray_hwnd, WM_DISPLAYCHANGE, 0, 0);
+}
+
+// (startup_task.cpp: a package's own way)
+int ps_packaged(void);
+int ps_startup_on(void);
+int ps_startup_set(int on);
+
 int32_t ps_autostart(void) {
+  if (ps_packaged()) return ps_startup_on();
   HKEY k;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
   DWORD type = 0, size = 0;
@@ -1111,6 +1123,7 @@ int32_t ps_autostart(void) {
 }
 
 int32_t ps_set_autostart(int32_t on) {
+  if (ps_packaged()) return ps_startup_set(on);
   HKEY k;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &k) != ERROR_SUCCESS) return 0;
   LONG r;

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PinShot as an MSIX package for the Microsoft Store (packaging/pack-msix.ps1 fills the $...$ in).
+     The identity's Name, Publisher and PublisherDisplayName are the ones Partner Center gives the reserved name
+     (Product identity); the Store signs the package with them.
+     - runFullTrust: an ordinary desktop program (a notification-area icon, global shortcuts, its windows over all).
+     - graphicsCaptureProgrammatic: the screen kept by Windows.Graphics.Capture with no picker, so a screenshot is
+       there the moment its shortcut is pressed (capture_wgc.cpp); graphicsCaptureWithoutBorder: no yellow border
+       round the screen while it is kept.
+     - the startup task: off as installed; turned on by the settings' 开机时启动 (startup_task.cpp). -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 rescap">
+  <Identity Name="$Name$" Publisher="$Publisher$" Version="$Version$" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>PinShot</DisplayName>
+    <PublisherDisplayName>$PublisherDisplayName$</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us" />
+    <Resource Language="zh-cn" />
+  </Resources>
+  <Applications>
+    <Application Id="PinShot" Executable="pinshot.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="PinShot" Description="Screenshot, mark up and pin to the screen, instantly."
+        BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <uap5:Extension Category="windows.startupTask" Executable="pinshot.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="PinShotAtSignIn" Enabled="false" DisplayName="PinShot" />
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="graphicsCaptureProgrammatic" />
+    <rescap:Capability Name="graphicsCaptureWithoutBorder" />
+  </Capabilities>
+</Package>

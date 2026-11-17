@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="4 4 92 92">
+  <!-- PinShot's icon (the user's pick, 2026-11-17: A, 取景框 + 图钉): a screenshot's frame, a pin in its corner. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4FB0FF"/>
+      <stop offset="1" stop-color="#1F6FE0"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="92" height="92" rx="22" fill="url(#g)"/>
+  <g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M24 40V24h16"/>
+    <path d="M60 24h16v16"/>
+    <path d="M24 60v16h16"/>
+  </g>
+  <g transform="translate(66 66) rotate(45)" fill="#fff">
+    <rect x="-9" y="-16" width="18" height="10" rx="3"/>
+    <rect x="-5" y="-7" width="10" height="12"/>
+    <rect x="-12" y="4" width="24" height="5" rx="2.5"/>
+    <path d="M0 9v13" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+</svg>

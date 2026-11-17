@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <d3dcompiler.h>
+#include <windows.security.authorization.appcapabilityaccess.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -212,10 +213,12 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h) {
   // (no pointer in the picture, no yellow frame round the screen while it is kept)
   ComPtr<WGC::IGraphicsCaptureSession2> s2;
   if (SUCCEEDED(m->session.As(&s2))) s2->put_IsCursorCaptureEnabled(FALSE);
+  // (kept only with no border: a yellow frame round the screen all the time is not to be had; where Windows draws
+  // it anyway (Windows 10, or the person said no), no session, GDI's each time)
   ComPtr<WGC::IGraphicsCaptureSession3> s3;
-  if (SUCCEEDED(m->session.As(&s3))) {
-    HRESULT hr = s3->put_IsBorderRequired(FALSE);
-    if (FAILED(hr)) last_hr = hr;
+  if (FAILED(m->session.As(&s3)) || FAILED(last_hr = s3->put_IsBorderRequired(FALSE))) {
+    mon_stop(m);
+    return 0;
   }
   if (FAILED(last_hr = m->session->StartCapture())) {
     mon_stop(m);
@@ -230,11 +233,47 @@ static BOOL CALLBACK mon_found(HMONITOR mon, HDC, LPRECT r, LPARAM) {
   return TRUE;
 }
 
+// A package's run may keep the screen without the border only once Windows says so
+// (GraphicsCaptureAccess.RequestAccessAsync(Borderless): the manifest's graphicsCaptureWithoutBorder, Windows asking
+// the person where it asks): asked once, without waiting; the sessions made again once it is answered
+// (ps_wgc_wake). 1 allowed, 0 not, -1 not asked, -2 being asked. A run not a package's: allowed.
+extern "C" int ps_packaged(void);
+extern "C" void ps_wgc_wake(void);
+static volatile LONG borderless = -1;
+
+static int borderless_allowed(void) {
+  if (!ps_packaged()) return 1;
+  if (borderless >= 0) return borderless;
+  if (InterlockedCompareExchange(&borderless, -2, -1) != -1) return 0;
+  ComPtr<WGC::IGraphicsCaptureAccessStatics> statics;
+  ComPtr<ABI::Windows::Foundation::IAsyncOperation<ABI::Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus>> op;
+  if (FAILED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Graphics_Capture_GraphicsCaptureAccess).Get(),
+                                    IID_PPV_ARGS(&statics))) ||
+      FAILED(statics->RequestAccessAsync(WGC::GraphicsCaptureAccessKind_Borderless, &op))) {
+    borderless = 0;
+    return 0;
+  }
+  using Status = ABI::Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus;
+  auto done = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+                                                  ABI::Windows::Foundation::IAsyncOperationCompletedHandler<Status>,
+                                                  Microsoft::WRL::FtmBase>>(
+      [](ABI::Windows::Foundation::IAsyncOperation<Status> *o, ABI::Windows::Foundation::AsyncStatus) -> HRESULT {
+        Status s;
+        borderless = SUCCEEDED(o->GetResults(&s)) &&
+                     s == ABI::Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus_Allowed;
+        ps_wgc_wake();
+        return S_OK;
+      });
+  if (FAILED(op->put_Completed(done.Get()))) borderless = 0;
+  return 0;
+}
+
 // Every monitor's session (made again: the monitors changed). How many there are.
 extern "C" int ps_wgc_restart(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
   if (!ps_wgc_ready()) return 0;
+  if (!borderless_allowed()) return 0;
   EnumDisplayMonitors(NULL, NULL, mon_found, 0);
   return nmons;
 }
