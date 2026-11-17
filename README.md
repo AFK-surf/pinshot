@@ -19,7 +19,7 @@
 ## 结构
 
 - 一个常驻进程。冻屏遮罩是 mbui 的主窗口（平时隐藏）；每张贴图、设置都是同一进程里的 mbui 子窗口，打开不再启动新进程。
-- 按下热键的那一刻，原生层在单独线程里截屏（GDI BitBlt），同时界面把遮罩窗口铺到显示器大小（先隐藏着画好第一帧），截好后用 `mb_post` 通知界面；像素一直留在原生层的 DIB 里，不复制到 MoonBit。
+- 每个显示器常驻一个 Windows.Graphics.Capture 会话，只持有最新一帧（不逐帧复制）；按下热键时把这一帧拷到 staging 纹理（约 3 ms），用 `mb_post` 通知界面；会话还没收到过帧时退回 GDI BitBlt（单独线程）。像素一直留在原生层，不复制到 MoonBit。`PINSHOT_CAPTURE=gdi` 关掉常驻会话。
 - `patches/mbui-pinshot.patch`：让 mbui 直接用这块像素（或未压缩的 BMP）建纹理，跳过 WIC 转换和 mipmap。
 - 标注都按显示器像素记录，遮罩和导出用同一套节点绘制；导出用 mbui 的 `take_picture` 在 GPU 上按原始像素合成成 PNG。
 - 关闭截图后遮罩窗口缩到 16×16、清理 GPU 状态并 `IDXGIDevice3::Trim`，字形图集用 1024×1024（mbui 默认 4096×4096 要 64 MB 显存）。

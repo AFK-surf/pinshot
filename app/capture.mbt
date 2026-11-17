@@ -174,6 +174,7 @@ fn capture_taken() -> Unit {
     return
   }
   took_ms.val = info[5]
+  log("taken: " + text_of(ps_capture_info()))
   took_how.val = match text_of(ps_capture_info()).split(",").last() {
     Some(h) => h.to_owned()
     None => ""

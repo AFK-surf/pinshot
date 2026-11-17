@@ -98,15 +98,10 @@ typedef struct {
 } Shot;
 
 // (capture_wgc.cpp)
-int ps_wgc_ready(void);
-int ps_wgc_begin(HMONITOR mon, int w, int h, HWND hwnd, UINT msg);
-void *ps_wgc_take(uint8_t **bits, int *w, int *h, int *pitch);
+int ps_wgc_restart(void);
+void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch);
 void ps_wgc_release(void *taken);
-void ps_wgc_cancel(void);
-#define WM_PS_WGC (WM_APP + 44)
-#define PS_WGC_TIMER 8
 static HMONITOR cap_mon;
-static int cap_by_wgc;  // the capture under way is the system capture's
 
 static Shot cap;               // the picture being taken or taken
 static Shot cap_old[4];        // pictures let go, freed at the timer
@@ -182,50 +177,21 @@ static int cap_begin(void) {
   shot_free(&cap);
   windows_listed();
   cap_ok = 0;
-  // (GDI's: the system's capture (PINSHOT_CAPTURE=wgc) is not faster here, ~33 ms either way for 4K, and on a screen
-  // that does not change it is given no frame at all till something on it does, measured 2026-11-17)
-  const char *how = getenv("PINSHOT_CAPTURE");
-  if (tray_hwnd && how && !strcmp(how, "wgc") && ps_wgc_begin(cap_mon, cap_w, cap_h, tray_hwnd, WM_PS_WGC)) {
-    cap_by_wgc = 1;
-    InterlockedExchange(&cap_busy, 1);
-    // (its frame not come in 400 ms: GDI's instead)
-    SetTimer(tray_hwnd, PS_WGC_TIMER, 400, NULL);
+  // (the system's capture kept on: the monitor's last frame, there already; GDI's where it has had none yet)
+  uint8_t *bits = NULL;
+  int pitch = 0;
+  void *t = ps_wgc_take_now(cap_mon, cap_w, cap_h, &bits, &pitch);
+  if (t && tray_hwnd) {
+    cap.staging = t;
+    cap.bits = bits;
+    cap.w = cap_w, cap.h = cap_h, cap.pitch = pitch;
+    cap_ok = 1;
+    cap_ms = ps_ms() - cap_t0;
+    PostMessageW(tray_hwnd, WM_PS_TAKEN, 1, 0);
     return 1;
   }
+  if (t) ps_wgc_release(t);
   return gdi_begin();
-}
-
-// The system capture's frame come (the UI thread's): its pixels the picture taken.
-static void wgc_came(void) {
-  if (!cap_by_wgc) return;
-  KillTimer(tray_hwnd, PS_WGC_TIMER);
-  cap_by_wgc = 0;
-  uint8_t *bits = NULL;
-  int w = 0, h = 0, pitch = 0;
-  void *t = ps_wgc_take(&bits, &w, &h, &pitch);
-  if (!t || w != cap_w || h != cap_h) {
-    if (t) ps_wgc_release(t);
-    InterlockedExchange(&cap_busy, 0);
-    if (!gdi_begin()) PostMessageW(tray_hwnd, WM_PS_TAKEN, 0, 0);
-    return;
-  }
-  cap.staging = t;
-  cap.bits = bits;
-  cap.w = w, cap.h = h, cap.pitch = pitch;
-  cap_ok = 1;
-  cap_ms = ps_ms() - cap_t0;
-  InterlockedExchange(&cap_busy, 0);
-  PostMessageW(tray_hwnd, WM_PS_TAKEN, 1, 0);
-}
-
-// The system capture's frame not come in time: called off, GDI's instead.
-static void wgc_late(void) {
-  KillTimer(tray_hwnd, PS_WGC_TIMER);
-  if (!cap_by_wgc) return;
-  cap_by_wgc = 0;
-  ps_wgc_cancel();
-  InterlockedExchange(&cap_busy, 0);
-  if (!gdi_begin()) PostMessageW(tray_hwnd, WM_PS_TAKEN, 0, 0);
 }
 
 // GDI's taking begun: its section made, the work handed to its thread.
@@ -278,17 +244,20 @@ int32_t ps_capture_now(void) {
 }
 
 // What was taken: "x,y,w,h,dpi,ms,how" (the monitor in the screen's pixels, its DPI, how long the taking took, and
-// by what: "wgc start/frame/copy" or "gdi"); "" none.
+// by what: "wgc copy MS" or "gdi"); "" none.
 void ps_wgc_timing(double *out);
+void ps_wgc_state(char *out, int n);
 moonbit_bytes_t ps_capture_info(void) {
   if (!cap.bits || cap_busy) return moonbit_make_bytes(0, 0);
   char s[192];
   if (cap.staging) {
     double t[3];
     ps_wgc_timing(t);
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc %.1f/%.1f/%.1f", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms, t[0], t[1], t[2]);
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms, t[0]);
   } else {
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,gdi", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms);
+    char st[96];
+    ps_wgc_state(st, sizeof st);
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,gdi (%s)", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms, st);
   }
   return ps_text(s);
 }
@@ -548,14 +517,10 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PS_TRIM:
       gpu_trim_now();
       return 0;
-    case WM_PS_WGC:
-      wgc_came();
+    case WM_DISPLAYCHANGE:  // (the monitors changed: each one's capture made again)
+      ps_wgc_restart();
       return 0;
     case WM_TIMER:
-      if (wp == PS_WGC_TIMER) {
-        wgc_late();
-        return 0;
-      }
       if (wp == PS_FREE_TIMER) {
         KillTimer(h, PS_FREE_TIMER);
         cap_old_free();
@@ -620,6 +585,9 @@ int32_t ps_start(int32_t again) {
   ChangeWindowMessageFilterEx(tray_hwnd, taskbar_created, MSGFLT_ALLOW, NULL);
   tray_put();
   atexit(tray_gone);
+  // (each monitor's capture kept on from now: capture_wgc.cpp; PINSHOT_CAPTURE=gdi none, GDI's every time)
+  const char *how = getenv("PINSHOT_CAPTURE");
+  if (!(how && !strcmp(how, "gdi"))) ps_wgc_restart();
   return 1;
 }
 
@@ -815,7 +783,8 @@ moonbit_bytes_t ps_pointer(void) {
 // What the GPU was asked to let go of let go, between frames (the tray window's message: no frame is being drawn): the
 // renderer's context's state cleared (an overlay's last picture is still bound there: D3D frees a texture only as
 // nothing holds it, and a hidden window draws no frame that binds another) and flushed, the driver's pools of what was
-// let go trimmed (a 4K overlay's ~140 MB), and the working set given back. The renderer binds all it draws with each
+// let go trimmed (a 4K overlay's ~140 MB). The working set is kept (the user, 2026-11-17: given back, the next capture took ~8 ms more,
+// ~20 after a while idle, paging it in again). The renderer binds all it draws with each
 // frame, so nothing of it is lost.
 extern void *mb_render_context(void);
 extern void *mb_render_device(void);
@@ -831,7 +800,6 @@ static void gpu_trim_now(void) {
     IDXGIDevice3_Trim(xd);
     IDXGIDevice3_Release(xd);
   }
-  if (!getenv("PINSHOT_KEEP_WS")) SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
 void ps_gpu_flush(void) {
