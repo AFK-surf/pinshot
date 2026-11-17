@@ -1,6 +1,6 @@
 // PinShot: a screenshot taken and pinned, as PixPin does it, on mbui (still.fail's way: the UI and what it does in
 // MoonBit, written once; what is the system's a thin native side, platform_win.c). One run per person, kept in the
-// notification area: its shortcut (F1) or its icon freezes the screen into the overlay (window 0, made as the run starts
+// notification area: its shortcut (Ctrl+Alt+A, as PixPin is set here) or its icon freezes the screen into the overlay (window 0, made as the run starts
 // and kept hidden between captures), and each pin is a window of the same run beside it.
 //
 //   pinshot.exe            the run (started again: the one running takes the screen, as its shortcut)
@@ -116,7 +116,9 @@ fn bench() -> Unit {
     ps_capture_now() |> ignore
     let b = ps_capture_take()
     times.push(ps_now_ms() - t0)
+    println("bench: \{text_of(ps_capture_info())}")
     ignore(b)
+    ps_capture_release()
   }
   let t1 = ps_now_ms()
   let mut n = 0

@@ -673,6 +673,6 @@ fn hex6(c : Int) -> String {
 fn said_shown() -> Unit {
   let t = ps_now_ms()
   log(
-    "capture \{mon.val.w}x\{mon.val.h}@\{num(mon_scale.untracked())}: taken \{num(took_ms.val)} ms, handed over +\{num(taken_at.val - asked_at.val)}, seen +\{num(t - asked_at.val)} ms",
+    "capture \{mon.val.w}x\{mon.val.h}@\{num(mon_scale.untracked())}: taken \{num(took_ms.val)} ms (\{took_how.val}), handed over +\{num(taken_at.val - asked_at.val)}, seen +\{num(t - asked_at.val)} ms",
   )
 }

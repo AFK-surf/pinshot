@@ -173,6 +173,10 @@ fn capture_taken() -> Unit {
     return
   }
   took_ms.val = info[5]
+  took_how.val = match text_of(ps_capture_info()).split(",").last() {
+    Some(h) => h.to_owned()
+    None => ""
+  }
   taken_at.val = ps_now_ms()
   windows_on.set(parse_windows(text_of(ps_windows())))
   log("windows: " + text_of(ps_windows()).replace_all(old="\n", new=" | "))
@@ -181,6 +185,10 @@ fn capture_taken() -> Unit {
   @ui.add_image(key, bytes)
   frozen_key.set(key)
 }
+
+///|
+/// How the screen was taken ("gdi", "wgc start/frame/copy" ms).
+let took_how : Ref[String] = Ref("")
 
 ///|
 /// When the picture came over to the app.

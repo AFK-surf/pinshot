@@ -17,23 +17,35 @@ struct Settings {
 }
 
 ///|
-/// The shortcuts offered: their words, and Windows' modifiers (Alt 1, Ctrl 2, Shift 4) and key.
+/// The shortcuts offered: their words, and Windows' modifiers (Alt 1, Ctrl 2, Shift 4) and key. The first of each is
+/// what PixPin is set to on the person's machine (the user, 2026-11-17: 「快捷键对齐一下」): Ctrl+Alt+A takes the
+/// screen, Ctrl+2 pins the clipboard's picture; the others are PixPin's and Snipaste's defaults.
 let key_choices : Array[(String, Int, Int)] = [
+  ("Ctrl+Alt+A", 3, 0x41),
+  ("Ctrl+1", 2, 0x31),
   ("F1", 0, 0x70),
   ("Ctrl+Shift+A", 6, 0x41),
-  ("Ctrl+Alt+A", 3, 0x41),
-  ("Alt+A", 1, 0x41),
   ("PrtSc", 0, 0x2C),
-  ("Ctrl+F1", 2, 0x70),
 ]
 
 ///|
 let pin_choices : Array[(String, Int, Int)] = [
+  ("Ctrl+2", 2, 0x32),
   ("F3", 0, 0x72),
-  ("Ctrl+Shift+V", 6, 0x56),
-  ("Ctrl+F3", 2, 0x72),
+  ("F2", 0, 0x71),
   ("不用快捷键", 0, 0),
 ]
+
+///|
+/// Which of `choices` is named `name` (kept by its name: the list's order may change), else the first.
+fn choice_named(choices : Array[(String, Int, Int)], name : String) -> Int {
+  for i, c in choices {
+    if c.0 == name {
+      return i
+    }
+  }
+  0
+}
 
 ///|
 fn default_settings() -> Settings {
@@ -79,7 +91,7 @@ fn load_settings() -> Unit {
   let d = default_settings()
   let s = match json_of(text_of(ps_read_file(cstr(settings_path())))) {
     Some(Json::Object(o)) => {
-      let int = fn(name : String, dflt : Int) {
+      let num = fn(name : String, dflt : Int) {
         match o.get(name) {
           Some(Number(v, ..)) => v.to_int()
           _ => dflt
@@ -99,10 +111,10 @@ fn load_settings() -> Unit {
         }
       }
       {
-        capture_key: clampi(int("capture_key", d.capture_key), 0, key_choices.length() - 1),
-        pin_key: clampi(int("pin_key", d.pin_key), 0, pin_choices.length() - 1),
+        capture_key: choice_named(key_choices, text("capture_keys", key_choices[0].0)),
+        pin_key: choice_named(pin_choices, text("pin_keys", pin_choices[0].0)),
         pin_top: flag("pin_top", d.pin_top),
-        pin_alpha: clampi(int("pin_alpha", d.pin_alpha), 25, 255),
+        pin_alpha: clampi(num("pin_alpha", d.pin_alpha), 25, 255),
         ask_where: flag("ask_where", d.ask_where),
         save_dir: text("save_dir", d.save_dir),
         keep_copies: flag("keep_copies", d.keep_copies),
@@ -118,8 +130,8 @@ fn load_settings() -> Unit {
 fn save_settings() -> Unit {
   let s = settings.untracked()
   let o : Map[String, Json] = Map([])
-  o["capture_key"] = Json::number(s.capture_key.to_double())
-  o["pin_key"] = Json::number(s.pin_key.to_double())
+  o["capture_keys"] = Json::string(key_choices[s.capture_key].0)
+  o["pin_keys"] = Json::string(pin_choices[s.pin_key].0)
   o["pin_top"] = Json::boolean(s.pin_top)
   o["pin_alpha"] = Json::number(s.pin_alpha.to_double())
   o["ask_where"] = Json::boolean(s.ask_where)

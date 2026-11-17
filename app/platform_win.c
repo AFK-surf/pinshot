@@ -91,10 +91,22 @@ double ps_now_ms(void) { return ps_ms(); }
 #define PS_FREE_TIMER 7
 
 typedef struct {
-  HBITMAP dib;
+  HBITMAP dib;    // GDI's section, or
+  void *staging;  // the system capture's texture (capture_wgc.cpp), mapped
   uint8_t *bits;
-  int w, h;
+  int w, h, pitch;
 } Shot;
+
+// (capture_wgc.cpp)
+int ps_wgc_ready(void);
+int ps_wgc_begin(HMONITOR mon, int w, int h, HWND hwnd, UINT msg);
+void *ps_wgc_take(uint8_t **bits, int *w, int *h, int *pitch);
+void ps_wgc_release(void *taken);
+void ps_wgc_cancel(void);
+#define WM_PS_WGC (WM_APP + 44)
+#define PS_WGC_TIMER 8
+static HMONITOR cap_mon;
+static int cap_by_wgc;  // the capture under way is the system capture's
 
 static Shot cap;               // the picture being taken or taken
 static Shot cap_old[4];        // pictures let go, freed at the timer
@@ -109,6 +121,7 @@ static void windows_listed(void);
 
 static void shot_free(Shot *s) {
   if (s->dib) DeleteObject(s->dib);
+  if (s->staging) ps_wgc_release(s->staging);
   memset(s, 0, sizeof *s);
 }
 
@@ -132,6 +145,7 @@ static int monitor_under_pointer(void) {
   }
   if (dpi_of) dpi_of(mon, 0, &dx, &dy);
   cap_x = mi.rcMonitor.left, cap_y = mi.rcMonitor.top, cap_w = w, cap_h = h, cap_dpi = (int)dx;
+  cap_mon = mon;
   return 1;
 }
 
@@ -158,12 +172,64 @@ static DWORD WINAPI cap_work(void *arg) {
 
 // A taking begun (the UI thread's): the monitor found, its section made, the windows on it listed, the work handed
 // to its thread. 0 where one is under way already or there is no monitor.
+static int gdi_begin(void);
+
 static int cap_begin(void) {
   if (cap_busy) return 0;
   cap_t0 = ps_ms();
   if (!monitor_under_pointer()) return 0;
   // (one not taken by the app, or kept: gone)
   shot_free(&cap);
+  windows_listed();
+  cap_ok = 0;
+  // (GDI's: the system's capture (PINSHOT_CAPTURE=wgc) is not faster here, ~33 ms either way for 4K, and on a screen
+  // that does not change it is given no frame at all till something on it does, measured 2026-11-17)
+  const char *how = getenv("PINSHOT_CAPTURE");
+  if (tray_hwnd && how && !strcmp(how, "wgc") && ps_wgc_begin(cap_mon, cap_w, cap_h, tray_hwnd, WM_PS_WGC)) {
+    cap_by_wgc = 1;
+    InterlockedExchange(&cap_busy, 1);
+    // (its frame not come in 400 ms: GDI's instead)
+    SetTimer(tray_hwnd, PS_WGC_TIMER, 400, NULL);
+    return 1;
+  }
+  return gdi_begin();
+}
+
+// The system capture's frame come (the UI thread's): its pixels the picture taken.
+static void wgc_came(void) {
+  if (!cap_by_wgc) return;
+  KillTimer(tray_hwnd, PS_WGC_TIMER);
+  cap_by_wgc = 0;
+  uint8_t *bits = NULL;
+  int w = 0, h = 0, pitch = 0;
+  void *t = ps_wgc_take(&bits, &w, &h, &pitch);
+  if (!t || w != cap_w || h != cap_h) {
+    if (t) ps_wgc_release(t);
+    InterlockedExchange(&cap_busy, 0);
+    if (!gdi_begin()) PostMessageW(tray_hwnd, WM_PS_TAKEN, 0, 0);
+    return;
+  }
+  cap.staging = t;
+  cap.bits = bits;
+  cap.w = w, cap.h = h, cap.pitch = pitch;
+  cap_ok = 1;
+  cap_ms = ps_ms() - cap_t0;
+  InterlockedExchange(&cap_busy, 0);
+  PostMessageW(tray_hwnd, WM_PS_TAKEN, 1, 0);
+}
+
+// The system capture's frame not come in time: called off, GDI's instead.
+static void wgc_late(void) {
+  KillTimer(tray_hwnd, PS_WGC_TIMER);
+  if (!cap_by_wgc) return;
+  cap_by_wgc = 0;
+  ps_wgc_cancel();
+  InterlockedExchange(&cap_busy, 0);
+  if (!gdi_begin()) PostMessageW(tray_hwnd, WM_PS_TAKEN, 0, 0);
+}
+
+// GDI's taking begun: its section made, the work handed to its thread.
+static int gdi_begin(void) {
   BITMAPINFO bi;
   memset(&bi, 0, sizeof bi);
   bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -179,9 +245,7 @@ static int cap_begin(void) {
     return 0;
   }
   cap.bits = (uint8_t *)bits;
-  cap.w = cap_w, cap.h = cap_h;
-  windows_listed();
-  cap_ok = 0;
+  cap.w = cap_w, cap.h = cap_h, cap.pitch = cap_w * 4;
   InterlockedExchange(&cap_busy, 1);
   HANDLE t = CreateThread(NULL, 0, cap_work, NULL, 0, NULL);
   if (!t) {
@@ -194,21 +258,38 @@ static int cap_begin(void) {
 }
 
 // The screen taken now, waited for here (a bench): 1 when taken.
+static void tray_window_made(void);
+
 int32_t ps_capture_now(void) {
+  tray_window_made();
   if (!cap_begin()) return 0;
-  while (cap_busy) Sleep(1);
-  // (its WM_PS_TAKEN dropped: it was waited for)
+  // (what the capture posts the tray window handled here; its WM_PS_TAKEN dropped: it was waited for)
   MSG m;
-  while (tray_hwnd && PeekMessageW(&m, tray_hwnd, WM_PS_TAKEN, WM_PS_TAKEN, PM_REMOVE)) {
+  while (cap_busy) {
+    if (PeekMessageW(&m, tray_hwnd, 0, 0, PM_REMOVE)) {
+      if (m.message != WM_PS_TAKEN) DispatchMessageW(&m);
+    } else {
+      MsgWaitForMultipleObjects(0, NULL, FALSE, 1, QS_ALLINPUT);
+    }
+  }
+  while (PeekMessageW(&m, tray_hwnd, WM_PS_TAKEN, WM_PS_TAKEN, PM_REMOVE)) {
   }
   return cap_ok;
 }
 
-// What was taken: "x,y,w,h,dpi,ms" (the monitor in the screen's pixels, its DPI, how long the taking took); "" none.
+// What was taken: "x,y,w,h,dpi,ms,how" (the monitor in the screen's pixels, its DPI, how long the taking took, and
+// by what: "wgc start/frame/copy" or "gdi"); "" none.
+void ps_wgc_timing(double *out);
 moonbit_bytes_t ps_capture_info(void) {
   if (!cap.bits || cap_busy) return moonbit_make_bytes(0, 0);
-  char s[128];
-  snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms);
+  char s[192];
+  if (cap.staging) {
+    double t[3];
+    ps_wgc_timing(t);
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc %.1f/%.1f/%.1f", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms, t[0], t[1], t[2]);
+  } else {
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,gdi", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms);
+  }
   return ps_text(s);
 }
 
@@ -218,7 +299,7 @@ moonbit_bytes_t ps_capture_take(void) {
   if (!cap.bits || cap_busy || !cap_ok) return moonbit_make_bytes(0, 0);
   uint8_t d[28];
   uint64_t at = (uint64_t)(uintptr_t)cap.bits;
-  int32_t w = cap.w, h = cap.h, pitch = cap.w * 4;
+  int32_t w = cap.w, h = cap.h, pitch = cap.pitch;
   memcpy(d, "MBRAWPTR", 8);
   memcpy(d + 8, &at, 8);
   memcpy(d + 16, &w, 4);
@@ -247,7 +328,7 @@ static void cap_old_free(void) {
 // The colour of the pixel at (x, y) of the picture taken: 0xRRGGBB, -1 where there is none.
 int32_t ps_pixel(int32_t x, int32_t y) {
   if (!cap.bits || cap_busy || x < 0 || y < 0 || x >= cap.w || y >= cap.h) return -1;
-  const uint8_t *p = cap.bits + ((size_t)y * cap.w + x) * 4;
+  const uint8_t *p = cap.bits + (size_t)y * cap.pitch + (size_t)x * 4;
   return (p[2] << 16) | (p[1] << 8) | p[0];
 }
 
@@ -261,7 +342,7 @@ int32_t ps_mean(int32_t x, int32_t y, int32_t cell) {
   int step = cell >= 8 ? 2 : 1;
   unsigned r = 0, g = 0, b = 0, n = 0;
   for (int yy = y0; yy < y1; yy += step) {
-    const uint8_t *p = cap.bits + ((size_t)yy * cap.w + x0) * 4;
+    const uint8_t *p = cap.bits + (size_t)yy * cap.pitch + (size_t)x0 * 4;
     for (int xx = x0; xx < x1; xx += step, p += 4 * step) {
       b += p[0];
       g += p[1];
@@ -467,7 +548,14 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PS_TRIM:
       gpu_trim_now();
       return 0;
+    case WM_PS_WGC:
+      wgc_came();
+      return 0;
     case WM_TIMER:
+      if (wp == PS_WGC_TIMER) {
+        wgc_late();
+        return 0;
+      }
       if (wp == PS_FREE_TIMER) {
         KillTimer(h, PS_FREE_TIMER);
         cap_old_free();
@@ -496,6 +584,18 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 // Whether the app has a capture open: no other is taken meanwhile (its shortcut pressed again does nothing).
 void ps_capture_open(int32_t on) { capture_open = on != 0; }
 
+// The tray window (what the icon, the shortcuts and the capture tell): made once.
+static void tray_window_made(void) {
+  if (tray_hwnd) return;
+  WNDCLASSEXW wc = {sizeof wc};
+  wc.lpfnWndProc = tray_proc;
+  wc.hInstance = GetModuleHandleW(NULL);
+  wc.lpszClassName = PS_CLASS;
+  RegisterClassExW(&wc);
+  // (a top-level window never shown, not one of HWND_MESSAGE: Explorer's TaskbarCreated is broadcast to top-level ones)
+  tray_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, PS_CLASS, L"PinShot", WS_POPUP, 0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
+}
+
 // A capture asked for by the app (the icon's menu): as the shortcut.
 void ps_capture_ask(void) { capture_asked("menu"); }
 
@@ -519,13 +619,7 @@ int32_t ps_start(int32_t again) {
     }
     return 0;
   }
-  WNDCLASSEXW wc = {sizeof wc};
-  wc.lpfnWndProc = tray_proc;
-  wc.hInstance = GetModuleHandleW(NULL);
-  wc.lpszClassName = PS_CLASS;
-  RegisterClassExW(&wc);
-  // (a top-level window never shown, not one of HWND_MESSAGE: Explorer's TaskbarCreated is broadcast to top-level ones)
-  tray_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, PS_CLASS, L"PinShot", WS_POPUP, 0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
+  tray_window_made();
   taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
   ChangeWindowMessageFilterEx(tray_hwnd, taskbar_created, MSGFLT_ALLOW, NULL);
   tray_put();

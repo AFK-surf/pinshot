@@ -51,10 +51,10 @@ let tool : @signals.Signal[Tool] = @signals.signal(Move)
 
 ///|
 /// The colours a mark is drawn in, the first red.
-let colors : Array[Int64] = [0xF5383BFFL, 0xFFB020FFL, 0x2ECC71FFL, 0x2F80EDFFL, 0xFFFFFFFFL, 0x111214FFL]
+let colors : Array[Int64] = [0xD84A2FFFL, 0xFFB020FFL, 0x2ECC71FFL, 0x2F80EDFFL, 0xFFFFFFFFL, 0x111214FFL]
 
 ///|
-let color_now : @signals.Signal[Int64] = @signals.signal(0xF5383BFFL)
+let color_now : @signals.Signal[Int64] = @signals.signal(0xD84A2FFFL)
 
 ///|
 let size_now : @signals.Signal[Int] = @signals.signal(1)
