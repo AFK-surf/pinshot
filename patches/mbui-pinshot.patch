@@ -1,7 +1,8 @@
-PinShot's patch to mbui's Windows host (libs/mbui/src/host/win_image.cpp), applied by scripts/fetch-stillfail.sh:
-a picture handed over that is an uncompressed top-down 32-bit BMP, or pixels named by their address
-(MBRAWPTR), becomes a texture as it is: no WIC conversion, no mips, no copy. A 4K screen frozen is a texture in a
-few ms (WIC's conversion and the mips took ~40 ms and 2 x 33 MB).
+PinShot's patches to mbui's Windows host, applied by scripts/fetch-stillfail.sh:
+- win_image.cpp: a picture handed over that is an uncompressed top-down 32-bit BMP, or pixels named by their address
+  (MBRAWPTR), becomes a texture as it is: no WIC conversion, no mips, no copy (a 4K screen frozen: a few ms, not ~40).
+- win_render.cpp: the glyphs' atlas 1024 x 1024 (its size and the shader's divisor together): 4 MB of the GPU's, not
+  4096's 64 MB held from the first word drawn.
 
 diff --git a/libs/mbui/src/host/win_image.cpp b/libs/mbui/src/host/win_image.cpp
 index c37f4f6..b8b733b 100644
@@ -93,3 +94,26 @@ index c37f4f6..b8b733b 100644
      } else if (j->data) {
        if (SUCCEEDED(wic->CreateStream(&stream)) &&
            SUCCEEDED(stream->InitializeFromMemory(j->data, (DWORD)j->len)))
+diff --git a/libs/mbui/src/host/win_render.cpp b/libs/mbui/src/host/win_render.cpp
+index 5fd6949..bb8135c 100644
+--- a/libs/mbui/src/host/win_render.cpp
++++ b/libs/mbui/src/host/win_render.cpp
+@@ -35,7 +35,8 @@
+ #pragma comment(lib, "windowscodecs.lib")
+ #pragma comment(lib, "ole32.lib")
+ 
+-int mb_atlas_size = 4096;
++// (PinShot: 1024, not 4096: what it writes fits, and 4096 is 64 MB of the GPU's held from the first word drawn)
++int mb_atlas_size = 1024;
+ 
+ static ID3D11Device *dev;
+ static ID3D11DeviceContext *ctx;
+@@ -305,7 +306,7 @@ static const char *shader_src =
+     "    float2 r0 = I.rect.xy * scale, r0i = floor(r0 + 0.5);\n"
+     "    bool exact = kind == 1 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05 && I.prm.x == 0.0;\n"
+     "    float2 tex = exact ? floor(p * scale - r0i) + 0.5 : (p - I.rect.xy) / I.rect.zw * I.c2.zw;\n"
+-    "    float2 uv = clamp(I.c2.xy + tex, I.c2.xy + 0.5, I.c2.xy + I.c2.zw - 0.5) / 4096.0;\n"
++    "    float2 uv = clamp(I.c2.xy + tex, I.c2.xy + 0.5, I.c2.xy + I.c2.zw - 0.5) / 1024.0;\n"
+     "    float4 t = atlas.SampleLevel(samp, uv, 0);\n"
+     "    if (kind == 1) {\n"
+     "      // (a mask drawn in gray has its three the same as its alpha: as before; a glyph drawn larger or smaller than\n"

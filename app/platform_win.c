@@ -83,7 +83,7 @@ double ps_now_ms(void) { return ps_ms(); }
 // on a thread of its own (GDI's BitBlt of the screen: what DWM composes, SDR; ~45-70 ms for 4K with HDR on), so the
 // overlay is put up at the monitor's size meanwhile: the app is told {"do":"prepare",...} as the shortcut is pressed
 // and {"do":"capture",...} once the picture is there. The pixels stay here, in the section, never copied: the app is
-// handed where they are (ps_capture_take: mbui makes the texture from there, patches/mbui-raw-bmp.patch), reads them
+// handed where they are (ps_capture_take: mbui makes the texture from there, patches/mbui-pinshot.patch), reads them
 // here (ps_pixel, ps_mean), and lets them go as the capture closes (ps_capture_release), the section freed a moment
 // later (a decode that might still read it done by then).
 
@@ -602,13 +602,8 @@ void ps_capture_ask(void) { capture_asked("menu"); }
 
 // The run begun: 1 it is the one run (its icon put, its window made), 0 another runs already (told `again`: 0 take
 // the screen, as its shortcut does; 1 open the settings; 2 quit): this one ends.
-extern int mb_atlas_size;
-
 int32_t ps_start(int32_t again) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-  // (the glyphs' atlas as small as what PinShot writes needs: a toolbar's, a size's, the settings' words; mbui's own
-  // 4096 x 4096 is 64 MB of the GPU's, held from the first word drawn)
-  mb_atlas_size = 1024;
   one_run = CreateMutexW(NULL, TRUE, L"Local\\PinShot.OneRun");
   if (one_run && GetLastError() == ERROR_ALREADY_EXISTS) {
     HWND other = FindWindowW(PS_CLASS, NULL);
