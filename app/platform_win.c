@@ -253,7 +253,8 @@ moonbit_bytes_t ps_capture_info(void) {
   if (cap.staging) {
     double t[3];
     ps_wgc_timing(t);
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms, t[0]);
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f; hdr white %.2f%s", cap_x, cap_y, cap_w, cap_h, cap_dpi,
+             cap_ms, t[0], t[1], t[2] > 0 ? " (copied first)" : "");
   } else {
     char st[96];
     ps_wgc_state(st, sizeof st);

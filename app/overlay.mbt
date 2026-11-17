@@ -75,7 +75,7 @@ fn side_cursor(side : (Int, Int)) -> @view.Cursor {
 fn overlay_cursor() -> @view.Cursor? {
   match hand.get() {
     Drawing(_, _) | Marking => return Some(Crosshair)
-    Moving(_, _, _) => return Some(Grabbing)
+    Moving(_, _, _) | Dragging(_, _, _, _, _) => return Some(Grabbing)
     Sizing(hx, hy, _) => return Some(side_cursor((hx, hy)))
     Free => ()
   }
@@ -84,7 +84,12 @@ fn overlay_cursor() -> @view.Cursor? {
     Some(r) => {
       let (x, y) = pointer_px.get()
       match handle_at(r, x, y) {
-        Some((0, 0)) => if tool.get() == Move { Some(Grab) } else { Some(Crosshair) }
+        Some((0, 0)) =>
+          if tool.get() == Move || mark_at(x, y, false) is Some(_) {
+            Some(Grab)
+          } else {
+            Some(Crosshair)
+          }
         Some(side) => Some(side_cursor(side))
         None => Some(Arrow)
       }
@@ -214,17 +219,6 @@ fn overlay_window(root : @view.View) -> Unit {
       }
     })
     .on_drag(fn(d) { stage_drag(d) })
-    .on_double_press(fn() {
-      match sel.untracked() {
-        Some(r) => {
-          let (x, y) = pointer_px.untracked()
-          if r.contains(x, y) && hand.untracked() == Free {
-            copy_out()
-          }
-        }
-        None => ()
-      }
-    })
     .on_menu(fn(_) { step_back() })
     |> ignore
     // the picture as it was taken, at its own pixels
@@ -408,10 +402,30 @@ fn stage_drag(d : @view.Drag) -> Unit {
       press_moved(x, y)
     }
     Up => press_up(x, y)
-    Off => {
-      draft.set(None)
-      hand.set(Free)
-    }
+    Off => drop_held()
+  }
+}
+
+///|
+/// What the hand holds let go of as it was: a mark being drawn called off, one dragged put back where it was.
+fn drop_held() -> Unit {
+  @signals.start_batch()
+  if hand.untracked() is Dragging(_, _, _, before, _) {
+    marks.set(before)
+  }
+  draft.set(None)
+  hand.set(Free)
+  @signals.end_batch()
+}
+
+///|
+/// Mark `m` dragged by (`dx`, `dy`) pixels: a mosaic by whole squares (it keeps to their grid).
+fn dragged(m : Mark, dx : Double, dy : Double) -> Mark {
+  if m.tool == Mosaic {
+    let cell = dmax(2.0, (mosaic_pt(m.size) * mon_scale.untracked()).round())
+    moved_by(m, (dx / cell).round() * cell, (dy / cell).round() * cell)
+  } else {
+    moved_by(m, dx, dy)
   }
 }
 
@@ -429,6 +443,19 @@ fn press_down(x : Double, y : Double) -> Unit {
     Some(r) =>
       match handle_at(r, x, y) {
         Some((0, 0)) =>
+          match mark_at(x, y, tool.untracked() == Move) {
+            // (on a mark: it is dragged, whatever tool is held)
+            Some(i) => {
+              let before = marks.untracked()
+              let rest = before.copy()
+              let m = rest.remove(i)
+              @signals.start_batch()
+              marks.set(rest)
+              draft.set(Some(m))
+              hand.set(Dragging(x, y, m, before, i))
+              @signals.end_batch()
+            }
+            None =>
           match tool.untracked() {
             Move => hand.set(Moving(x, y, r))
             Number | Words => hand.set(Marking)
@@ -442,6 +469,7 @@ fn press_down(x : Double, y : Double) -> Unit {
               }
               draft.set(Some(new_mark(t, [start, start])))
             }
+          }
           }
         Some((hx, hy)) => hand.set(Sizing(hx, hy, r))
         // (outside it: a part dragged out anew, where nothing is marked yet)
@@ -478,6 +506,7 @@ fn press_moved(x : Double, y : Double) -> Unit {
         _ => ()
       }
     }
+    Dragging(x0, y0, m, _, _) => if moved { draft.set(Some(dragged(m, x - x0, y - y0))) }
     Marking =>
       match draft.untracked() {
         Some(m) => {
@@ -532,8 +561,43 @@ fn clamp_to_sel(x : Double, y : Double) -> (Double, Double) {
 }
 
 ///|
+/// When and where (pixels) the last click was let go (a second soon after and near it: a double click).
+let last_click : Ref[(Double, Double, Double)] = Ref((0.0, 0.0, 0.0))
+
+///|
+/// Whether the click let go at (x, y) is the second of two: as soon after the first as Windows' double click (500 ms)
+/// and within 4 points of it.
+fn second_click(x : Double, y : Double) -> Bool {
+  let t = ps_now_ms()
+  let (lt, lx, ly) = last_click.val
+  let reach = 4.0 * mon_scale.untracked()
+  if t - lt <= 500.0 && (x - lx).abs() <= reach && (y - ly).abs() <= reach {
+    last_click.val = (0.0, 0.0, 0.0)
+    true
+  } else {
+    last_click.val = (t, x, y)
+    false
+  }
+}
+
+///|
 fn press_up(x : Double, y : Double) -> Unit {
   let (_, _, moved) = down_at.val
+  // (a double click in the part copies it, whatever tool is held, but where a click puts a number or words down: as
+  // PixPin's; the first of the two picks the window under it where nothing is picked yet)
+  if moved {
+    last_click.val = (0.0, 0.0, 0.0)
+  } else if second_click(x, y) {
+    let t = tool.untracked()
+    match sel.untracked() {
+      Some(r) if r.contains(x, y) && t != Number && t != Words && words_open.untracked() is None => {
+        drop_held()
+        copy_out()
+        return
+      }
+      _ => ()
+    }
+  }
   match hand.untracked() {
     Drawing(_, _) =>
       if !moved {
@@ -545,6 +609,24 @@ fn press_up(x : Double, y : Double) -> Unit {
           _ => ()
         }
       }
+    Dragging(x0, y0, m, before, i) => {
+      @signals.start_batch()
+      draft.set(None)
+      if moved {
+        // (put back where it was among the marks, moved: one step to undo)
+        done_before.val.push(before)
+        undone.val = []
+        let next = before.copy()
+        mark_ids.val += 1
+        next[i] = { ..dragged(m, x - x0, y - y0), id: mark_ids.val }
+        marks.set(next)
+      } else {
+        marks.set(before)
+      }
+      hand.set(Free)
+      @signals.end_batch()
+      return
+    }
     Marking =>
       match tool.untracked() {
         Number => add_mark(new_mark(Number, [(x, y)]))
@@ -572,8 +654,7 @@ fn step_back() -> Unit {
   if words_open.untracked() is Some(_) {
     words_open.set(None)
   } else if draft.untracked() is Some(_) {
-    draft.set(None)
-    hand.set(Free)
+    drop_held()
   } else if sel.untracked() is Some(_) {
     @signals.start_batch()
     sel.set(None)

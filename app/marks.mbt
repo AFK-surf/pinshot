@@ -412,3 +412,116 @@ fn capsule_path(a : (Double, Double), b : (Double, Double), w : Double) -> Strin
   let rr = num(r)
   "M\{num(ax + nx)} \{num(ay + ny)}L\{num(bx + nx)} \{num(by + ny)}A\{rr} \{rr} 0 0 0 \{num(bx - nx)} \{num(by - ny)}L\{num(ax - nx)} \{num(ay - ny)}A\{rr} \{rr} 0 0 0 \{num(ax + nx)} \{num(ay + ny)}Z"
 }
+
+// ---- moved ----
+
+///|
+/// How far (pixels) the point (`px`, `py`) is from the segment `a`-`b`.
+fn to_segment(px : Double, py : Double, a : (Double, Double), b : (Double, Double)) -> Double {
+  let (ax, ay) = a
+  let (bx, by) = b
+  let dx = bx - ax
+  let dy = by - ay
+  let len2 = dx * dx + dy * dy
+  let t = if len2 < 0.0001 { 0.0 } else { clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0.0, 1.0) }
+  let qx = ax + dx * t - px
+  let qy = ay + dy * t - py
+  (qx * qx + qy * qy).sqrt()
+}
+
+///|
+/// Whether mark `m` is under the point (`x`, `y`) (pixels), `k` pixels a point: on a line, an arrow, a pen's line or
+/// a box's or an oval's edge (within a few points of it: inside a box another mark is drawn), on a number or words;
+/// in a mosaic only where `inside` (the move tool held: no mark is drawn then).
+fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool {
+  let reach = line_pt(m.size) * k / 2.0 + 5.0 * k
+  match m.tool {
+    Line | Arrow => to_segment(x, y, m.pts[0], m.pts[m.pts.length() - 1]) <= reach
+    Pen => {
+      if m.pts.length() == 1 {
+        return to_segment(x, y, m.pts[0], m.pts[0]) <= reach
+      }
+      for i in 1..<m.pts.length() {
+        if to_segment(x, y, m.pts[i - 1], m.pts[i]) <= reach {
+          return true
+        }
+      }
+      false
+    }
+    Box => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      let (a, b, c, d) = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+      to_segment(x, y, a, b) <= reach ||
+      to_segment(x, y, b, c) <= reach ||
+      to_segment(x, y, c, d) <= reach ||
+      to_segment(x, y, d, a) <= reach
+    }
+    Oval => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      let rx = dmax((x1 - x0).abs() / 2.0, 0.5)
+      let ry = dmax((y1 - y0).abs() / 2.0, 0.5)
+      let dx = (x - (x0 + x1) / 2.0) / rx
+      let dy = (y - (y0 + y1) / 2.0) / ry
+      // (how far off its edge, near enough: along the nearer radius)
+      ((dx * dx + dy * dy).sqrt() - 1.0).abs() * dmin(rx, ry) <= reach
+    }
+    Mosaic => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      inside && x >= dmin(x0, x1) && x <= dmax(x0, x1) && y >= dmin(y0, y1) && y <= dmax(y0, y1)
+    }
+    Number => {
+      let (cx, cy) = m.pts[0]
+      let r = number_pt(m.size) * k / 2.0 + 2.0 * k
+      (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r
+    }
+    Words => {
+      let (wx, wy) = m.pts[0]
+      let size = words_pt(m.size) * k
+      // (as wide as its letters about are: a CJK one its size, another a little over half)
+      let mut wide = 0.0
+      for c in m.words {
+        wide += if c.to_int() >= 0x2E80 { size } else { size * 0.6 }
+      }
+      x >= wx - 3.0 * k && x <= wx + wide + 6.0 * k && y >= wy - 3.0 * k && y <= wy + size * 1.3 + 3.0 * k
+    }
+    Move => false
+  }
+}
+
+///|
+/// Which of the marks is under the point (pixels), the one drawn last first; None none. (Read as a signal: what is
+/// under the pointer changes as marks are.)
+fn mark_at(x : Double, y : Double, inside : Bool) -> Int? {
+  let k = mon_scale.untracked()
+  let ms = marks.get()
+  for i = ms.length() - 1; i >= 0; i = i - 1 {
+    if mark_hit(ms[i], x, y, k, inside) {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
+/// Mark `m` moved by (`dx`, `dy`) pixels.
+fn moved_by(m : Mark, dx : Double, dy : Double) -> Mark {
+  { ..m, pts: m.pts.map(fn(p) { (p.0 + dx, p.1 + dy) }) }
+}
+
+///|
+test "mark hit" {
+  let line = { id: 1, tool: Line, pts: [(0.0, 0.0), (100.0, 0.0)], color: 0L, size: 1, n: 0, words: "" }
+  assert_true(mark_hit(line, 50.0, 4.0, 1.0, false))
+  assert_false(mark_hit(line, 50.0, 30.0, 1.0, false))
+  let box = { ..line, tool: Box, pts: [(0.0, 0.0), (100.0, 100.0)] }
+  assert_true(mark_hit(box, 100.0, 50.0, 1.0, false))
+  assert_false(mark_hit(box, 50.0, 50.0, 1.0, true))
+  let oval = { ..line, tool: Oval, pts: [(0.0, 0.0), (100.0, 50.0)] }
+  assert_true(mark_hit(oval, 50.0, 1.0, 1.0, false))
+  assert_false(mark_hit(oval, 50.0, 25.0, 1.0, false))
+  let moved = moved_by(line, 10.0, 5.0)
+  assert_eq(moved.pts[1], (110.0, 5.0))
+}

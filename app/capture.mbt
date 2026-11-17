@@ -58,6 +58,9 @@ enum Hand {
   Sizing(Int, Int, Rect)
   /// a mark being drawn
   Marking
+  /// a mark dragged from where it went down: the mark as it was, the marks as they were (it out of them while it is
+  /// dragged, drawn as the draft), where it was among them
+  Dragging(Double, Double, Mark, Array[Mark], Int)
 }
 
 ///|
@@ -174,7 +177,6 @@ fn capture_taken() -> Unit {
     return
   }
   took_ms.val = info[5]
-  log("taken: " + text_of(ps_capture_info()))
   took_how.val = match text_of(ps_capture_info()).split(",").last() {
     Some(h) => h.to_owned()
     None => ""
