@@ -164,6 +164,10 @@ fn apply_keys() -> Unit {
   capture_key_ok.set(ps_hotkey(1, cm, cv) == 1)
   pin_key_ok.set(ps_hotkey(2, pm, pv) == 1)
   log("keys: capture \{cw} \{if capture_key_ok.untracked() { "ok" } else { "taken by another program" }}, pin \{pw} \{if pin_key_ok.untracked() { "ok" } else { "taken by another program" }}")
+  // (a shortcut another program holds said once, as it is found: PixPin started with Windows holds Ctrl+Alt+A)
+  if !capture_key_ok.untracked() {
+    ps_tray_note(cstr("截图快捷键 \{cw} 被其他程序占用"), cstr("点这里打开 PinShot 设置换一个；或者退出占用它的程序（比如 PixPin）后重新打开 PinShot。"))
+  }
   let pin_words = if pv == 0 { "贴图剪贴板中的图片" } else { "贴图剪贴板中的图片\u{8}" + pw }
   let menu = "capture\t截图\u{8}" +
     cw +

@@ -20,6 +20,11 @@ fn text_of(b : Bytes) -> String {
 extern "C" fn ps_start(again : Int) -> Int = "ps_start"
 
 ///|
+/// A note from the icon (the system's notification); clicked, it opens the settings.
+#borrow(title, text)
+extern "C" fn ps_tray_note(title : Bytes, text : Bytes) -> Unit = "ps_tray_note"
+
+///|
 /// Whether the icon is in the notification area.
 extern "C" fn ps_tray_on() -> Int = "ps_tray_on"
 

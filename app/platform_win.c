@@ -572,6 +572,7 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case NIN_SELECT:
         case NIN_KEYSELECT: capture_asked("icon"); break;
         case WM_CONTEXTMENU: tray_menu(GET_X_LPARAM(wp), GET_Y_LPARAM(wp)); break;
+        case NIN_BALLOONUSERCLICK: ps_tell("{\"do\":\"menu\",\"item\":\"settings\"}"); break;
       }
       return 0;
     case WM_ENDSESSION:
@@ -625,6 +626,21 @@ int32_t ps_start(int32_t again) {
   tray_put();
   atexit(tray_gone);
   return 1;
+}
+
+// A note from the icon (the system's balloon, a notification): `title` and `text` (UTF-8, ending in a NUL); clicked,
+// it opens the settings ({"do":"menu","item":"settings"}).
+void ps_tray_note(moonbit_bytes_t title, moonbit_bytes_t text) {
+  if (!tray_on) return;
+  NOTIFYICONDATAW n = tray;
+  n.uFlags = NIF_INFO;
+  n.dwInfoFlags = NIIF_INFO;
+  wchar_t *t = ps_wide((const char *)title), *b = ps_wide((const char *)text);
+  lstrcpynW(n.szInfoTitle, t, 64);
+  lstrcpynW(n.szInfo, b, 256);
+  free(t);
+  free(b);
+  Shell_NotifyIconW(NIM_MODIFY, &n);
 }
 
 // Whether the icon is in the notification area.
@@ -806,18 +822,11 @@ moonbit_bytes_t ps_pointer(void) {
 extern void *mb_render_context(void);
 extern void *mb_render_device(void);
 static void gpu_trim_now(void) {
-  const char *how = getenv("PINSHOT_TRIM");  // (a test's: "none", "flush", "trim", "ws"; all where unsaid)
-  if (how && !strcmp(how, "none")) return;
-  if (how && !strcmp(how, "ws")) {
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
-    return;
-  }
   ID3D11DeviceContext *ctx = (ID3D11DeviceContext *)mb_render_context();
   if (ctx) {
     ID3D11DeviceContext_ClearState(ctx);
     ID3D11DeviceContext_Flush(ctx);
   }
-  if (how && !strcmp(how, "flush")) return;
   ID3D11Device *dev = (ID3D11Device *)mb_render_device();
   IDXGIDevice3 *xd = NULL;
   if (dev && SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice3, (void **)&xd))) {
