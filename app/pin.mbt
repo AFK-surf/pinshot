@@ -16,6 +16,10 @@ struct Pin {
   top : @signals.Signal[Bool]
   /// when its zoom last changed (its label shown a moment)
   zoomed_at : @signals.Signal[Double]
+  /// whether it is the window in front (its frame the accent's), and since when, while it flashes as it is taken
+  active : @signals.Signal[Bool]
+  active_at : @signals.Signal[Double]
+  flash : @signals.Signal[Double]
 }
 
 ///|
@@ -47,6 +51,9 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
     alpha: @signals.signal(s.pin_alpha),
     top: @signals.signal(s.pin_top),
     zoomed_at: @signals.signal(-10000.0),
+    active: @signals.signal(false),
+    active_at: @signals.signal(-10000.0),
+    flash: @signals.signal(0.0),
   }
   pins[what] = p
   let wid = @ui.window_open_here(what)
@@ -71,7 +78,13 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
 /// The clipboard's picture pinned by the pointer (none there: nothing).
 fn pin_clipboard() -> Unit {
   // (a test run: the clipboard as if it held none, the person's left alone)
-  let b = if @ui.env("PINSHOT_TEST_NO_CLIP") != "" { Bytes::new(0) } else { ps_clipboard_image() }
+  let b = if @ui.env("PINSHOT_TEST_NO_CLIP") != "" {
+    Bytes::new(0)
+  } else if @ui.env("PINSHOT_TEST_PIN_FILE") != "" {
+    ps_read_file(cstr(@ui.env("PINSHOT_TEST_PIN_FILE")))
+  } else {
+    ps_clipboard_image()
+  }
   guard b.length() > 0 && @pixels.image_size(b) is Some((w, h)) else {
     log("pin: no picture on the clipboard")
     toast("剪贴板里没有图片")
@@ -299,9 +312,35 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
     |> ignore
     let px = if p.w > p.h { p.w } else { p.h }
     root.box(fn(i) { i.over(Is(true)).image(Is(Some((p.key, "", px)))).presses(Is(false)) |> ignore }) |> ignore
-    // (its edge: a hairline, the accent while the pointer is on it)
+    // (its edge: a hairline; the accent's while the pointer is on it; the window in front, a frame of the accent, and
+    // as it is taken a flash: the frame comes in thick and narrows as a tint of the accent over it fades, 360 ms; the
+    // user, 2026-11-17: 「选中pin的图片时应该有更强的动画提示」)
     root.box(fn(e) {
-      e.over(Is(true)).presses(Is(false)).edge(By(fn() { if root.pointed() { (1.0, accent) } else { (1.0, 0x8C919966L) } })) |> ignore
+      e
+      .over(Is(true))
+      .presses(Is(false))
+      .ground(By(fn() {
+        let f = pin_flash(e, p)
+        if f <= 0.0 {
+          0L
+        } else {
+          0x2F9BFF00L | (f * 70.0).round().to_int64()
+        }
+      }))
+      .edge(By(fn() {
+        let f = pin_flash(e, p)
+        // (its own pixels a point here; DWM's frame over its outermost pixel)
+        if f > 0.001 {
+          (3.0 + 7.0 * f, accent)
+        } else if p.active.get() {
+          (3.0, accent)
+        } else if root.pointed() {
+          (2.0, accent)
+        } else {
+          (1.0, 0x8C919966L)
+        }
+      }))
+      |> ignore
     })
     |> ignore
     // (its zoom and how clear it is, a moment after either changes)
@@ -367,4 +406,32 @@ fn pin_actions(root : @view.View, p : Pin) -> Unit {
     ps_topmost(p.wid.val, if top { 1 } else { 0 }, 0)
   })
   on("zoom1", fn() { zoom_pin(p, 1.0) })
+}
+
+///|
+/// How much of its flash is left (1 as it is taken, 0 once it is over).
+fn pin_flash(_n : @view.View, p : Pin) -> Double {
+  p.flash.get()
+}
+
+///|
+/// A frame of pin window `wid` asked for as it is taken (platform_win.c, every 16 ms for a while): its flash as of
+/// now, eased out (quick at first) over 360 ms.
+fn pin_tick(wid : Int) -> Unit {
+  guard pin_of_wid(wid) is Some((_, p)) else { return }
+  let x = clamp((ps_now_ms() - p.active_at.untracked()) / 360.0, 0.0, 1.0)
+  let e = 1.0 - (1.0 - x) * (1.0 - x) * (1.0 - x)
+  p.flash.set(1.0 - e)
+}
+
+///|
+/// Pin window `wid` taken as the window in front (`on`) or let go: its frame, and a flash as it is taken.
+fn pin_active(wid : Int, on : Bool) -> Unit {
+  guard pin_of_wid(wid) is Some((_, p)) else { return }
+  p.active.set(on)
+  if !on {
+    return
+  }
+  p.active_at.set(ps_now_ms())
+  p.flash.set(1.0)
 }

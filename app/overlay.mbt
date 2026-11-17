@@ -858,6 +858,26 @@ fn said_shown() -> Unit {
 /// The mark picked, its handles (a line's ends, a box's corners) or, where it has none, a thin frame round it: in the
 /// monitor's pixels, over the marks.
 fn picked_picture() -> @pixels.Vector? {
+  // (a mosaic being dragged out: where it reaches, a thin frame of the accent round a faint tint of it, its squares
+  // alone showing nothing over an even ground)
+  if hand.get() is Marking && draft.get() is Some(d) && d.tool == Mosaic {
+    let k = mon_scale.get()
+    let (x0, y0) = d.pts[0]
+    let (x1, y1) = d.pts[d.pts.length() - 1]
+    let (x, y, w, h) = (dmin(x0, x1), dmin(y0, y1), (x1 - x0).abs(), (y1 - y0).abs())
+    if w < 1.0 || h < 1.0 {
+      return None
+    }
+    let t = dmax(1.0, k.round())
+    return Some({
+      w: mon.val.w.to_double(),
+      h: mon.val.h.to_double(),
+      layers: [
+        fill_layer(rect_path(x, y, w, h), 0x2F9BFF14L),
+        fill_layer(rect_path(x, y, w, h) + rect_path(x + t, y + t, w - t * 2.0, h - t * 2.0), accent, even_odd=true),
+      ],
+    })
+  }
   let m = match hand.get() {
     Dragging(_, _, _, _, _, _, _) => draft.get()
     _ =>

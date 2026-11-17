@@ -85,6 +85,16 @@ fn told(json : String) -> Unit {
     }
     "capture" => if capturing.untracked() { capture_taken() }
     "pin-clipboard" => pin_clipboard()
+    "tick" =>
+      match o.get("wid") {
+        Some(Number(w, ..)) => pin_tick(w.to_int())
+        _ => ()
+      }
+    "active" =>
+      match (o.get("wid"), o.get("on")) {
+        (Some(Number(w, ..)), Some(Number(on, ..))) => pin_active(w.to_int(), on != 0.0)
+        _ => ()
+      }
     "pins" => pins_toggle()
     "close" =>
       match o.get("wid") {

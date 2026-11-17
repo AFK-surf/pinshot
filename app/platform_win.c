@@ -400,6 +400,14 @@ moonbit_bytes_t ps_windows(void) { return ps_bytes(win_list, win_list_len); }
 // ---- one run, the icon, the shortcuts ----
 
 #define PS_CLASS L"PinShot.Tray"
+// A test run (PINSHOT_TEST set): a run of its own beside the person's (its own one-run mutex and window class), no
+// icon, no shortcuts taken, its own log; what the person presses goes on to theirs.
+static int test_run(void) {
+  static int t = -1;
+  if (t < 0) t = getenv("PINSHOT_TEST") != NULL;
+  return t;
+}
+static const wchar_t *ps_class(void) { return test_run() ? L"PinShot.TestTray" : PS_CLASS; }
 #define WM_PS_TRAY (WM_APP + 40)
 #define WM_PS_AGAIN (WM_APP + 41)
 static NOTIFYICONDATAW tray;
@@ -416,6 +424,7 @@ static HICON own_icon(int size) {
 }
 
 static void tray_put(void) {
+  if (test_run()) return;
   memset(&tray, 0, sizeof tray);
   tray.cbSize = sizeof tray;
   tray.hWnd = tray_hwnd;
@@ -579,10 +588,10 @@ static void tray_window_made(void) {
   WNDCLASSEXW wc = {sizeof wc};
   wc.lpfnWndProc = tray_proc;
   wc.hInstance = GetModuleHandleW(NULL);
-  wc.lpszClassName = PS_CLASS;
+  wc.lpszClassName = ps_class();
   RegisterClassExW(&wc);
   // (a top-level window never shown, not one of HWND_MESSAGE: Explorer's TaskbarCreated is broadcast to top-level ones)
-  tray_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, PS_CLASS, L"PinShot", WS_POPUP, 0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
+  tray_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, ps_class(), L"PinShot", WS_POPUP, 0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
 }
 
 // A capture asked for by the app (the icon's menu): as the shortcut.
@@ -592,9 +601,9 @@ void ps_capture_ask(void) { capture_asked("menu"); }
 // the screen, as its shortcut does; 1 open the settings; 2 quit): this one ends.
 int32_t ps_start(int32_t again) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-  one_run = CreateMutexW(NULL, TRUE, L"Local\\PinShot.OneRun");
+  one_run = CreateMutexW(NULL, TRUE, test_run() ? L"Local\\PinShot.TestRun" : L"Local\\PinShot.OneRun");
   if (one_run && GetLastError() == ERROR_ALREADY_EXISTS) {
-    HWND other = FindWindowW(PS_CLASS, NULL);
+    HWND other = FindWindowW(ps_class(), NULL);
     if (other) {
       DWORD pid = 0;
       GetWindowThreadProcessId(other, &pid);
@@ -638,7 +647,7 @@ int32_t ps_hotkey(int32_t which, int32_t mods, int32_t vk) {
   if (which <= 0 || which >= HK_MOST || !tray_hwnd) return 0;
   if (hk_on[which]) UnregisterHotKey(tray_hwnd, which);
   hk_on[which] = 0;
-  if (vk == 0) return 1;
+  if (vk == 0 || test_run()) return 1;
   hk_on[which] = RegisterHotKey(tray_hwnd, which, (UINT)mods | MOD_NOREPEAT, (UINT)vk) ? 1 : 0;
   return hk_on[which];
 }
@@ -665,7 +674,35 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
       ps_tell(json);
       return 0;
     }
+    case WM_ACTIVATE: {
+      // (taken or let go as the window in front: a pin shows it)
+      char json[64];
+      snprintf(json, sizeof json, "{\"do\":\"active\",\"wid\":%d,\"on\":%d}", (int)wid, LOWORD(wp) != WA_INACTIVE);
+      ps_tell(json);
+      // (and drawn on: the app hears it on its own window's frame, a pin draws only as something comes to it; its
+      // flash runs 360 ms, a frame asked of it every 16 ms till then)
+      SetPropW(h, L"PinShot.Frames", (HANDLE)(INT_PTR)30);
+      SetTimer(h, 0x5053, 16, NULL);
+      break;
+    }
+    case WM_TIMER:
+      if (wp == 0x5053) {
+        INT_PTR n = (INT_PTR)GetPropW(h, L"PinShot.Frames");
+        char json[48];
+        snprintf(json, sizeof json, "{\"do\":\"tick\",\"wid\":%d}", (int)wid);
+        ps_tell(json);
+        InvalidateRect(h, NULL, FALSE);
+        if (n <= 1) {
+          KillTimer(h, 0x5053);
+          RemovePropW(h, L"PinShot.Frames");
+        } else {
+          SetPropW(h, L"PinShot.Frames", (HANDLE)(n - 1));
+        }
+        return 0;
+      }
+      break;
     case WM_NCDESTROY:
+      RemovePropW(h, L"PinShot.Frames");
       RemovePropW(h, L"PinShot.Closing");
       RemoveWindowSubclass(h, own_proc, 1);
       break;
@@ -1011,7 +1048,7 @@ void ps_log(moonbit_bytes_t line) {
     _snwprintf(path, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
     CoTaskMemFree(p);
     CreateDirectoryW(path, NULL);
-    wcscat_s(path, MAX_PATH * 2, L"\\pinshot.log");
+    wcscat_s(path, MAX_PATH * 2, test_run() ? L"\\pinshot-test.log" : L"\\pinshot.log");
     WIN32_FILE_ATTRIBUTE_DATA a;
     if (GetFileAttributesExW(path, GetFileExInfoStandard, &a) && a.nFileSizeLow > 1024 * 1024) DeleteFileW(path);
   }
