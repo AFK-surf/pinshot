@@ -271,6 +271,8 @@ fn overlay_window(root : @view.View) -> Unit {
 fn marks_layer(parent : @view.View, editing~ : Bool) -> Unit {
   parent.box(fn(layer) {
     layer.over(Is(true)) |> ignore
+    // (the focus marks' dimming under the others: an arrow drawn over the dimmed part stays bright)
+    layer.box(fn(f) { f.over(Is(true)).presses(Is(false)).picture(By(focus_picture)) |> ignore }) |> ignore
     layer.each(fn() { marks.get() }, fn(m) { m.id }, fn(row, m) {
       row.over(Is(true)).presses(Is(false)) |> ignore
       mark_node(row, @signals.untracked(fn() { m.get() }))

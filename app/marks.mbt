@@ -13,6 +13,8 @@ enum Tool {
   Line
   Pen
   Mosaic
+  /// a part in focus: the rest of the picture dimmed round it (all of them one dimming: focus_picture)
+  Focus
   Number
   Words
 }
@@ -166,7 +168,7 @@ fn new_mark(t : Tool, pts : Array[(Double, Double)]) -> Mark {
 /// A mark that is too small to keep (a click where a drag was meant).
 fn too_small(m : Mark) -> Bool {
   match m.tool {
-    Box | Oval | Mosaic | Arrow | Line => {
+    Box | Oval | Mosaic | Focus | Arrow | Line => {
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
       (x1 - x0).abs() < 3.0 && (y1 - y0).abs() < 3.0
@@ -252,7 +254,7 @@ fn mark_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
       ]
     }
     Mosaic => mosaic_layers(m, k)
-    Move | Words => []
+    Move | Words | Focus => []
   }
 }
 
@@ -453,7 +455,7 @@ fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool
       }
       false
     }
-    Box => {
+    Box | Focus => {
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
       let (a, b, c, d) = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
@@ -573,7 +575,7 @@ fn mark_handles(m : Mark) -> Array[(Int, Int, Double, Double)] {
   let (x1, y1) = m.pts[m.pts.length() - 1]
   match m.tool {
     Line | Arrow => [(0, 0, x0, y0), (1, 1, x1, y1)]
-    Box | Oval | Mosaic => [(0, 0, x0, y0), (1, 0, x1, y0), (1, 1, x1, y1), (0, 1, x0, y1)]
+    Box | Oval | Mosaic | Focus => [(0, 0, x0, y0), (1, 0, x1, y0), (1, 1, x1, y1), (0, 1, x0, y1)]
     _ => []
   }
 }
@@ -687,4 +689,35 @@ fn mark_box(m : Mark, k : Double) -> (Double, Double, Double, Double) {
       (x0 - half, y0 - half, x1 + half, y1 + half)
     }
   }
+}
+
+///|
+/// The dimming of the focus marks (the made ones and the one being drawn): the part picked (else the whole monitor)
+/// darkened but where each is, in the monitor's pixels; None where there are none.
+fn focus_picture() -> @pixels.Vector? {
+  let parts : Array[Mark] = marks.get().filter(fn(m) { m.tool == Focus })
+  match draft.get() {
+    Some(d) if d.tool == Focus => parts.push(d)
+    _ => ()
+  }
+  if parts.is_empty() {
+    return None
+  }
+  let w = mon.val.w.to_double()
+  let h = mon.val.h.to_double()
+  let (ox, oy, ow, oh) = match sel.get() {
+    Some(r) => (r.x.to_double(), r.y.to_double(), r.w.to_double(), r.h.to_double())
+    None => (0.0, 0.0, w, h)
+  }
+  // (the part picked one way round, each focus the other: what is in a focus not dimmed, nonzero)
+  let sb = StringBuilder()
+  sb.write_string(rect_path(ox, oy, ow, oh))
+  for m in parts {
+    let (x0, y0) = m.pts[0]
+    let (x1, y1) = m.pts[m.pts.length() - 1]
+    let (x, y) = (dmin(x0, x1), dmin(y0, y1))
+    let (fw, fh) = ((x1 - x0).abs(), (y1 - y0).abs())
+    sb.write_string("M\{num(x)} \{num(y)}v\{num(fh)}h\{num(fw)}v\{num(-fh)}z")
+  }
+  Some({ w, h, layers: [fill_layer(sb.to_string(), 0x0000008CL)] })
 }

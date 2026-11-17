@@ -23,13 +23,14 @@ let bar_tools : Array[(Tool, String, String)] = [
   (Line, "line", "直线（按住 Shift 水平、垂直或 45°）"),
   (Pen, "pen", "画笔"),
   (Mosaic, "mosaic", "马赛克"),
+  (Focus, "focus", "聚焦（框出重点，其余变暗）"),
   (Number, "number", "序号"),
   (Words, "words", "文字"),
 ]
 
 ///|
 fn bar_width() -> Double {
-  bar_pad * 2.0 + bar_button * 15.0 + bar_rule * 2.0
+  bar_pad * 2.0 + bar_button * 16.0 + bar_rule * 2.0
 }
 
 ///|
@@ -284,6 +285,15 @@ fn glyph(name : String) -> @pixels.Vector {
         w: 18.0,
         h: 18.0,
         layers: [stroke_layer("M5 2.8v11.4l2.9-2.8 2.1 4.6 2-.9-2.1-4.5h4z", 0x000000FFL, 1.4)],
+      }
+    "focus" =>
+      {
+        w: 18.0,
+        h: 18.0,
+        layers: [
+          fill_layer("M2 3h14v12h-14zM6 6.5v5h6v-5z", 0x00000073L),
+          stroke_layer("M6 6.5h6v5h-6z", 0x000000FFL, 1.6),
+        ],
       }
     "box" => lines(["M3.5 4.5h11v9h-11z"])
     "oval" => lines([oval_path(2.5, 4.0, 13.0, 10.0)])
