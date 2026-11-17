@@ -945,7 +945,8 @@ moonbit_bytes_t ps_data_dir(void) {
   wchar_t *p = NULL;
   wchar_t dir[MAX_PATH * 2] = {0};
   if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &p))) {
-    _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
+    // (a test run's settings its own: the person's left as they are)
+    _snwprintf(dir, MAX_PATH * 2 - 1, test_run() ? L"%ls\\PinShot-test" : L"%ls\\PinShot", p);
     CoTaskMemFree(p);
   }
   CreateDirectoryW(dir, NULL);
@@ -1297,3 +1298,6 @@ void ps_shutter(void) {
   if (!snd_made) snd_make();
   PlaySoundW((LPCWSTR)snd_wav, NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 }
+
+// Whether Windows' own language (the user's, as its menus are in) is Chinese.
+int32_t ps_ui_chinese(void) { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE; }

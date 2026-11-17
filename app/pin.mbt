@@ -87,7 +87,7 @@ fn pin_clipboard() -> Unit {
   }
   guard b.length() > 0 && @pixels.image_size(b) is Some((w, h)) else {
     log("pin: no picture on the clipboard")
-    toast("剪贴板里没有图片")
+    toast(tr("剪贴板里没有图片"))
     return
   }
   let p = numbers_of(text_of(ps_pointer()))
@@ -217,11 +217,13 @@ fn pin_menu(p : Pin) -> Unit {
   let top = p.top.untracked()
   let a = p.alpha.untracked()
   let z = p.zoom.untracked()
+  let o = tr("不透明度")
   let lines = [
-    "copy\t复制\tCtrl+C", "save\t另存为…\t", "-", "top\t置顶\t" + (if top { "c" } else { "" }), "front\t移到最前\t",
-    "-", "zoom1\t原始大小 (100%)\t" + (if z == 1.0 { "c" } else { "" }), "a100\t不透明度 100%\t" + (if a >= 255 { "c" } else { "" }),
-    "a80\t不透明度 80%\t" + (if a == 204 { "c" } else { "" }), "a60\t不透明度 60%\t" + (if a == 153 { "c" } else { "" }),
-    "a40\t不透明度 40%\t" + (if a == 102 { "c" } else { "" }), "-", "close\t关闭\tEsc", "close-all\t关闭全部贴图\t",
+    "copy\t" + tr("复制") + "\tCtrl+C", "save\t" + tr("另存为…") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
+    "front\t" + tr("移到最前") + "\t", "-", "zoom1\t" + tr("原始大小 (100%)") + "\t" + (if z == 1.0 { "c" } else { "" }),
+    "a100\t\{o} 100%\t" + (if a >= 255 { "c" } else { "" }), "a80\t\{o} 80%\t" + (if a == 204 { "c" } else { "" }),
+    "a60\t\{o} 60%\t" + (if a == 153 { "c" } else { "" }), "a40\t\{o} 40%\t" + (if a == 102 { "c" } else { "" }), "-",
+    "close\t" + tr("关闭") + "\tEsc", "close-all\t" + tr("关闭全部贴图") + "\t",
   ]
   let chose = text_of(ps_popup_menu(p.wid.val, @utf8.encode(menu_lines(lines))))
   match chose {

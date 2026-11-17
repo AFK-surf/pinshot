@@ -10,7 +10,11 @@ let bar_button : Double = 32.0
 let bar_pad : Double = 4.0
 
 ///|
-let bar_rule : Double = 9.0
+let bar_rule : Double = 7.0
+
+///|
+/// Between the bar's buttons (their grounds as they are pointed at or lit apart, the user, 2026-11-17).
+let bar_gap : Double = 3.0
 
 ///|
 /// The tools on the bar, in order: what each is, its glyph, its name and key.
@@ -30,7 +34,7 @@ let bar_tools : Array[(Tool, String, String)] = [
 
 ///|
 fn bar_width() -> Double {
-  bar_pad * 2.0 + bar_button * 16.0 + bar_rule * 2.0
+  bar_pad * 2.0 + bar_button * 16.0 + bar_rule * 2.0 + bar_gap * 17.0
 }
 
 ///|
@@ -86,7 +90,7 @@ fn toolbar(stage : @view.View) -> Unit {
       |> ignore
       col.box(fn(bar) {
         bar_panel(bar)
-        bar.row(Is(true)).width(Is(Some(bar_width()))) |> ignore
+        bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(bar_width()))) |> ignore
         for t in bar_tools {
           let (which, glyph_name, label) = t
           tool_button(bar, glyph_name, label, fn() { tool.get() == which }, fn() {
@@ -161,7 +165,7 @@ fn tool_button(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
-    .says(Is(Some(@view.said(Button, label~))))
+    .says(By(fn() { Some(@view.said(Button, label=tr(label))) }))
     .on_press(fn() { if !dim() { press() } })
     .ground(By(fn() {
       if on() {
@@ -208,7 +212,7 @@ fn styling() -> Bool {
 /// The second row: three thicknesses, then the colours.
 fn style_row(row : @view.View) -> Unit {
   bar_panel(row)
-  row.row(Is(true)).height(Is(Some(style_height))).gap(Is(2.0)) |> ignore
+  row.row(Is(true)).height(Is(Some(style_height))).gap(Is(bar_gap)) |> ignore
   for s in 0..<3 {
     row.box(fn(b) {
       b
@@ -218,7 +222,7 @@ fn style_row(row : @view.View) -> Unit {
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       .presses(Is(true))
-      .says(Is(Some(@view.said(Button, label=["细", "中", "粗"][s]))))
+      .says(By(fn() { Some(@view.said(Button, label=tr(["细", "中", "粗"][s]))) }))
       .on_press(fn() {
         size_now.set(s)
         restyle_selected(s~)

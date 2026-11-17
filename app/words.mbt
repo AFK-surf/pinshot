@@ -66,7 +66,7 @@ fn words_editor(layer : @view.View) -> Unit {
       let node = @ui.field(
         f,
         words_field,
-        placeholder="输入文字",
+        placeholder=tr("输入文字"),
         font_size=size,
         line=(size * 1.3).round(),
         max_lines=12,

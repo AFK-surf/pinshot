@@ -161,3 +161,7 @@ let app_theme : () -> @ui.Theme = fn() { theme_kept }
 
 ///|
 let theme_kept : @ui.Theme = { ..@ui.Theme::dark(), tabular: true }
+
+///|
+/// PinShot's version (the settings' About, the Store's package).
+let app_version : String = "1.0.0"

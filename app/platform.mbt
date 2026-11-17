@@ -28,6 +28,10 @@ extern "C" fn ps_tray_note(title : Bytes, text : Bytes) -> Unit = "ps_tray_note"
 extern "C" fn ps_shutter() -> Unit = "ps_shutter"
 
 ///|
+/// Whether Windows' own language is Chinese: 1 it is.
+extern "C" fn ps_ui_chinese() -> Int = "ps_ui_chinese"
+
+///|
 extern "C" fn ps_shadow(wid : Int) -> Unit = "ps_shadow"
 
 ///|

@@ -14,6 +14,8 @@ struct Settings {
   ask_where : Bool
   save_dir : String
   keep_copies : Bool
+  /// the language: 0 the system's, 1 Chinese, 2 English (i18n.mbt)
+  language : Int
   /// a shutter's sound as a capture is copied, saved or pinned
   sound : Bool
 }
@@ -60,6 +62,7 @@ fn default_settings() -> Settings {
     save_dir: text_of(ps_pictures_dir()),
     keep_copies: false,
     sound: true,
+    language: 0,
   }
 }
 
@@ -73,6 +76,7 @@ let settings : @signals.Signal[Settings] = @signals.signal({
   save_dir: "",
   keep_copies: false,
   sound: true,
+  language: 0,
 })
 
 ///|
@@ -123,11 +127,17 @@ fn load_settings() -> Unit {
         save_dir: text("save_dir", d.save_dir),
         keep_copies: flag("keep_copies", d.keep_copies),
         sound: flag("sound", d.sound),
+        language: match text("language", "system") {
+          "zh" => 1
+          "en" => 2
+          _ => 0
+        },
       }
     }
     _ => d
   }
   settings.set(s)
+  apply_language(s.language)
   autostart.set(ps_autostart() == 1)
 }
 
@@ -143,6 +153,7 @@ fn save_settings() -> Unit {
   o["save_dir"] = Json::string(s.save_dir)
   o["keep_copies"] = Json::boolean(s.keep_copies)
   o["sound"] = Json::boolean(s.sound)
+  o["language"] = Json::string(["system", "zh", "en"][s.language])
   ps_write_file(cstr(settings_path()), @utf8.encode(Json::object(o).stringify(indent=2))) |> ignore
 }
 
@@ -156,7 +167,10 @@ fn change_settings(f : (Settings) -> Settings) -> Unit {
   }
   settings.set(s)
   save_settings()
-  if s.capture_key != was.capture_key || s.pin_key != was.pin_key {
+  if s.language != was.language {
+    apply_language(s.language)
+  }
+  if s.capture_key != was.capture_key || s.pin_key != was.pin_key || s.language != was.language {
     apply_keys()
   }
 }
@@ -172,14 +186,27 @@ fn apply_keys() -> Unit {
   log("keys: capture \{cw} \{if capture_key_ok.untracked() { "ok" } else { "taken by another program" }}, pin \{pw} \{if pin_key_ok.untracked() { "ok" } else { "taken by another program" }}")
   // (a shortcut another program holds said once, as it is found: PixPin started with Windows holds Ctrl+Alt+A)
   if !capture_key_ok.untracked() {
-    ps_tray_note(cstr("截图快捷键 \{cw} 被其他程序占用"), cstr("点这里打开 PinShot 设置换一个；或者退出占用它的程序（比如 PixPin）后重新打开 PinShot。"))
+    ps_tray_note(
+      cstr(tr("截图快捷键被其他程序占用：") + cw),
+      cstr(tr("点这里打开 PinShot 设置换一个；或者退出占用它的程序（比如 PixPin）后重新打开 PinShot。")),
+    )
   }
-  let pin_words = if pv == 0 { "贴图剪贴板中的图片" } else { "贴图剪贴板中的图片\u{8}" + pw }
-  let menu = "capture\t截图\u{8}" +
+  let pin_words = if pv == 0 { tr("贴图剪贴板中的图片") } else { tr("贴图剪贴板中的图片") + "\u{8}" + pw }
+  let menu = "capture\t" +
+    tr("截图") +
+    "\u{8}" +
     cw +
     "\npin-clip\t" +
     pin_words +
-    "\npins\t显示/隐藏全部贴图\n-\nsettings\t设置…\nfolder\t打开截图文件夹\n-\nquit\t退出 PinShot\n"
+    "\npins\t" +
+    tr("显示/隐藏全部贴图") +
+    "\n-\nsettings\t" +
+    tr("设置…") +
+    "\nfolder\t" +
+    tr("打开截图文件夹") +
+    "\n-\nquit\t" +
+    tr("退出 PinShot") +
+    "\n"
   ps_set_menu(@utf8.encode(menu))
 }
 
@@ -198,7 +225,7 @@ fn open_settings() -> Unit {
     return
   }
   settings_wid.val = wid
-  ps_center(wid, 540, 650)
+  ps_center(wid, 560, 800)
 }
 
 ///|
@@ -225,18 +252,18 @@ fn settings_window(root : @view.View) -> Unit {
 
 ///|
 fn settings_page(root : @view.View) -> Unit {
-  set_words(root, fn() { "PinShot 设置" }, 17.0, set_ink, weight=600)
+  set_words(root, fn() { tr("PinShot 设置") }, 17.0, set_ink, weight=600)
   set_group(root, "快捷键", fn(g) {
     set_row(g, "截图", fn(r) {
       choice(r, key_choices.map(fn(c) { c.0 }), fn() { settings.get().capture_key }, fn(i) {
         change_settings(fn(s) { { ..s, capture_key: i } })
       })
-    }, note=fn() { if capture_key_ok.get() { "" } else { "已被其他程序占用，换一个" } })
+    }, note=fn() { if capture_key_ok.get() { "" } else { tr("已被其他程序占用，换一个") } })
     set_row(g, "贴图剪贴板中的图片", fn(r) {
       choice(r, pin_choices.map(fn(c) { c.0 }), fn() { settings.get().pin_key }, fn(i) {
         change_settings(fn(s) { { ..s, pin_key: i } })
       })
-    }, note=fn() { if pin_key_ok.get() { "" } else { "已被其他程序占用，换一个" } })
+    }, note=fn() { if pin_key_ok.get() { "" } else { tr("已被其他程序占用，换一个") } })
   })
   set_group(root, "贴图", fn(g) {
     set_row(g, "打开时置顶", fn(r) {
@@ -273,6 +300,11 @@ fn settings_page(root : @view.View) -> Unit {
     })
   })
   set_group(root, "通用", fn(g) {
+    set_row(g, "语言", fn(r) {
+      choice(r, language_names, fn() { settings.get().language }, fn(i) {
+        change_settings(fn(s) { { ..s, language: i } })
+      })
+    })
     set_row(g, "复制、保存、贴图时播放快门音效", fn(r) {
       switch(r, fn() { settings.get().sound }, fn(on) {
         change_settings(fn(s) { { ..s, sound: on } })
@@ -289,6 +321,15 @@ fn settings_page(root : @view.View) -> Unit {
       })
     })
   })
+  set_group(root, "关于", fn(g) {
+    set_row(g, "版本", fn(r) { set_words(r, fn() { "PinShot " + app_version }, 13.0, set_muted) })
+    g.box(fn(b) {
+      b.padding(Is((0.0, 4.0, 0.0, 12.0))).gap(Is(2.0)) |> ignore
+      set_words(b, fn() { tr("免费、无广告，不联网、不收集任何数据。") }, 12.0, set_muted)
+      set_words(b, fn() { "© 2026 pengx17" }, 12.0, set_muted)
+    })
+    |> ignore
+  })
 }
 
 ///|
@@ -303,7 +344,7 @@ fn set_words(parent : @view.View, text : () -> String, size : Double, ink : Int6
 fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -> Unit {
   parent.box(fn(g) {
     g.gap(Is(6.0)) |> ignore
-    set_words(g, fn() { title }, 12.0, set_muted, weight=500)
+    set_words(g, fn() { tr(title) }, 12.0, set_muted, weight=500)
     g.box(fn(card) {
       card.ground(Is(set_card)).radius(Is(10.0)).edge(Is((1.0, 0xFFFFFF14L))).padding(Is((14.0, 4.0, 14.0, 4.0))) |> ignore
       make(card)
@@ -319,7 +360,7 @@ fn set_row(parent : @view.View, label : String, make : (@view.View) -> Unit, not
     row.row(Is(true)).min_height(Is(Some(42.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
     row.box(fn(l) {
       l.grow(Is(1.0)).gap(Is(2.0)) |> ignore
-      set_words(l, fn() { label }, 13.0, set_ink)
+      set_words(l, fn() { tr(label) }, 13.0, set_ink)
       l.box(fn(n) {
         n
         .laid_nowhere(By(fn() { note() == "" }))
@@ -349,7 +390,7 @@ fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (In
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         .presses(Is(true))
-        .says(By(fn() { Some(@view.said(Radio, label=name, selected=at() == i)) }))
+        .says(By(fn() { Some(@view.said(Radio, label=tr(name), selected=at() == i)) }))
         .on_press(fn() { pick(i) })
         .ground(By(fn() {
           if at() == i {
@@ -363,7 +404,7 @@ fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (In
         |> ignore
         b.box(fn(t) {
           t
-          .words(Is(name), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+          .words(By(fn() { tr(name) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
           .ink(By(fn() { if at() == i { set_ink } else { set_muted } }))
           |> ignore
         })
@@ -415,12 +456,12 @@ fn small_button(parent : @view.View, label : String, press : () -> Unit) -> Unit
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
-    .says(Is(Some(@view.said(Button, label~))))
+    .says(By(fn() { Some(@view.said(Button, label=tr(label))) }))
     .on_press(press)
     .ground(By(fn() { if b.pointed() { 0x45474EFFL } else { 0x3A3C42FFL } }))
     |> ignore
     b.box(fn(t) {
-      t.words(Is(label), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false }).ink(Is(set_ink)) |> ignore
+      t.words(By(fn() { tr(label) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false }).ink(Is(set_ink)) |> ignore
     })
     |> ignore
   })
