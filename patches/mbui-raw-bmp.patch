@@ -1,0 +1,59 @@
+diff --git a/libs/mbui/src/host/win_image.cpp b/libs/mbui/src/host/win_image.cpp
+index c37f4f6..0ec3bcf 100644
+--- a/libs/mbui/src/host/win_image.cpp
++++ b/libs/mbui/src/host/win_image.cpp
+@@ -235,6 +235,44 @@ done:
+   return srv;
+ }
+ 
++// An uncompressed 32-bit BMP whose rows run from the top (BI_RGB: what GDI gives of a screen taken) asked for at its own
++// size or more: its pixels made the texture as they are (B8G8R8X8: the fourth byte not read), no WIC, no mips, so a
++// 4K screen's 33 MB is a texture in a few ms rather than WIC's conversion and the mips' ~40 ms. NULL where it is not one.
++static ID3D11ShaderResourceView *raw_bmp(const uint8_t *d, size_t n, int max_px, int *w, int *h) {
++  if (n < 54 || d[0] != 'B' || d[1] != 'M') return NULL;
++  uint32_t off, hsize, comp;
++  int32_t bw, bh;
++  uint16_t bits;
++  memcpy(&off, d + 10, 4);
++  memcpy(&hsize, d + 14, 4);
++  memcpy(&bw, d + 18, 4);
++  memcpy(&bh, d + 22, 4);
++  memcpy(&bits, d + 28, 2);
++  memcpy(&comp, d + 30, 4);
++  if (hsize < 40 || bits != 32 || comp != 0 || bw <= 0 || bh >= 0) return NULL;
++  int rw = bw, rh = -bh;
++  if (max_px < (rw > rh ? rw : rh) || off > n || (size_t)rw * rh * 4 > n - off) return NULL;
++  D3D11_TEXTURE2D_DESC td = {};
++  td.Width = (UINT)rw;
++  td.Height = (UINT)rh;
++  td.MipLevels = 1;
++  td.ArraySize = 1;
++  td.Format = DXGI_FORMAT_B8G8R8X8_UNORM;
++  td.SampleDesc.Count = 1;
++  td.Usage = D3D11_USAGE_IMMUTABLE;
++  td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
++  D3D11_SUBRESOURCE_DATA init = {d + off, (UINT)rw * 4, 0};
++  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
++  ID3D11Texture2D *tex = NULL;
++  ID3D11ShaderResourceView *srv = NULL;
++  if (dev && SUCCEEDED(dev->CreateTexture2D(&td, &init, &tex))) {
++    if (FAILED(dev->CreateShaderResourceView(tex, NULL, &srv))) srv = NULL;
++    tex->Release();
++  }
++  if (srv) *w = rw, *h = rh;
++  return srv;
++}
++
+ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
+   Job *j = (Job *)arg;
+   LARGE_INTEGER t0, t1, f;
+@@ -258,6 +296,9 @@ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
+     if (j->pdf) {
+       srv = pdf_draw(wic, j->pdf, j->page, j->max_px, &w, &h, &ow, &oh);
+       hr = E_ABORT;  // (drawn: nothing more to decode)
++    } else if (j->data && (srv = raw_bmp(j->data, j->len, j->max_px, &w, &h)) != NULL) {
++      ow = w, oh = h;
++      hr = E_ABORT;  // (made: nothing for WIC to decode)
+     } else if (j->data) {
+       if (SUCCEEDED(wic->CreateStream(&stream)) &&
+           SUCCEEDED(stream->InitializeFromMemory(j->data, (DWORD)j->len)))

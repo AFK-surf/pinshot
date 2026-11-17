@@ -3,3 +3,4 @@ build.raw
 *.res
 *.obj
 *.pdb
+deps/

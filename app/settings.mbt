@@ -1,229 +1,387 @@
-// Persistent user settings (`%APPDATA%\PinShot\settings.ini`) and `--settings` UI.
+// The settings (settings.json in %APPDATA%\PinShot) and their window: the shortcuts, how a pin opens, where pictures
+// are saved, and whether PinShot starts with Windows. A change is written and in force at once.
 
 ///|
-let cfg_hotkey_capture : @signals.Signal[Int] = @signals.signal(0) // 0=Ctrl+Shift+A+F1, 1=Ctrl+Shift+A, 2=F1, 3=Ctrl+Alt+A
+#derive(Eq)
+struct Settings {
+  /// the shortcuts: which of `key_choices` (capture) and `pin_choices` (pin the clipboard)
+  capture_key : Int
+  pin_key : Int
+  /// a pin over the other windows as it opens, and how clear (255 not seen through)
+  pin_top : Bool
+  pin_alpha : Int
+  /// saving: the system's dialog each time (else straight into the folder), the folder, and a copy kept there too
+  ask_where : Bool
+  save_dir : String
+  keep_copies : Bool
+}
 
 ///|
-let cfg_hotkey_pin_front : @signals.Signal[Int] = @signals.signal(0) // 0=Ctrl+Shift+P, 1=F2, 2=Off
+/// The shortcuts offered: their words, and Windows' modifiers (Alt 1, Ctrl 2, Shift 4) and key.
+let key_choices : Array[(String, Int, Int)] = [
+  ("F1", 0, 0x70),
+  ("Ctrl+Shift+A", 6, 0x41),
+  ("Ctrl+Alt+A", 3, 0x41),
+  ("Alt+A", 1, 0x41),
+  ("PrtSc", 0, 0x2C),
+  ("Ctrl+F1", 2, 0x70),
+]
 
 ///|
-let cfg_autostart : @signals.Signal[Bool] = @signals.signal(false)
+let pin_choices : Array[(String, Int, Int)] = [
+  ("F3", 0, 0x72),
+  ("Ctrl+Shift+V", 6, 0x56),
+  ("Ctrl+F3", 2, 0x72),
+  ("不用快捷键", 0, 0),
+]
 
 ///|
-let cfg_pin_topmost : @signals.Signal[Bool] = @signals.signal(true)
+fn default_settings() -> Settings {
+  {
+    capture_key: 0,
+    pin_key: 0,
+    pin_top: true,
+    pin_alpha: 255,
+    ask_where: true,
+    save_dir: text_of(ps_pictures_dir()),
+    keep_copies: false,
+  }
+}
 
 ///|
-let cfg_pin_opacity : @signals.Signal[Int] = @signals.signal(255)
+let settings : @signals.Signal[Settings] = @signals.signal({
+  capture_key: 0,
+  pin_key: 0,
+  pin_top: true,
+  pin_alpha: 255,
+  ask_where: true,
+  save_dir: "",
+  keep_copies: false,
+})
 
 ///|
-let cfg_png_compress : @signals.Signal[Bool] = @signals.signal(true)
+/// Whether each shortcut is PinShot's (another program may hold it).
+let capture_key_ok : @signals.Signal[Bool] = @signals.signal(true)
 
 ///|
-let cfg_auto_save : @signals.Signal[Bool] = @signals.signal(false)
+let pin_key_ok : @signals.Signal[Bool] = @signals.signal(true)
 
 ///|
-let cfg_save_dir : @signals.Signal[String] = @signals.signal("")
+let autostart : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
-let cfg_saved_hint : @signals.Signal[Bool] = @signals.signal(false)
+fn settings_path() -> String {
+  text_of(ps_data_dir()) + "\\settings.json"
+}
 
 ///|
 fn load_settings() -> Unit {
-  let def_dir = @utf8.decode_lossy(ps_default_save_dir()[:])
-  cfg_save_dir.set(def_dir)
-  cfg_autostart.set(ps_get_autostart() == 1)
-  let raw = @utf8.decode_lossy(ps_read_settings()[:])
-  if raw == "" {
-    return
-  }
-  for line in raw.split("\n") {
-    let s = line.to_owned().trim().to_owned()
-    if s == "" {
-      continue
-    }
-    match s.find("=") {
-      Some(eq) => {
-        let k = s[:eq].to_owned()
-        let v = s[eq + 1:].to_owned()
-        if k == "hotkey_capture" {
-          cfg_hotkey_capture.set(parse_int_or(v, 0))
-        } else if k == "hotkey_pin_front" {
-          cfg_hotkey_pin_front.set(parse_int_or(v, 0))
-        } else if k == "pin_topmost" {
-          cfg_pin_topmost.set(parse_int_or(v, 1) != 0)
-        } else if k == "pin_opacity" {
-          cfg_pin_opacity.set(@cmp.maximum(60, @cmp.minimum(255, parse_int_or(v, 255))))
-        } else if k == "png_compress" {
-          cfg_png_compress.set(parse_int_or(v, 1) != 0)
-        } else if k == "auto_save" {
-          cfg_auto_save.set(parse_int_or(v, 0) != 0)
-        } else if k == "save_dir" && v != "" {
-          cfg_save_dir.set(v)
+  let d = default_settings()
+  let s = match json_of(text_of(ps_read_file(cstr(settings_path())))) {
+    Some(Json::Object(o)) => {
+      let int = fn(name : String, dflt : Int) {
+        match o.get(name) {
+          Some(Number(v, ..)) => v.to_int()
+          _ => dflt
         }
       }
-      None => ()
+      let flag = fn(name : String, dflt : Bool) {
+        match o.get(name) {
+          Some(True) => true
+          Some(False) => false
+          _ => dflt
+        }
+      }
+      let text = fn(name : String, dflt : String) {
+        match o.get(name) {
+          Some(String(v)) if v != "" => v
+          _ => dflt
+        }
+      }
+      {
+        capture_key: clampi(int("capture_key", d.capture_key), 0, key_choices.length() - 1),
+        pin_key: clampi(int("pin_key", d.pin_key), 0, pin_choices.length() - 1),
+        pin_top: flag("pin_top", d.pin_top),
+        pin_alpha: clampi(int("pin_alpha", d.pin_alpha), 25, 255),
+        ask_where: flag("ask_where", d.ask_where),
+        save_dir: text("save_dir", d.save_dir),
+        keep_copies: flag("keep_copies", d.keep_copies),
+      }
     }
+    _ => d
   }
+  settings.set(s)
+  autostart.set(ps_autostart() == 1)
 }
 
 ///|
 fn save_settings() -> Unit {
-  let b1 = if cfg_pin_topmost.untracked() { 1 } else { 0 }
-  let b2 = if cfg_png_compress.untracked() { 1 } else { 0 }
-  let b3 = if cfg_auto_save.untracked() { 1 } else { 0 }
-  let b4 = if cfg_autostart.untracked() { 1 } else { 0 }
-  let text =
-    "hotkey_capture=\{cfg_hotkey_capture.untracked()}\n" +
-    "hotkey_pin_front=\{cfg_hotkey_pin_front.untracked()}\n" +
-    "autostart=\{b4}\n" +
-    "pin_topmost=\{b1}\n" +
-    "pin_opacity=\{cfg_pin_opacity.untracked()}\n" +
-    "png_compress=\{b2}\n" +
-    "auto_save=\{b3}\n" +
-    "save_dir=\{cfg_save_dir.untracked()}\n"
-  ps_write_settings(@utf8.encode(text)) |> ignore
-  ps_set_autostart(b4) |> ignore
-  ps_notify_reload_settings()
-  cfg_saved_hint.set(true)
+  let s = settings.untracked()
+  let o : Map[String, Json] = Map([])
+  o["capture_key"] = Json::number(s.capture_key.to_double())
+  o["pin_key"] = Json::number(s.pin_key.to_double())
+  o["pin_top"] = Json::boolean(s.pin_top)
+  o["pin_alpha"] = Json::number(s.pin_alpha.to_double())
+  o["ask_where"] = Json::boolean(s.ask_where)
+  o["save_dir"] = Json::string(s.save_dir)
+  o["keep_copies"] = Json::boolean(s.keep_copies)
+  ps_write_file(cstr(settings_path()), @utf8.encode(Json::object(o).stringify(indent=2))) |> ignore
 }
 
 ///|
-fn seg_btn(parent : @view.View, label : String, active : () -> Bool, act : () -> Unit) -> Unit {
+/// The settings changed by `f`, written, and in force.
+fn change_settings(f : (Settings) -> Settings) -> Unit {
+  let was = settings.untracked()
+  let s = f(was)
+  if s == was {
+    return
+  }
+  settings.set(s)
+  save_settings()
+  if s.capture_key != was.capture_key || s.pin_key != was.pin_key {
+    apply_keys()
+  }
+}
+
+///|
+/// The shortcuts set as the settings say, and the icon's menu naming them.
+fn apply_keys() -> Unit {
+  let s = settings.untracked()
+  let (cw, cm, cv) = key_choices[s.capture_key]
+  let (pw, pm, pv) = pin_choices[s.pin_key]
+  capture_key_ok.set(ps_hotkey(1, cm, cv) == 1)
+  pin_key_ok.set(ps_hotkey(2, pm, pv) == 1)
+  let pin_words = if pv == 0 { "贴图剪贴板中的图片" } else { "贴图剪贴板中的图片\u{8}" + pw }
+  let menu = "capture\t截图\u{8}" +
+    cw +
+    "\npin-clip\t" +
+    pin_words +
+    "\npins\t显示/隐藏全部贴图\n-\nsettings\t设置…\nfolder\t打开截图文件夹\n-\nquit\t退出 PinShot\n"
+  ps_set_menu(@utf8.encode(menu))
+}
+
+// ---- the window ----
+
+///|
+let settings_wid : Ref[Int] = Ref(0)
+
+///|
+fn open_settings() -> Unit {
+  if settings_wid.val > 0 && @ui.window_front_here(settings_wid.val) {
+    return
+  }
+  let wid = @ui.window_open_here("settings")
+  if wid <= 0 {
+    return
+  }
+  settings_wid.val = wid
+  ps_center(wid, 520, 560)
+}
+
+///|
+let set_ink : Int64 = 0xEDEEF0FFL
+
+///|
+let set_muted : Int64 = 0x9EA3ABFFL
+
+///|
+let set_ground : Int64 = 0x1B1C1FFFL
+
+///|
+let set_card : Int64 = 0x232428FFL
+
+///|
+fn settings_window(root : @view.View) -> Unit {
+  root.tree.hand_over_presses(false)
+  root.ground(Is(set_ground)).padding(Is((24.0, 22.0, 24.0, 22.0))).gap(Is(18.0)) |> ignore
+  set_words(root, fn() { "PinShot 设置" }, 18.0, set_ink, weight=600)
+  set_group(root, "快捷键", fn(g) {
+    set_row(g, "截图", fn(r) {
+      choice(r, key_choices.map(fn(c) { c.0 }), fn() { settings.get().capture_key }, fn(i) {
+        change_settings(fn(s) { { ..s, capture_key: i } })
+      })
+    }, note=fn() { if capture_key_ok.get() { "" } else { "已被其他程序占用，换一个" } })
+    set_row(g, "贴图剪贴板中的图片", fn(r) {
+      choice(r, pin_choices.map(fn(c) { c.0 }), fn() { settings.get().pin_key }, fn(i) {
+        change_settings(fn(s) { { ..s, pin_key: i } })
+      })
+    }, note=fn() { if pin_key_ok.get() { "" } else { "已被其他程序占用，换一个" } })
+  })
+  set_group(root, "贴图", fn(g) {
+    set_row(g, "打开时置顶", fn(r) {
+      switch(r, fn() { settings.get().pin_top }, fn(on) { change_settings(fn(s) { { ..s, pin_top: on } }) })
+    })
+    set_row(g, "打开时的不透明度", fn(r) {
+      let values = [255, 204, 153]
+      choice(r, ["100%", "80%", "60%"], fn() {
+        let a = settings.get().pin_alpha
+        if a >= 255 {
+          0
+        } else if a >= 204 {
+          1
+        } else {
+          2
+        }
+      }, fn(i) { change_settings(fn(s) { { ..s, pin_alpha: values[i] } }) })
+    })
+  })
+  set_group(root, "保存", fn(g) {
+    set_row(g, "每次询问保存位置", fn(r) {
+      switch(r, fn() { settings.get().ask_where }, fn(on) { change_settings(fn(s) { { ..s, ask_where: on } }) })
+    })
+    set_row(g, "复制时也保存一份到文件夹", fn(r) {
+      switch(r, fn() { settings.get().keep_copies }, fn(on) { change_settings(fn(s) { { ..s, keep_copies: on } }) })
+    })
+    set_row(g, "文件夹", fn(r) {
+      r.box(fn(b) {
+        b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        set_words(b, fn() { settings.get().save_dir }, 12.0, set_muted)
+      })
+      |> ignore
+      small_button(r, "打开", fn() { ps_reveal(cstr(settings.untracked().save_dir)) })
+    })
+  })
+  set_group(root, "启动", fn(g) {
+    set_row(g, "开机时启动 PinShot", fn(r) {
+      switch(r, fn() { autostart.get() }, fn(on) {
+        if ps_set_autostart(if on { 1 } else { 0 }) == 1 {
+          autostart.set(on)
+        }
+      })
+    })
+  })
+}
+
+///|
+fn set_words(parent : @view.View, text : () -> String, size : Double, ink : Int64, weight? : Int = 400) -> Unit {
+  parent.box(fn(w) {
+    w.words(By(text), look={ ..@view.words_plain, size, weight, line: (size * 1.45).round(), wrap: false }).ink(Is(ink)) |> ignore
+  })
+  |> ignore
+}
+
+///|
+fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -> Unit {
+  parent.box(fn(g) {
+    g.gap(Is(8.0)) |> ignore
+    set_words(g, fn() { title }, 12.0, set_muted, weight=500)
+    g.box(fn(card) {
+      card.ground(Is(set_card)).radius(Is(10.0)).edge(Is((1.0, 0xFFFFFF14L))).padding(Is((14.0, 4.0, 14.0, 4.0))) |> ignore
+      make(card)
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+fn set_row(parent : @view.View, label : String, make : (@view.View) -> Unit, note? : () -> String = fn() { "" }) -> Unit {
+  parent.box(fn(row) {
+    row.row(Is(true)).min_height(Is(Some(44.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+    row.box(fn(l) {
+      l.grow(Is(1.0)).gap(Is(2.0)) |> ignore
+      set_words(l, fn() { label }, 13.0, set_ink)
+      l.box(fn(n) {
+        n
+        .laid_nowhere(By(fn() { note() == "" }))
+        .words(By(note), look={ ..@view.words_plain, size: 11.5, weight: 400, line: 16.0, wrap: false })
+        .ink(Is(0xE5A545FFL))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    make(row)
+  })
+  |> ignore
+}
+
+///|
+/// A row of choices, the one in force lit.
+fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (Int) -> Unit) -> Unit {
+  parent.box(fn(seg) {
+    seg.row(Is(true)).pad(Is(2.0)).radius(Is(7.0)).ground(Is(0x17181BFFL)).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
+    for i, name in names {
+      seg.box(fn(b) {
+        b
+        .height(Is(Some(26.0)))
+        .padding(Is((9.0, 0.0, 9.0, 0.0)))
+        .radius(Is(5.0))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .presses(Is(true))
+        .says(By(fn() { Some(@view.said(Radio, label=name, selected=at() == i)) }))
+        .on_press(fn() { pick(i) })
+        .ground(By(fn() {
+          if at() == i {
+            0x3A3C42FFL
+          } else if b.pointed() {
+            0xFFFFFF0FL
+          } else {
+            0L
+          }
+        }))
+        |> ignore
+        b.box(fn(t) {
+          t
+          .words(Is(name), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+          .ink(By(fn() { if at() == i { set_ink } else { set_muted } }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    }
+  })
+  |> ignore
+}
+
+///|
+fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
+  parent.box(fn(s) {
+    s
+    .width(Is(Some(36.0)))
+    .height(Is(Some(20.0)))
+    .radius(Is(10.0))
+    .shrink(Is(0.0))
+    .presses(Is(true))
+    .says(By(fn() { Some(@view.said(Switch, label="", check=if on() { On } else { Off })) }))
+    .on_press(fn() { set(!on()) })
+    .ground(By(fn() { if on() { 0x2F9BFFFFL } else { 0x3A3C42FFL } }))
+    .lines_up(Is(Some(Middle)))
+    |> ignore
+    s.box(fn(k) {
+      k
+      .width(Is(Some(16.0)))
+      .height(Is(Some(16.0)))
+      .radius(Is(8.0))
+      .ground(Is(0xFFFFFFFFL))
+      .offset(By(fn() { (if on() { 18.0 } else { 2.0 }, 0.0) }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+fn small_button(parent : @view.View, label : String, press : () -> Unit) -> Unit {
   parent.box(fn(b) {
     b
-    .padding(Is((10.0, 5.0, 10.0, 5.0)))
+    .height(Is(Some(26.0)))
+    .padding(Is((10.0, 0.0, 10.0, 0.0)))
     .radius(Is(6.0))
-    .presses(Is(true))
-    .cursor(Is(Some(Arrow)))
-    .ground(By(fn() { if active() { 0x3B82F6FFL } else { 0x27272AFFL } }))
-    .edge(By(fn() { if active() { (1.0, 0x60A5FAFFL) } else { (1.0, 0x3F3F46FFL) } }))
-    .on_press(fn() { act() })
-    |> ignore
-    b.box(fn(w) {
-      w
-      .words(Is(label), look={ ..@view.words_plain, size: 12.0, weight: 500 })
-      .ink(By(fn() { if active() { 0xFFFFFFFFL } else { 0xD4D4D8FFL } }))
-      |> ignore
-    }) |> ignore
-  }) |> ignore
-}
-
-///|
-fn setting_row(parent : @view.View, title : String, build : (@view.View) -> Unit) -> Unit {
-  parent.box(fn(row) {
-    row
-    .row(Is(true))
+    .shrink(Is(0.0))
     .lines_up(Is(Some(Middle)))
-    .padding(Is((0.0, 6.0, 0.0, 6.0)))
-    .gap(Is(12.0))
+    .presses(Is(true))
+    .says(Is(Some(@view.said(Button, label~))))
+    .on_press(press)
+    .ground(By(fn() { if b.pointed() { 0x45474EFFL } else { 0x3A3C42FFL } }))
     |> ignore
-    row.box(fn(lbl) {
-      lbl.width(Is(Some(118.0))) |> ignore
-      lbl.box(fn(w) {
-        w.words(Is(title), ink=0xE4E4E7FFL, look={ ..@view.words_plain, size: 13.0, weight: 500 }) |> ignore
-      }) |> ignore
-    }) |> ignore
-    row.box(fn(ctrl) {
-      ctrl.row(Is(true)).gap(Is(6.0)).grow(Is(1.0)) |> ignore
-      build(ctrl)
-    }) |> ignore
-  }) |> ignore
-}
-
-///|
-fn settings_window_view(root : @view.View) -> Unit {
-  let bindings = @view.Keymap::new([
-    @view.Binding::{ keys: [@view.Stroke::{ code: 0x1B, mods: 0 }], action: "close", when: Always },
-  ])
-  root.keymap(Is(bindings)) |> ignore
-  root.on_action("close", fn(_) {
-    @ui.window_close_here(0)
-    true
-  }) |> ignore
-
-  root.box(fn(panel) {
-    panel
-    .grow(Is(1.0))
-    .padding(Is((20.0, 18.0, 20.0, 18.0)))
-    .ground(Is(0x141417FFL))
-    .gap(Is(6.0))
+    b.box(fn(t) {
+      t.words(Is(label), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false }).ink(Is(set_ink)) |> ignore
+    })
     |> ignore
-
-    // Header (draggable)
-    panel.box(fn(hdr) {
-      hdr.row(Is(true)).lines_up(Is(Some(Middle))).presses(Is(true)).moves_window(Is(true)).padding(Is((0.0, 0.0, 0.0, 10.0))) |> ignore
-      hdr.box(fn(t) {
-        t.grow(Is(1.0)) |> ignore
-        t.box(fn(w) {
-          w.words(Is("PinShot 设置"), ink=0xFAFAFAFFL, look={ ..@view.words_plain, size: 16.0, weight: 600 }) |> ignore
-        }) |> ignore
-      }) |> ignore
-      tb_btn(hdr, "关闭", fn() { false }, fn() { @ui.window_close_here(0) })
-    }) |> ignore
-
-    // Capture hotkey
-    setting_row(panel, "截屏快捷键", fn(c) {
-      seg_btn(c, "Ctrl+Shift+A / F1", fn() { cfg_hotkey_capture.get() == 0 }, fn() { cfg_hotkey_capture.set(0) })
-      seg_btn(c, "Ctrl+Shift+A", fn() { cfg_hotkey_capture.get() == 1 }, fn() { cfg_hotkey_capture.set(1) })
-      seg_btn(c, "F1", fn() { cfg_hotkey_capture.get() == 2 }, fn() { cfg_hotkey_capture.set(2) })
-      seg_btn(c, "Ctrl+Alt+A", fn() { cfg_hotkey_capture.get() == 3 }, fn() { cfg_hotkey_capture.set(3) })
-    })
-
-    // Pin to front hotkey
-    setting_row(panel, "贴图置前快捷键", fn(c) {
-      seg_btn(c, "Ctrl+Shift+P", fn() { cfg_hotkey_pin_front.get() == 0 }, fn() { cfg_hotkey_pin_front.set(0) })
-      seg_btn(c, "F2", fn() { cfg_hotkey_pin_front.get() == 1 }, fn() { cfg_hotkey_pin_front.set(1) })
-      seg_btn(c, "关闭", fn() { cfg_hotkey_pin_front.get() == 2 }, fn() { cfg_hotkey_pin_front.set(2) })
-    })
-
-    // Default pin topmost
-    setting_row(panel, "贴图默认置顶", fn(c) {
-      seg_btn(c, "开启（推荐）", fn() { cfg_pin_topmost.get() }, fn() { cfg_pin_topmost.set(true) })
-      seg_btn(c, "关闭", fn() { !cfg_pin_topmost.get() }, fn() { cfg_pin_topmost.set(false) })
-    })
-
-    // Default pin opacity
-    setting_row(panel, "贴图默认透明度", fn(c) {
-      seg_btn(c, "100%", fn() { cfg_pin_opacity.get() == 255 }, fn() { cfg_pin_opacity.set(255) })
-      seg_btn(c, "90%", fn() { cfg_pin_opacity.get() == 230 }, fn() { cfg_pin_opacity.set(230) })
-      seg_btn(c, "78%", fn() { cfg_pin_opacity.get() == 200 }, fn() { cfg_pin_opacity.set(200) })
-    })
-
-    // PNG compression
-    setting_row(panel, "PNG 导出压缩", fn(c) {
-      seg_btn(c, "WIC 压缩（小体积）", fn() { cfg_png_compress.get() }, fn() { cfg_png_compress.set(true) })
-      seg_btn(c, "无压缩（极速）", fn() { !cfg_png_compress.get() }, fn() { cfg_png_compress.set(false) })
-    })
-
-    // Auto save & autostart
-    setting_row(panel, "复制时自动保存", fn(c) {
-      seg_btn(c, "关闭", fn() { !cfg_auto_save.get() }, fn() { cfg_auto_save.set(false) })
-      seg_btn(c, "开启", fn() { cfg_auto_save.get() }, fn() { cfg_auto_save.set(true) })
-    })
-
-    setting_row(panel, "开机自启", fn(c) {
-      seg_btn(c, "关闭", fn() { !cfg_autostart.get() }, fn() { cfg_autostart.set(false) })
-      seg_btn(c, "开启", fn() { cfg_autostart.get() }, fn() { cfg_autostart.set(true) })
-    })
-
-    // Save dir hint
-    setting_row(panel, "自动保存目录", fn(c) {
-      c.box(fn(w) {
-        w.words(By(fn() { cfg_save_dir.get() }), ink=0xA1A1AAFFL, look={ ..@view.words_plain, size: 11.5 }) |> ignore
-      }) |> ignore
-    })
-
-    // Footer save button
-    panel.box(fn(ftr) {
-      ftr.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((12.0, 0.0, 0.0, 0.0))).gap(Is(10.0)) |> ignore
-      ftr.box(fn(sp) {
-        sp.grow(Is(1.0)) |> ignore
-        sp.box(fn(w) {
-          w.words(By(fn() { if cfg_saved_hint.get() { "已保存并立即生效" } else { "" } }),
-                  ink=0x10B981FFL, look={ ..@view.words_plain, size: 12.0 }) |> ignore
-        }) |> ignore
-      }) |> ignore
-      tb_btn(ftr, "保存并应用", fn() { false }, save_settings, primary=true)
-    }) |> ignore
-  }) |> ignore
+  })
+  |> ignore
 }

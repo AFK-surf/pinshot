@@ -1,17 +1,24 @@
-// Windows native host implementation for PinShot:
-// - Monitor-under-cursor frozen screen capture (32-bit top-down DIB)
-// - Visible window bounds enumeration via DWMWA_EXTENDED_FRAME_BOUNDS
-// - Borderless topmost popup window positioning & opacity
-// - Global hotkeys (Ctrl+Shift+A, F1) + system tray icon & menu
-// - Save PNG dialog, clipboard PNG read, and detached Pin window launch
-
+// PinShot's Windows side (platform.mbt says what each call is; a Mac's platform_mac.m answers the same calls). What
+// is the system's and nothing of the UI: the one run per person, the notification area's icon and its menu, the global
+// shortcuts, the screen frozen as a picture and the windows on it, how PinShot's own windows stand (the capture
+// overlay, each pin: no frame, over the others, where and how big in the screen's pixels), and files.
+//
+// What happens outside the frames (a shortcut pressed, the icon clicked, its menu chosen) is told the app on its
+// channel "ps" (mb_post: @ui.on_message_said), as JSON: {"do":"capture"}, {"do":"menu","item":"settings"}, ...
+// The screen is taken as the shortcut is pressed, here, before the app is told: the picture is of the moment it was
+// asked for, whatever the app's frames do meanwhile.
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
 #include <windows.h>
-#include <commdlg.h>
+#include <windowsx.h>
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
-#include <wincodec.h>
+#include <shlobj.h>
+#include <shobjidl.h>
+#include <psapi.h>
+#include <d3d11.h>
+#include <dxgi1_3.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,16 +29,25 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shell32.lib")
-#pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "ole32.lib")
-#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "dxguid.lib")
 
-static moonbit_bytes_t ps_bytes(const void *p, int32_t n) {
-  moonbit_bytes_t b = moonbit_make_bytes(n, 0);
-  if (n > 0 && p) memcpy(b, p, (size_t)n);
+// (mbui's Windows host, linked in the same program)
+extern void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
+extern void *mb_app_hwnd_of(int wid);
+
+// ---- small things ----
+
+static moonbit_bytes_t ps_bytes(const void *p, size_t n) {
+  moonbit_bytes_t b = moonbit_make_bytes((int32_t)n, 0);
+  if (n > 0 && p) memcpy(b, p, n);
   return b;
 }
+
+static moonbit_bytes_t ps_text(const char *s) { return ps_bytes(s, strlen(s)); }
 
 static wchar_t *ps_wide(const char *utf8) {
   int n = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
@@ -41,845 +57,929 @@ static wchar_t *ps_wide(const char *utf8) {
   return w;
 }
 
-static char *ps_utf8(const wchar_t *w) {
+static moonbit_bytes_t ps_utf8_bytes(const wchar_t *w) {
   int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
-  char *s = (char *)malloc((size_t)(n > 0 ? n : 1));
-  if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL);
-  else s[0] = 0;
-  return s;
-}
-
-moonbit_bytes_t ps_args_str(void) {
-  int argc = 0;
-  LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  if (!argv) return moonbit_make_bytes(0, 0);
-  size_t cap = 1024, len = 0;
-  char *out = (char *)malloc(cap);
-  for (int i = 1; i < argc; i++) {
-    char *u = ps_utf8(argv[i]);
-    size_t ul = strlen(u);
-    if (len + ul + 2 > cap) {
-      cap = (len + ul + 2) * 2;
-      out = (char *)realloc(out, cap);
-    }
-    memcpy(out + len, u, ul);
-    len += ul;
-    out[len++] = '\n';
-    free(u);
-  }
-  LocalFree(argv);
-  moonbit_bytes_t b = ps_bytes(out, (int32_t)len);
-  free(out);
+  if (n <= 1) return moonbit_make_bytes(0, 0);
+  moonbit_bytes_t b = moonbit_make_bytes(n - 1, 0);
+  WideCharToMultiByte(CP_UTF8, 0, w, -1, (char *)b, n - 1, NULL, NULL);
   return b;
 }
 
-// ---- Frozen screen capture ----
+static void ps_tell(const char *json) { mb_post("ps", json, strlen(json), NULL, 0); }
 
-static uint8_t *g_cap_bmp = NULL;
-static int32_t g_cap_bmp_len = 0;
-static int g_cap_x = 0, g_cap_y = 0, g_cap_w = 0, g_cap_h = 0;
-static double g_cap_scale = 1.0;
-static HWND g_main_hwnd = NULL;
-
-static HWND ps_find_own_hwnd(void) {
-  HWND best = NULL;
-  DWORD me = GetCurrentProcessId();
-  HWND h = GetTopWindow(NULL);
-  while (h) {
-    DWORD pid = 0;
-    GetWindowThreadProcessId(h, &pid);
-    if (pid == me) {
-      wchar_t cls[64];
-      if (GetClassNameW(h, cls, 64) && wcscmp(cls, L"mbui") == 0) {
-        best = h;
-        break;
-      }
-    }
-    h = GetNextWindow(h, GW_HWNDNEXT);
-  }
-  return best;
+static double ps_ms(void) {
+  static LARGE_INTEGER f;
+  LARGE_INTEGER t;
+  if (!f.QuadPart) QueryPerformanceFrequency(&f);
+  QueryPerformanceCounter(&t);
+  return (double)t.QuadPart * 1000.0 / (double)f.QuadPart;
 }
 
-int32_t ps_capture_screen(void) {
-  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-  POINT pt = {0, 0};
-  GetCursorPos(&pt);
-  HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-  MONITORINFOEXW mi;
-  mi.cbSize = sizeof(mi);
-  if (!GetMonitorInfoW(mon, (LPMONITORINFO)&mi)) return 0;
+double ps_now_ms(void) { return ps_ms(); }
 
-  int mx = mi.rcMonitor.left;
-  int my = mi.rcMonitor.top;
-  int mw = mi.rcMonitor.right - mi.rcMonitor.left;
-  int mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-  if (mw <= 0 || mh <= 0) return 0;
+// ---- the screen, frozen ----
+//
+// The monitor the pointer is on, taken whole as a BMP file's bytes (rows from the top, 32 bits a pixel, BGRX: what mbui
+// makes a texture of as it is, patches/mbui-raw-bmp.patch) in a MoonBit Bytes made here on the UI thread, filled on a
+// thread of its own (GDI's BitBlt of the screen: what DWM composes, SDR; ~45 ms for 4K with HDR on), so the overlay is
+// put up at the monitor's size meanwhile: the app is told {"do":"prepare",...} as the shortcut is pressed and
+// {"do":"capture",...} once the picture is there; it takes it then (ps_capture_take), nothing copied again.
 
-  HDC screen = GetDC(NULL);
-  HDC mem = CreateCompatibleDC(screen);
-  BITMAPINFO bmi;
-  ZeroMemory(&bmi, sizeof(bmi));
-  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bmi.bmiHeader.biWidth = mw;
-  bmi.bmiHeader.biHeight = -mh; // top-down
-  bmi.bmiHeader.biPlanes = 1;
-  bmi.bmiHeader.biBitCount = 32;
-  bmi.bmiHeader.biCompression = BI_RGB;
+#pragma pack(push, 1)
+typedef struct {
+  uint16_t type;
+  uint32_t size;
+  uint32_t reserved;
+  uint32_t offset;
+} BmpFileHead;
+#pragma pack(pop)
 
-  void *bits = NULL;
-  HBITMAP bmp = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
-  if (!bmp || !bits) {
-    if (bmp) DeleteObject(bmp);
-    DeleteDC(mem);
-    ReleaseDC(NULL, screen);
-    return 0;
+#define BMP_HEAD (sizeof(BmpFileHead) + sizeof(BITMAPINFOHEADER))
+#define WM_PS_TAKEN (WM_APP + 42)
+
+static moonbit_bytes_t cap_buf;  // the picture being taken or taken, the app's to take (an owned reference)
+static volatile LONG cap_busy;   // a taking under way (its thread fills cap_buf)
+static int cap_ok;               // the last taking's outcome
+static int cap_x, cap_y, cap_w, cap_h, cap_dpi;
+static double cap_t0, cap_ms;  // when it was asked, how long the taking took
+static HWND tray_hwnd;
+static char *win_list;  // the windows on the monitor as it was taken (ps_windows)
+static size_t win_list_len;
+static void windows_listed(void);
+
+static int monitor_under_pointer(void) {
+  // (the screen's own pixels, whoever asks first: the run sets it as it starts, a bench does not start one)
+  static int aware;
+  if (!aware) aware = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) || 1;
+  POINT p;
+  GetCursorPos(&p);
+  HMONITOR mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = {sizeof mi};
+  if (!GetMonitorInfoW(mon, &mi)) return 0;
+  int w = mi.rcMonitor.right - mi.rcMonitor.left, h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+  if (w <= 0 || h <= 0) return 0;
+  UINT dx = 96, dy = 96;
+  typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
+  static GetDpiForMonitorFn dpi_of;
+  if (!dpi_of) {
+    HMODULE sh = LoadLibraryW(L"shcore.dll");
+    if (sh) dpi_of = (GetDpiForMonitorFn)GetProcAddress(sh, "GetDpiForMonitor");
   }
-  HGDIOBJ old = SelectObject(mem, bmp);
-  BitBlt(mem, 0, 0, mw, mh, screen, mx, my, SRCCOPY);
-  SelectObject(mem, old);
-
-  // Force alpha=255 for all captured pixels using 64-bit stores (8x faster than byte loop).
-  size_t px_bytes = (size_t)mw * (size_t)mh * 4;
-  uint64_t *p64 = (uint64_t *)bits;
-  size_t n64 = px_bytes / 8;
-  for (size_t i = 0; i < n64; i++) p64[i] |= 0xFF000000FF000000ULL;
-  if (px_bytes & 4) ((uint32_t *)bits)[px_bytes / 4 - 1] |= 0xFF000000u;
-
-  const int hdr = 14 + 40;
-  int32_t total = hdr + (int32_t)px_bytes;
-  free(g_cap_bmp);
-  g_cap_bmp = (uint8_t *)malloc((size_t)total);
-  ZeroMemory(g_cap_bmp, hdr);
-  g_cap_bmp[0] = 'B';
-  g_cap_bmp[1] = 'M';
-  memcpy(g_cap_bmp + 2, &total, 4);
-  int32_t off = hdr;
-  memcpy(g_cap_bmp + 10, &off, 4);
-  int32_t info_sz = 40, neg_h = -mh;
-  uint16_t planes = 1, bpp = 32;
-  memcpy(g_cap_bmp + 14, &info_sz, 4);
-  memcpy(g_cap_bmp + 18, &mw, 4);
-  memcpy(g_cap_bmp + 22, &neg_h, 4);
-  memcpy(g_cap_bmp + 26, &planes, 2);
-  memcpy(g_cap_bmp + 28, &bpp, 2);
-  memcpy(g_cap_bmp + hdr, bits, px_bytes);
-  g_cap_bmp_len = total;
-
-  DeleteObject(bmp);
-  DeleteDC(mem);
-  ReleaseDC(NULL, screen);
-
-  g_cap_x = mx;
-  g_cap_y = my;
-  g_cap_w = mw;
-  g_cap_h = mh;
-  HWND own = ps_find_own_hwnd();
-  UINT dpi = own ? GetDpiForWindow(own) : GetDpiForSystem();
-  g_cap_scale = dpi > 0 ? (double)dpi / 96.0 : 1.0;
+  if (dpi_of) dpi_of(mon, 0, &dx, &dy);
+  cap_x = mi.rcMonitor.left, cap_y = mi.rcMonitor.top, cap_w = w, cap_h = h, cap_dpi = (int)dx;
   return 1;
 }
 
+// The taking itself, on its own thread: BitBlt into a DIB section, its rows copied after cap_buf's header.
+static DWORD WINAPI cap_work(void *arg) {
+  (void)arg;
+  int ok = 0;
+  HDC screen = GetDC(NULL);
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bi;
+  memset(&bi, 0, sizeof bi);
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = cap_w;
+  bi.bmiHeader.biHeight = -cap_h;  // rows from the top
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void *bits = NULL;
+  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+  if (dib && bits) {
+    HGDIOBJ old = SelectObject(mem, dib);
+    ok = BitBlt(mem, 0, 0, cap_w, cap_h, screen, cap_x, cap_y, SRCCOPY) != 0;
+    SelectObject(mem, old);
+    if (ok) memcpy((uint8_t *)cap_buf + BMP_HEAD, bits, (size_t)cap_w * cap_h * 4);
+  }
+  if (dib) DeleteObject(dib);
+  DeleteDC(mem);
+  ReleaseDC(NULL, screen);
+  cap_ok = ok;
+  cap_ms = ps_ms() - cap_t0;
+  InterlockedExchange(&cap_busy, 0);
+  if (tray_hwnd) PostMessageW(tray_hwnd, WM_PS_TAKEN, (WPARAM)ok, 0);
+  return 0;
+}
+
+// A taking begun (the UI thread's): the monitor found, its bytes made, the windows on it listed, the work handed to
+// its thread. 0 where one is under way already or there is no monitor.
+static int cap_begin(void) {
+  if (cap_busy) return 0;
+  cap_t0 = ps_ms();
+  if (!monitor_under_pointer()) return 0;
+  if (cap_buf) moonbit_decref(cap_buf);
+  size_t px = (size_t)cap_w * cap_h * 4;
+  cap_buf = moonbit_make_bytes_raw((int32_t)(BMP_HEAD + px));
+  BmpFileHead fh = {0x4D42, (uint32_t)(BMP_HEAD + px), 0, (uint32_t)BMP_HEAD};
+  BITMAPINFOHEADER ih;
+  memset(&ih, 0, sizeof ih);
+  ih.biSize = sizeof ih;
+  ih.biWidth = cap_w;
+  ih.biHeight = -cap_h;
+  ih.biPlanes = 1;
+  ih.biBitCount = 32;
+  ih.biCompression = BI_RGB;
+  memcpy(cap_buf, &fh, sizeof fh);
+  memcpy((uint8_t *)cap_buf + sizeof fh, &ih, sizeof ih);
+  windows_listed();
+  cap_ok = 0;
+  InterlockedExchange(&cap_busy, 1);
+  HANDLE t = CreateThread(NULL, 0, cap_work, NULL, 0, NULL);
+  if (!t) {
+    InterlockedExchange(&cap_busy, 0);
+    return 0;
+  }
+  CloseHandle(t);
+  return 1;
+}
+
+// The screen taken now, waited for here (a bench, the icon's menu): 1 when taken.
+int32_t ps_capture_now(void) {
+  if (!cap_begin()) return 0;
+  while (cap_busy) Sleep(1);
+  // (its WM_PS_TAKEN dropped: it was waited for)
+  MSG m;
+  while (tray_hwnd && PeekMessageW(&m, tray_hwnd, WM_PS_TAKEN, WM_PS_TAKEN, PM_REMOVE)) {
+  }
+  return cap_ok;
+}
+
+// What was taken: "x,y,w,h,dpi,ms" (the monitor in the screen's pixels, its DPI, how long the taking took); "" none.
 moonbit_bytes_t ps_capture_info(void) {
-  char buf[128];
-  int n = snprintf(buf, sizeof(buf), "%d,%d,%d,%d,%.4f", g_cap_x, g_cap_y, g_cap_w, g_cap_h, g_cap_scale);
-  return ps_bytes(buf, n > 0 ? n : 0);
+  if (!cap_buf || cap_busy) return moonbit_make_bytes(0, 0);
+  char s[128];
+  snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms);
+  return ps_text(s);
 }
 
-moonbit_bytes_t ps_capture_bmp(void) {
-  if (!g_cap_bmp || g_cap_bmp_len <= 0) return moonbit_make_bytes(0, 0);
-  return ps_bytes(g_cap_bmp, g_cap_bmp_len);
+// The picture taken, as a BMP file's bytes, handed over (empty: none, or still being taken).
+moonbit_bytes_t ps_capture_take(void) {
+  if (!cap_buf || cap_busy || !cap_ok) return moonbit_make_bytes(0, 0);
+  moonbit_bytes_t b = cap_buf;
+  cap_buf = NULL;
+  return b;
 }
 
-void ps_release_capture(void) {
-  free(g_cap_bmp);
-  g_cap_bmp = NULL;
-  g_cap_bmp_len = 0;
-}
-
-void ps_trim_memory(void) {
-  SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
-}
-
-// Fast WIC PNG encoder (zlib-compressed) for BGRA/RGBA pixel buffers.
-static moonbit_bytes_t ps_wic_encode_png(const uint8_t *pixels, int32_t w, int32_t h, int32_t stride,
-                                         const WICPixelFormatGUID *src_fmt) {
-  if (!pixels || w <= 0 || h <= 0) return moonbit_make_bytes(0, 0);
-  CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-  IWICImagingFactory *wic = NULL;
-  IWICBitmapEncoder *enc = NULL;
-  IWICBitmapFrameEncode *frame = NULL;
-  IStream *stream = NULL;
-  moonbit_bytes_t out = moonbit_make_bytes(0, 0);
-
-  if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
-                              &IID_IWICImagingFactory, (void **)&wic))) goto done;
-  if (FAILED(CreateStreamOnHGlobal(NULL, TRUE, &stream))) goto done;
-  if (FAILED(IWICImagingFactory_CreateEncoder(wic, &GUID_ContainerFormatPng, NULL, &enc))) goto done;
-  if (FAILED(IWICBitmapEncoder_Initialize(enc, stream, WICBitmapEncoderNoCache))) goto done;
-  if (FAILED(IWICBitmapEncoder_CreateNewFrame(enc, &frame, NULL))) goto done;
-  if (FAILED(IWICBitmapFrameEncode_Initialize(frame, NULL))) goto done;
-  if (FAILED(IWICBitmapFrameEncode_SetSize(frame, (UINT)w, (UINT)h))) goto done;
-
-  WICPixelFormatGUID fmt = *src_fmt;
-  if (FAILED(IWICBitmapFrameEncode_SetPixelFormat(frame, &fmt))) goto done;
-  if (FAILED(IWICBitmapFrameEncode_WritePixels(frame, (UINT)h, (UINT)stride, (UINT)(stride * h), (BYTE *)pixels))) goto done;
-  if (FAILED(IWICBitmapFrameEncode_Commit(frame))) goto done;
-  if (FAILED(IWICBitmapEncoder_Commit(enc))) goto done;
-
-  HGLOBAL hg = NULL;
-  if (SUCCEEDED(GetHGlobalFromStream(stream, &hg)) && hg) {
-    SIZE_T sz = GlobalSize(hg);
-    void *ptr = GlobalLock(hg);
-    if (ptr && sz > 0) {
-      out = ps_bytes(ptr, (int32_t)sz);
-      GlobalUnlock(hg);
-    }
-  }
-done:
-  if (frame) IWICBitmapFrameEncode_Release(frame);
-  if (enc) IWICBitmapEncoder_Release(enc);
-  if (stream) IStream_Release(stream);
-  if (wic) IWICImagingFactory_Release(wic);
-  return out;
-}
-
-moonbit_bytes_t ps_encode_crop_png(int32_t x, int32_t y, int32_t w, int32_t h) {
-  if (!g_cap_bmp || g_cap_bmp_len < 54 + g_cap_w * g_cap_h * 4) return moonbit_make_bytes(0, 0);
-  if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > g_cap_w || y + h > g_cap_h) {
-    return moonbit_make_bytes(0, 0);
-  }
-  const uint8_t *base = g_cap_bmp + 54 + (y * g_cap_w + x) * 4;
-  return ps_wic_encode_png(base, w, h, g_cap_w * 4, &GUID_WICPixelFormat32bppBGRA);
-}
-
-moonbit_bytes_t ps_encode_rgba_png(int32_t w, int32_t h, moonbit_bytes_t rgba) {
-  int32_t n = (int32_t)Moonbit_array_length(rgba);
-  if (w <= 0 || h <= 0 || n < w * h * 4) return moonbit_make_bytes(0, 0);
-  // Convert straight RGBA -> BGRA in temporary buffer for WIC
-  size_t total = (size_t)w * (size_t)h * 4;
-  uint8_t *bgra = (uint8_t *)malloc(total);
-  if (!bgra) return moonbit_make_bytes(0, 0);
-  const uint8_t *src = (const uint8_t *)rgba;
-  for (size_t i = 0; i < total; i += 4) {
-    bgra[i] = src[i + 2];
-    bgra[i + 1] = src[i + 1];
-    bgra[i + 2] = src[i];
-    bgra[i + 3] = src[i + 3];
-  }
-  moonbit_bytes_t out = ps_wic_encode_png(bgra, w, h, w * 4, &GUID_WICPixelFormat32bppBGRA);
-  free(bgra);
-  return out;
-}
-
-// ---- Window enumeration ----
+// ---- the windows on the screen ----
+//
+// The windows that show on the monitor taken, the front first: each "x,y,w,h" in the monitor's pixels (its frame as DWM
+// draws it, without the shadow), one a line; what a click picks while nothing is selected. Child windows big enough to be
+// a part of their window (a pane, a view) follow their window's line, before the next window. Ours are left out.
 
 typedef struct {
-  char *buf;
-  size_t len;
-  size_t cap;
-  DWORD self_pid;
-} WinEnumCtx;
+  char *out;
+  size_t len, cap;
+  int depth;
+} WinList;
 
-static BOOL CALLBACK ps_enum_proc(HWND h, LPARAM lp) {
-  WinEnumCtx *ctx = (WinEnumCtx *)lp;
+static void list_put(WinList *l, RECT r, HWND h) {
+  char s[200], cls[96] = {0};
+  GetClassNameA(h, cls, sizeof cls);
+  int n = snprintf(s, sizeof s, "%ld,%ld,%ld,%ld;%s\n", r.left - cap_x, r.top - cap_y, r.right - r.left, r.bottom - r.top, cls);
+  if (l->len + n + 1 > l->cap) {
+    l->cap = (l->len + n + 1) * 2;
+    l->out = (char *)realloc(l->out, l->cap);
+  }
+  memcpy(l->out + l->len, s, (size_t)n);
+  l->len += (size_t)n;
+}
+
+static int rect_on_monitor(RECT r) {
+  RECT m = {cap_x, cap_y, cap_x + cap_w, cap_y + cap_h}, i;
+  return IntersectRect(&i, &r, &m) && (i.right - i.left) >= 8 && (i.bottom - i.top) >= 8;
+}
+
+static BOOL CALLBACK child_found(HWND h, LPARAM lp) {
+  WinList *l = (WinList *)lp;
+  if (!IsWindowVisible(h)) return TRUE;
+  RECT r;
+  if (!GetWindowRect(h, &r)) return TRUE;
+  if ((r.right - r.left) < 40 || (r.bottom - r.top) < 24 || !rect_on_monitor(r)) return TRUE;
+  list_put(l, r, h);
+  return TRUE;
+}
+
+static BOOL CALLBACK window_found(HWND h, LPARAM lp) {
+  WinList *l = (WinList *)lp;
   if (!IsWindowVisible(h) || IsIconic(h)) return TRUE;
   DWORD pid = 0;
   GetWindowThreadProcessId(h, &pid);
-  if (pid == ctx->self_pid) return TRUE;
+  if (pid == GetCurrentProcessId()) return TRUE;
   BOOL cloaked = FALSE;
-  if (SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return TRUE;
+  DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked);
+  if (cloaked) return TRUE;
   LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-  if (ex & WS_EX_TOOLWINDOW) return TRUE;
+  if ((ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED)) return TRUE;  // (what a click goes through: an overlay)
   RECT r;
-  if (FAILED(DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(r)))) {
-    if (!GetWindowRect(h, &r)) return TRUE;
-  }
-  int l = r.left < g_cap_x ? g_cap_x : r.left;
-  int t = r.top < g_cap_y ? g_cap_y : r.top;
-  int ri = r.right > g_cap_x + g_cap_w ? g_cap_x + g_cap_w : r.right;
-  int b = r.bottom > g_cap_y + g_cap_h ? g_cap_y + g_cap_h : r.bottom;
-  int w = ri - l, hh = b - t;
-  if (w < 24 || hh < 24) return TRUE;
-  if (w >= g_cap_w - 2 && hh >= g_cap_h - 2) return TRUE; // skip desktop/shell full window
-  char line[128];
-  int n = snprintf(line, sizeof(line), "%d,%d,%d,%d\n", l - g_cap_x, t - g_cap_y, w, hh);
-  if (n > 0) {
-    if (ctx->len + (size_t)n + 1 > ctx->cap) {
-      ctx->cap = (ctx->len + (size_t)n + 1) * 2;
-      ctx->buf = (char *)realloc(ctx->buf, ctx->cap);
-    }
-    memcpy(ctx->buf + ctx->len, line, (size_t)n);
-    ctx->len += (size_t)n;
-  }
+  if (FAILED(DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r)) && !GetWindowRect(h, &r)) return TRUE;
+  if ((r.right - r.left) < 8 || (r.bottom - r.top) < 8 || !rect_on_monitor(r)) return TRUE;
+  // (the taskbar and the desktop are windows too: kept, they are what is on the screen)
+  list_put(l, r, h);
+  EnumChildWindows(h, child_found, lp);
   return TRUE;
 }
 
-moonbit_bytes_t ps_enum_windows(void) {
-  WinEnumCtx ctx = {(char *)malloc(2048), 0, 2048, GetCurrentProcessId()};
-  EnumWindows(ps_enum_proc, (LPARAM)&ctx);
-  moonbit_bytes_t b = ps_bytes(ctx.buf, (int32_t)ctx.len);
-  free(ctx.buf);
-  return b;
+static void windows_listed(void) {
+  WinList l = {NULL, 0, 0, 0};
+  EnumWindows(window_found, (LPARAM)&l);
+  free(win_list);
+  win_list = l.out;
+  win_list_len = l.len;
 }
 
-// ---- Popup window management ----
+// The windows as they were when the screen was taken.
+moonbit_bytes_t ps_windows(void) { return ps_bytes(win_list, win_list_len); }
 
-int32_t ps_setup_popup(int32_t x, int32_t y, int32_t w, int32_t h, int32_t topmost) {
-  HWND hwnd = ps_find_own_hwnd();
-  if (!hwnd) return 0;
-  g_main_hwnd = hwnd;
-  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-  style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
-  style |= WS_POPUP;
-  SetWindowLongPtrW(hwnd, GWL_STYLE, style);
-  LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-  ex |= WS_EX_TOOLWINDOW | WS_EX_LAYERED;
-  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
-  SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
-  SetWindowPos(hwnd, topmost ? HWND_TOPMOST : HWND_NOTOPMOST, x, y, w, h,
-               SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-  SetForegroundWindow(hwnd);
-  return 1;
+// ---- one run, the icon, the shortcuts ----
+
+#define PS_CLASS L"PinShot.Tray"
+#define WM_PS_TRAY (WM_APP + 40)
+#define WM_PS_AGAIN (WM_APP + 41)
+static NOTIFYICONDATAW tray;
+static UINT taskbar_created;
+static HANDLE one_run;
+
+enum { HK_CAPTURE = 1, HK_PIN_CLIP = 2, HK_PINS = 3, HK_MOST = 4 };
+static int hk_on[HK_MOST];
+
+static HICON own_icon(int size) {
+  HICON i = (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(1), IMAGE_ICON, size, size, LR_DEFAULTCOLOR);
+  return i ? i : LoadIcon(NULL, IDI_APPLICATION);
 }
 
-void ps_show_popup(int32_t x, int32_t y, int32_t w, int32_t h) {
-  HWND hwnd = ps_find_own_hwnd();
-  if (!hwnd) return;
-  SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW | SWP_FRAMECHANGED);
-  SetForegroundWindow(hwnd);
-}
-
-void ps_hide_window(void) {
-  HWND hwnd = ps_find_own_hwnd();
-  if (hwnd) ShowWindow(hwnd, SW_HIDE);
-}
-
-void ps_set_opacity(int32_t alpha) {
-  HWND hwnd = ps_find_own_hwnd();
-  if (!hwnd) return;
-  if (alpha < 30) alpha = 30;
-  if (alpha > 255) alpha = 255;
-  SetLayeredWindowAttributes(hwnd, 0, (BYTE)alpha, LWA_ALPHA);
-}
-
-void ps_set_topmost(int32_t on) {
-  HWND hwnd = ps_find_own_hwnd();
-  if (!hwnd) return;
-  SetWindowPos(hwnd, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-  if (on) {
-    BringWindowToTop(hwnd);
-    SetForegroundWindow(hwnd);
+static void tray_put(void) {
+  memset(&tray, 0, sizeof tray);
+  tray.cbSize = sizeof tray;
+  tray.hWnd = tray_hwnd;
+  tray.uID = 1;
+  tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+  tray.uCallbackMessage = WM_PS_TRAY;
+  tray.hIcon = own_icon(GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(tray_hwnd)));
+  lstrcpynW(tray.szTip, L"PinShot", 64);
+  if (Shell_NotifyIconW(NIM_ADD, &tray)) {
+    tray.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &tray);
   }
 }
 
-static BOOL CALLBACK ps_pin_front_proc(HWND h, LPARAM lp) {
-  int32_t *count = (int32_t *)lp;
-  if (!IsWindowVisible(h)) return TRUE;
-  wchar_t cls[64];
-  if (!GetClassNameW(h, cls, 64) || wcscmp(cls, L"mbui") != 0) return TRUE;
-  wchar_t title[128];
-  if (!GetWindowTextW(h, title, 128) || wcscmp(title, L"PinShot Pin") != 0) return TRUE;
-  SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-  BringWindowToTop(h);
-  SetForegroundWindow(h);
-  (*count)++;
-  return TRUE;
+static void tray_gone(void) {
+  if (tray_hwnd) Shell_NotifyIconW(NIM_DELETE, &tray);
 }
 
-int32_t ps_bring_all_pins_front(void) {
-  int32_t count = 0;
-  EnumWindows(ps_pin_front_proc, (LPARAM)&count);
-  return count;
-}
+// The icon's menu (words the app gave: ps_set_menu), each item's key told back as chosen.
+#define MENU_MOST 16
+static wchar_t *menu_words[MENU_MOST];
+static char menu_keys[MENU_MOST][32];
+static int menu_n;
 
-int64_t ps_now_us(void) {
-  static LARGE_INTEGER freq = {0};
-  if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
-  LARGE_INTEGER now;
-  QueryPerformanceCounter(&now);
-  return (int64_t)((now.QuadPart * 1000000LL) / freq.QuadPart);
-}
-
-// ---- Settings, Autostart & Auto-save ----
-
-static void ps_settings_path(wchar_t *out, size_t cap) {
-  wchar_t appdata[MAX_PATH];
-  DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
-  if (n > 0 && n < MAX_PATH - 32) {
-    swprintf_s(out, cap, L"%s\\PinShot", appdata);
-    CreateDirectoryW(out, NULL);
-    swprintf_s(out, cap, L"%s\\PinShot\\settings.ini", appdata);
-  } else {
-    wcsncpy_s(out, cap, L"pinshot_settings.ini", _TRUNCATE);
-  }
-}
-
-moonbit_bytes_t ps_read_settings(void) {
-  wchar_t path[MAX_PATH];
-  ps_settings_path(path, MAX_PATH);
-  HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (f == INVALID_HANDLE_VALUE) return moonbit_make_bytes(0, 0);
-  LARGE_INTEGER sz;
-  if (!GetFileSizeEx(f, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 64 * 1024) {
-    CloseHandle(f);
-    return moonbit_make_bytes(0, 0);
-  }
-  DWORD len = (DWORD)sz.QuadPart;
-  moonbit_bytes_t b = moonbit_make_bytes((int32_t)len, 0);
-  DWORD got = 0;
-  if (!ReadFile(f, b, len, &got, NULL) || got != len) {
-    CloseHandle(f);
-    return moonbit_make_bytes(0, 0);
-  }
-  CloseHandle(f);
-  return b;
-}
-
-int32_t ps_write_settings(moonbit_bytes_t data) {
-  wchar_t path[MAX_PATH];
-  ps_settings_path(path, MAX_PATH);
-  HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (f == INVALID_HANDLE_VALUE) return 0;
-  DWORD wrote = 0;
-  int32_t n = (int32_t)Moonbit_array_length(data);
-  BOOL ok = WriteFile(f, data, (DWORD)n, &wrote, NULL);
-  CloseHandle(f);
-  return (ok && (int32_t)wrote == n) ? 1 : 0;
-}
-
-int32_t ps_get_autostart(void) {
-  HKEY hk = NULL;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                    0, KEY_READ, &hk) != ERROR_SUCCESS) return 0;
-  DWORD type = 0, sz = 0;
-  LONG r = RegQueryValueExW(hk, L"PinShot", NULL, &type, NULL, &sz);
-  RegCloseKey(hk);
-  return (r == ERROR_SUCCESS && sz > 2) ? 1 : 0;
-}
-
-int32_t ps_set_autostart(int32_t on) {
-  HKEY hk = NULL;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                    0, KEY_SET_VALUE, &hk) != ERROR_SUCCESS) return 0;
-  LONG r;
-  if (on) {
-    wchar_t exe[MAX_PATH], cmd[MAX_PATH + 8];
-    GetModuleFileNameW(NULL, exe, MAX_PATH);
-    swprintf_s(cmd, MAX_PATH + 8, L"\"%s\"", exe);
-    r = RegSetValueExW(hk, L"PinShot", 0, REG_SZ, (const BYTE *)cmd,
-                       (DWORD)((wcslen(cmd) + 1) * sizeof(wchar_t)));
-  } else {
-    r = RegDeleteValueW(hk, L"PinShot");
-    if (r == ERROR_FILE_NOT_FOUND) r = ERROR_SUCCESS;
-  }
-  RegCloseKey(hk);
-  return r == ERROR_SUCCESS ? 1 : 0;
-}
-
-moonbit_bytes_t ps_default_save_dir(void) {
-  wchar_t up[MAX_PATH], out[MAX_PATH];
-  DWORD n = GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
-  if (n > 0 && n < MAX_PATH - 20) {
-    swprintf_s(out, MAX_PATH, L"%s\\Pictures\\PinShot", up);
-  } else {
-    wcsncpy_s(out, MAX_PATH, L"PinShot", _TRUNCATE);
-  }
-  char *u = ps_utf8(out);
-  moonbit_bytes_t b = ps_bytes(u, (int32_t)strlen(u));
-  free(u);
-  return b;
-}
-
-int32_t ps_auto_save_png(moonbit_bytes_t png, moonbit_bytes_t dir) {
-  wchar_t *wdir = ps_wide((const char *)dir);
-  CreateDirectoryW(wdir, NULL);
-  SYSTEMTIME st;
-  GetLocalTime(&st);
-  wchar_t file[MAX_PATH];
-  swprintf_s(file, MAX_PATH, L"%s\\PinShot_%04d%02d%02d_%02d%02d%02d.png",
-             wdir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-  free(wdir);
-  HANDLE f = CreateFileW(file, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (f == INVALID_HANDLE_VALUE) return 0;
-  DWORD wrote = 0;
-  int32_t n = (int32_t)Moonbit_array_length(png);
-  BOOL ok = WriteFile(f, png, (DWORD)n, &wrote, NULL);
-  CloseHandle(f);
-  return (ok && (int32_t)wrote == n) ? 1 : 0;
-}
-
-static int ps_read_ini_int(const char *key, int fallback) {
-  wchar_t path[MAX_PATH];
-  ps_settings_path(path, MAX_PATH);
-  HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (f == INVALID_HANDLE_VALUE) return fallback;
-  char buf[4096];
-  DWORD got = 0;
-  BOOL ok = ReadFile(f, buf, sizeof(buf) - 1, &got, NULL);
-  CloseHandle(f);
-  if (!ok || got == 0) return fallback;
-  buf[got] = 0;
-  size_t klen = strlen(key);
-  char *p = buf;
-  while (*p) {
-    char *nl = strchr(p, '\n');
-    if (nl) *nl = 0;
-    if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
-      return atoi(p + klen + 1);
+// "key\twords\n" lines; a line "-" a separator.
+void ps_set_menu(moonbit_bytes_t lines) {
+  for (int i = 0; i < menu_n; i++) free(menu_words[i]);
+  menu_n = 0;
+  int n = (int)Moonbit_array_length(lines);
+  const char *s = (const char *)lines;
+  int at = 0;
+  while (at < n && menu_n < MENU_MOST) {
+    int end = at;
+    while (end < n && s[end] != '\n') end++;
+    int tab = at;
+    while (tab < end && s[tab] != '\t') tab++;
+    char key[32] = {0}, words[256] = {0};
+    int kl = tab - at < 31 ? tab - at : 31;
+    memcpy(key, s + at, (size_t)kl);
+    if (tab < end) {
+      int wl = end - tab - 1 < 255 ? end - tab - 1 : 255;
+      memcpy(words, s + tab + 1, (size_t)wl);
     }
-    if (!nl) break;
-    p = nl + 1;
-  }
-  return fallback;
-}
-
-static void ps_launch_mode(const wchar_t *arg) {
-  wchar_t exe[MAX_PATH];
-  GetModuleFileNameW(NULL, exe, MAX_PATH);
-  wchar_t cmd[MAX_PATH + 32];
-  swprintf_s(cmd, MAX_PATH + 32, L"\"%s\" %s", exe, arg);
-  STARTUPINFOW si;
-  PROCESS_INFORMATION pi;
-  ZeroMemory(&si, sizeof(si));
-  si.cb = sizeof(si);
-  ZeroMemory(&pi, sizeof(pi));
-  if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    lstrcpynA(menu_keys[menu_n], key, 32);
+    menu_words[menu_n] = ps_wide(words);
+    menu_n++;
+    at = end + 1;
   }
 }
 
-void ps_notify_reload_settings(void) {
-  HWND h = FindWindowW(L"PinShotTrayMsg", NULL);
-  if (h) PostMessageW(h, WM_APP + 2, 0, 0);
-}
-
-// ---- Tray & Global Hotkey ----
-
-#define PS_WM_TRAY (WM_APP + 1)
-#define PS_WM_RELOAD_CFG (WM_APP + 2)
-#define PS_HOTKEY_CAPTURE 101
-#define PS_HOTKEY_CAPTURE_F1 102
-#define PS_HOTKEY_PIN_FRONT 103
-#define PS_CMD_CAPTURE 201
-#define PS_CMD_PIN_CLIP 202
-#define PS_CMD_PIN_FRONT 204
-#define PS_CMD_SETTINGS 205
-#define PS_CMD_EXIT 203
-
-static volatile LONG g_action = 0;
-static volatile LONG g_tray_started = 0;
-
-static void ps_post_action(LONG act) {
-  InterlockedExchange(&g_action, act);
-  HWND h = g_main_hwnd;
-  if (!h) h = ps_find_own_hwnd();
-  if (h) PostMessageW(h, WM_APP, 0, 0);
-}
-
-static volatile LONG g_cap_hk_mode = 0;
-static volatile LONG g_pin_hk_mode = 0;
-static ULONGLONG g_last_hk_ms = 0;
-
-static void ps_trigger_capture_debounced(void) {
-  ULONGLONG now = GetTickCount64();
-  if (now - g_last_hk_ms < 250) return;
-  g_last_hk_ms = now;
-  ps_post_action(1);
-}
-
-static void ps_trigger_pin_front_debounced(void) {
-  ULONGLONG now = GetTickCount64();
-  if (now - g_last_hk_ms < 250) return;
-  g_last_hk_ms = now;
-  ps_bring_all_pins_front();
-}
-
-static LRESULT CALLBACK ps_ll_kbd_proc(int code, WPARAM wp, LPARAM lp) {
-  if (code == HC_ACTION && (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN)) {
-    const KBDLLHOOKSTRUCT *kb = (const KBDLLHOOKSTRUCT *)lp;
-    if ((kb->flags & LLKHF_INJECTED) == 0) {
-      int ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-      int shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-      int alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-      DWORD vk = kb->vkCode;
-      LONG cap_m = g_cap_hk_mode;
-      int hit_cap = 0;
-      if (cap_m == 0) {
-        hit_cap = (ctrl && shift && !alt && vk == 'A') || (!ctrl && !shift && !alt && vk == VK_F1);
-      } else if (cap_m == 1) {
-        hit_cap = (ctrl && shift && !alt && vk == 'A');
-      } else if (cap_m == 2) {
-        hit_cap = (!ctrl && !shift && !alt && vk == VK_F1);
-      } else if (cap_m == 3) {
-        hit_cap = (ctrl && alt && !shift && vk == 'A');
-      }
-      if (hit_cap) {
-        ps_trigger_capture_debounced();
-        return 1;
-      }
-      LONG pin_m = g_pin_hk_mode;
-      int hit_pin = 0;
-      if (pin_m == 0) {
-        hit_pin = (ctrl && shift && !alt && vk == 'P');
-      } else if (pin_m == 1) {
-        hit_pin = (!ctrl && !shift && !alt && vk == VK_F2);
-      }
-      if (hit_pin) {
-        ps_trigger_pin_front_debounced();
-        return 1;
-      }
-    }
+static void tray_menu(int x, int y) {
+  HMENU m = CreatePopupMenu();
+  for (int i = 0; i < menu_n; i++) {
+    if (!strcmp(menu_keys[i], "-")) AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    else AppendMenuW(m, MF_STRING, (UINT_PTR)(i + 1), menu_words[i]);
   }
-  return CallNextHookEx(NULL, code, wp, lp);
-}
-
-static void ps_apply_hotkeys(HWND h) {
-  UnregisterHotKey(h, PS_HOTKEY_CAPTURE);
-  UnregisterHotKey(h, PS_HOTKEY_CAPTURE_F1);
-  UnregisterHotKey(h, PS_HOTKEY_PIN_FRONT);
-  int cap_hk = ps_read_ini_int("hotkey_capture", 0);
-  g_cap_hk_mode = cap_hk;
-  if (cap_hk == 0) {
-    RegisterHotKey(h, PS_HOTKEY_CAPTURE, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'A');
-    RegisterHotKey(h, PS_HOTKEY_CAPTURE_F1, MOD_NOREPEAT, VK_F1);
-  } else if (cap_hk == 1) {
-    RegisterHotKey(h, PS_HOTKEY_CAPTURE, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'A');
-  } else if (cap_hk == 2) {
-    RegisterHotKey(h, PS_HOTKEY_CAPTURE_F1, MOD_NOREPEAT, VK_F1);
-  } else if (cap_hk == 3) {
-    RegisterHotKey(h, PS_HOTKEY_CAPTURE, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'A');
-  }
-  int pin_hk = ps_read_ini_int("hotkey_pin_front", 0);
-  g_pin_hk_mode = pin_hk;
-  if (pin_hk == 0) {
-    RegisterHotKey(h, PS_HOTKEY_PIN_FRONT, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'P');
-  } else if (pin_hk == 1) {
-    RegisterHotKey(h, PS_HOTKEY_PIN_FRONT, MOD_NOREPEAT, VK_F2);
+  SetForegroundWindow(tray_hwnd);
+  int chose = (int)TrackPopupMenuEx(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, x, y, tray_hwnd, NULL);
+  PostMessageW(tray_hwnd, WM_NULL, 0, 0);
+  DestroyMenu(m);
+  if (chose > 0 && chose <= menu_n) {
+    char json[96];
+    snprintf(json, sizeof json, "{\"do\":\"menu\",\"item\":\"%s\"}", menu_keys[chose - 1]);
+    ps_tell(json);
   }
 }
 
-static LRESULT CALLBACK ps_tray_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
-  if (msg == WM_HOTKEY) {
-    if (wp == PS_HOTKEY_CAPTURE || wp == PS_HOTKEY_CAPTURE_F1) {
-      ps_trigger_capture_debounced();
-    } else if (wp == PS_HOTKEY_PIN_FRONT) {
-      ps_trigger_pin_front_debounced();
-    }
+static char cap_by[16];
+static void gpu_trim_now(void);
+#define WM_PS_TRIM (WM_APP + 43)
+
+static HWND own_window(int wid);
+
+static void capture_asked(const char *by) {
+  // (not while the overlay is up: it would be taken too)
+  HWND overlay = own_window(0);
+  if (overlay && IsWindowVisible(overlay)) return;
+  if (!cap_begin()) return;
+  lstrcpynA(cap_by, by, sizeof cap_by);
+  char json[192];
+  snprintf(json, sizeof json, "{\"do\":\"prepare\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"dpi\":%d,\"t\":%.3f}", cap_x, cap_y, cap_w, cap_h,
+           cap_dpi, cap_t0);
+  ps_tell(json);
+}
+
+static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+  if (taskbar_created && msg == taskbar_created) {
+    tray_put();
     return 0;
   }
-  if (msg == PS_WM_RELOAD_CFG) {
-    ps_apply_hotkeys(h);
-    ps_post_action(4);
-    return 0;
-  }
-  if (msg == PS_WM_TRAY) {
-    UINT ev = LOWORD(lp);
-    if (ev == WM_LBUTTONUP || ev == NIN_SELECT) {
-      ps_post_action(1);
-    } else if (ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU) {
-      POINT pt;
-      GetCursorPos(&pt);
-      HMENU menu = CreatePopupMenu();
-      AppendMenuW(menu, MF_STRING, PS_CMD_CAPTURE, L"\u622a\u5c4f");
-      AppendMenuW(menu, MF_STRING, PS_CMD_PIN_CLIP, L"\u4ece\u526a\u8d34\u677f\u8d34\u56fe");
-      AppendMenuW(menu, MF_STRING, PS_CMD_PIN_FRONT, L"\u5c06\u8d34\u56fe\u7f6e\u9876\u5230\u524d\u53f0");
-      AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-      AppendMenuW(menu, MF_STRING, PS_CMD_SETTINGS, L"\u8bbe\u7f6e\u2026");
-      AppendMenuW(menu, MF_STRING, PS_CMD_EXIT, L"\u9000\u51fa PinShot");
-      SetForegroundWindow(h);
-      UINT cmd = (UINT)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_BOTTOMALIGN,
-                                      pt.x, pt.y, 0, h, NULL);
-      DestroyMenu(menu);
-      if (cmd == PS_CMD_CAPTURE) ps_post_action(1);
-      else if (cmd == PS_CMD_PIN_CLIP) ps_post_action(2);
-      else if (cmd == PS_CMD_PIN_FRONT) ps_bring_all_pins_front();
-      else if (cmd == PS_CMD_SETTINGS) ps_launch_mode(L"--settings");
-      else if (cmd == PS_CMD_EXIT) ps_post_action(3);
+  switch (msg) {
+    case WM_HOTKEY:
+      if (wp == HK_CAPTURE) capture_asked("key");
+      else if (wp == HK_PIN_CLIP) ps_tell("{\"do\":\"pin-clipboard\"}");
+      else if (wp == HK_PINS) ps_tell("{\"do\":\"pins\"}");
+      return 0;
+    case WM_PS_AGAIN:  // started again: as the shortcut
+      capture_asked("again");
+      return 0;
+    case WM_PS_TRIM:
+      gpu_trim_now();
+      return 0;
+    case WM_PS_TAKEN: {
+      char json[128];
+      snprintf(json, sizeof json, "{\"do\":\"capture\",\"ok\":%s,\"by\":\"%s\"}", wp ? "true" : "false", cap_by);
+      ps_tell(json);
+      return 0;
     }
-    return 0;
+    case WM_PS_TRAY:
+      switch (LOWORD(lp)) {
+        case NIN_SELECT:
+        case NIN_KEYSELECT: capture_asked("icon"); break;
+        case WM_CONTEXTMENU: tray_menu(GET_X_LPARAM(wp), GET_Y_LPARAM(wp)); break;
+      }
+      return 0;
+    case WM_ENDSESSION:
+      if (wp) tray_gone();
+      return 0;
   }
   return DefWindowProcW(h, msg, wp, lp);
 }
 
-static DWORD WINAPI ps_tray_thread(LPVOID unused) {
-  (void)unused;
-  WNDCLASSEXW wc;
-  ZeroMemory(&wc, sizeof(wc));
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = ps_tray_wndproc;
+// A capture asked for by the app (the icon's menu): as the shortcut.
+void ps_capture_ask(void) { capture_asked("menu"); }
+
+// The run begun: 1 it is the one run (its icon put, its window made), 0 another runs already (told to take the screen,
+// as its shortcut does): this one ends.
+int32_t ps_start(void) {
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  one_run = CreateMutexW(NULL, TRUE, L"Local\\PinShot.OneRun");
+  if (one_run && GetLastError() == ERROR_ALREADY_EXISTS) {
+    HWND other = FindWindowW(PS_CLASS, NULL);
+    if (other) {
+      DWORD pid = 0;
+      GetWindowThreadProcessId(other, &pid);
+      AllowSetForegroundWindow(pid);
+      PostMessageW(other, WM_PS_AGAIN, 0, 0);
+    }
+    return 0;
+  }
+  WNDCLASSEXW wc = {sizeof wc};
+  wc.lpfnWndProc = tray_proc;
   wc.hInstance = GetModuleHandleW(NULL);
-  wc.lpszClassName = L"PinShotTrayMsg";
+  wc.lpszClassName = PS_CLASS;
   RegisterClassExW(&wc);
-
-  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"PinShotTray", WS_POPUP, 0, 0, 0, 0,
-                           NULL, NULL, wc.hInstance, NULL);
-  ps_apply_hotkeys(h);
-  HHOOK kbd_hook = SetWindowsHookExW(WH_KEYBOARD_LL, ps_ll_kbd_proc, wc.hInstance, 0);
-
-  NOTIFYICONDATAW nid;
-  ZeroMemory(&nid, sizeof(nid));
-  nid.cbSize = sizeof(nid);
-  nid.hWnd = h;
-  nid.uID = 1;
-  nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
-  nid.uCallbackMessage = PS_WM_TRAY;
-  nid.hIcon = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(1));
-  if (!nid.hIcon) nid.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
-  wcsncpy_s(nid.szTip, 128, L"PinShot \u622a\u56fe\u8d34\u56fe (Ctrl+Shift+A / F1)", _TRUNCATE);
-  Shell_NotifyIconW(NIM_ADD, &nid);
-  nid.uVersion = NOTIFYICON_VERSION_4;
-  Shell_NotifyIconW(NIM_SETVERSION, &nid);
-
-  MSG m;
-  while (GetMessageW(&m, NULL, 0, 0) > 0) {
-    TranslateMessage(&m);
-    DispatchMessageW(&m);
-  }
-  if (kbd_hook) UnhookWindowsHookEx(kbd_hook);
-  Shell_NotifyIconW(NIM_DELETE, &nid);
-  return 0;
-}
-
-int32_t ps_tray_start(void) {
-  if (InterlockedCompareExchange(&g_tray_started, 1, 0) == 0) {
-    HANDLE th = CreateThread(NULL, 0, ps_tray_thread, NULL, 0, NULL);
-    if (th) CloseHandle(th);
-  }
+  // (a top-level window never shown, not one of HWND_MESSAGE: Explorer's TaskbarCreated is broadcast to top-level ones)
+  tray_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, PS_CLASS, L"PinShot", WS_POPUP, 0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
+  taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
+  ChangeWindowMessageFilterEx(tray_hwnd, taskbar_created, MSGFLT_ALLOW, NULL);
+  tray_put();
+  atexit(tray_gone);
   return 1;
 }
 
-int32_t ps_poll_action(void) {
-  return (int32_t)InterlockedExchange(&g_action, 0);
+// A global shortcut set (`mods`: MOD_ALT 1, MOD_CONTROL 2, MOD_SHIFT 4, MOD_WIN 8; `vk` 0: none): 1 it is ours now, 0 the
+// system or another program has it (it is left unset).
+int32_t ps_hotkey(int32_t which, int32_t mods, int32_t vk) {
+  if (which <= 0 || which >= HK_MOST || !tray_hwnd) return 0;
+  if (hk_on[which]) UnregisterHotKey(tray_hwnd, which);
+  hk_on[which] = 0;
+  if (vk == 0) return 1;
+  hk_on[which] = RegisterHotKey(tray_hwnd, which, (UINT)mods | MOD_NOREPEAT, (UINT)vk) ? 1 : 0;
+  return hk_on[which];
 }
 
-// ---- Save PNG dialog & Launch Pin ----
-
-int32_t ps_save_png_dialog(moonbit_bytes_t png, moonbit_bytes_t name) {
-  wchar_t *wname = ps_wide((const char *)name);
-  wchar_t path[MAX_PATH];
-  wcsncpy_s(path, MAX_PATH, wname, _TRUNCATE);
-  free(wname);
-
-  OPENFILENAMEW ofn;
-  ZeroMemory(&ofn, sizeof(ofn));
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = ps_find_own_hwnd();
-  ofn.lpstrFilter = L"PNG \u56fe\u7247 (*.png)\0*.png\0\0";
-  ofn.lpstrFile = path;
-  ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrDefExt = L"png";
-  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-  if (!GetSaveFileNameW(&ofn)) return 0;
-
-  HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (f == INVALID_HANDLE_VALUE) return 0;
-  DWORD wrote = 0;
-  int32_t n = (int32_t)Moonbit_array_length(png);
-  BOOL ok = WriteFile(f, png, (DWORD)n, &wrote, NULL);
-  CloseHandle(f);
-  return (ok && (int32_t)wrote == n) ? 1 : 0;
+// A key's name as the keyboard says it ("F1", "A", "PrtSc"...).
+moonbit_bytes_t ps_key_name(int32_t vk) {
+  wchar_t name[64] = {0};
+  UINT sc = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
+  LONG lp = (LONG)(sc << 16);
+  switch (vk) {
+    case VK_LEFT: case VK_UP: case VK_RIGHT: case VK_DOWN: case VK_PRIOR: case VK_NEXT:
+    case VK_END: case VK_HOME: case VK_INSERT: case VK_DELETE: case VK_SNAPSHOT:
+      lp |= 1 << 24;
+  }
+  if (vk == VK_SNAPSHOT) return ps_text("PrtSc");
+  if (!GetKeyNameTextW(lp, name, 64)) return moonbit_make_bytes(0, 0);
+  return ps_utf8_bytes(name);
 }
 
-int32_t ps_launch_pin(moonbit_bytes_t png, int32_t x, int32_t y, int32_t w, int32_t h) {
-  wchar_t tmp[MAX_PATH];
-  GetTempPathW(MAX_PATH, tmp);
-  wchar_t file[MAX_PATH];
-  swprintf_s(file, MAX_PATH, L"%spinshot-pin-%llu-%lu.png", tmp,
-             (unsigned long long)GetTickCount64(), (unsigned long)GetCurrentProcessId());
-  HANDLE f = CreateFileW(file, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (f == INVALID_HANDLE_VALUE) return 0;
-  DWORD wrote = 0;
-  int32_t n = (int32_t)Moonbit_array_length(png);
-  BOOL ok = WriteFile(f, png, (DWORD)n, &wrote, NULL);
-  CloseHandle(f);
-  if (!ok || (int32_t)wrote != n) return 0;
+// ---- PinShot's own windows ----
+//
+// Each an mbui window (0 the overlay, the others beside it: @ui.window_open_here) made what it is here: no frame of the
+// system's, not on the taskbar, over the others, at a rectangle in the screen's pixels. Its DPI changing (moved to
+// another monitor) keeps that rectangle: the app lays itself out at the new scale (mbui reads it each frame), never
+// moved to where Windows suggests. A close (Alt+F4) is told the app ({"do":"close","wid":n}), never done here: the
+// overlay is only hidden, a pin closed by the app.
 
-  wchar_t exe[MAX_PATH];
-  GetModuleFileNameW(NULL, exe, MAX_PATH);
-  wchar_t cmd[MAX_PATH * 2];
-  swprintf_s(cmd, MAX_PATH * 2, L"\"%s\" --pin \"%s\" %d %d %d %d", exe, file, x, y, w, h);
+static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR wid) {
+  (void)id;
+  switch (msg) {
+    case WM_DPICHANGED:
+      InvalidateRect(h, NULL, FALSE);
+      return 0;
+    case WM_CLOSE: {
+      // (the app's own close, mbui's window_close_here: let through)
+      if (GetPropW(h, L"PinShot.Closing")) break;
+      char json[64];
+      snprintf(json, sizeof json, "{\"do\":\"close\",\"wid\":%d}", (int)wid);
+      ps_tell(json);
+      return 0;
+    }
+    case WM_NCDESTROY:
+      RemovePropW(h, L"PinShot.Closing");
+      RemoveWindowSubclass(h, own_proc, 1);
+      break;
+  }
+  return DefSubclassProc(h, msg, wp, lp);
+}
 
-  STARTUPINFOW si;
-  PROCESS_INFORMATION pi;
-  ZeroMemory(&si, sizeof(si));
-  si.cb = sizeof(si);
-  ZeroMemory(&pi, sizeof(pi));
-  if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) return 0;
-  CloseHandle(pi.hThread);
-  CloseHandle(pi.hProcess);
+static HWND own_window(int wid) { return (HWND)mb_app_hwnd_of(wid); }
+
+// Window `wid` to be closed by the app now (mbui posts it WM_CLOSE, which is let through for it alone).
+void ps_let_close(int32_t wid) {
+  HWND h = own_window(wid);
+  if (h) SetPropW(h, L"PinShot.Closing", (HANDLE)1);
+}
+
+// Window `wid` made one of PinShot's own (as said above), out of sight: 1 done.
+int32_t ps_own(int32_t wid, int32_t topmost) {
+  HWND h = own_window(wid);
+  if (!h) return 0;
+  LONG_PTR style = GetWindowLongPtrW(h, GWL_STYLE);
+  style &= ~(LONG_PTR)(WS_OVERLAPPEDWINDOW);
+  style |= WS_POPUP;
+  SetWindowLongPtrW(h, GWL_STYLE, style);
+  LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+  ex &= ~(LONG_PTR)WS_EX_APPWINDOW;
+  ex |= WS_EX_TOOLWINDOW;
+  SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
+  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
+  DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
+  // (no transition of DWM's as it shows or hides: it is there at once, and gone at once)
+  BOOL no = TRUE;
+  DwmSetWindowAttribute(h, DWMWA_TRANSITIONS_FORCEDISABLED, &no, sizeof no);
+  SetWindowSubclass(h, own_proc, 1, (DWORD_PTR)wid);
+  SetWindowPos(h, topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   return 1;
+}
+
+// Window `wid` at x, y, w by h (the screen's pixels), shown (`show` 1, taking the keyboard where `focus`) or as it is.
+void ps_place(int32_t wid, int32_t x, int32_t y, int32_t w, int32_t h, int32_t show, int32_t focus) {
+  HWND hw = own_window(wid);
+  if (!hw) return;
+  // (shown: over every other window that is over the others, as it is put there, a notification's too)
+  UINT f = SWP_NOACTIVATE | (show ? SWP_SHOWWINDOW : SWP_NOZORDER);
+  HWND after = show && (GetWindowLongPtrW(hw, GWL_EXSTYLE) & WS_EX_TOPMOST) ? HWND_TOPMOST : (show ? HWND_TOP : NULL);
+  SetWindowPos(hw, after, x, y, w, h, f);
+  if (show && focus) {
+    SetForegroundWindow(hw);
+    SetFocus(hw);
+  }
+}
+
+// Window `wid`, `w` by `h` points at its monitor's scale, in the middle of the monitor the pointer is on, shown.
+void ps_center(int32_t wid, int32_t w, int32_t h) {
+  HWND hw = own_window(wid);
+  if (!hw) return;
+  POINT p;
+  GetCursorPos(&p);
+  HMONITOR mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = {sizeof mi};
+  GetMonitorInfoW(mon, &mi);
+  UINT dx = 96, dy = 96;
+  typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
+  GetDpiForMonitorFn dpi_of = (GetDpiForMonitorFn)GetProcAddress(LoadLibraryW(L"shcore.dll"), "GetDpiForMonitor");
+  if (dpi_of) dpi_of(mon, 0, &dx, &dy);
+  RECT r = {0, 0, MulDiv(w, (int)dx, 96), MulDiv(h, (int)dx, 96)};
+  AdjustWindowRectExForDpi(&r, (DWORD)GetWindowLongPtrW(hw, GWL_STYLE), FALSE, (DWORD)GetWindowLongPtrW(hw, GWL_EXSTYLE), dx);
+  int ww = r.right - r.left, wh = r.bottom - r.top;
+  RECT a = mi.rcWork;
+  int x = a.left + ((a.right - a.left) - ww) / 2, y = a.top + ((a.bottom - a.top) - wh) / 2;
+  SetWindowPos(hw, NULL, x, y, ww, wh, SWP_NOZORDER | SWP_SHOWWINDOW);
+  SetForegroundWindow(hw);
+}
+
+// Window `wid` hidden (its frames stop: mbui draws none for a window not shown).
+void ps_hide(int32_t wid) {
+  HWND h = own_window(wid);
+  if (h) ShowWindow(h, SW_HIDE);
+}
+
+// Window `wid` kept out of sight while still drawn (DWM's cloak), or let be seen: its frame is there as it is uncloaked.
+void ps_cloak(int32_t wid, int32_t on) {
+  HWND h = own_window(wid);
+  BOOL b = on ? TRUE : FALSE;
+  if (h) DwmSetWindowAttribute(h, DWMWA_CLOAK, &b, sizeof b);
+}
+
+// Window `wid` over the others (1) or among them (0); `front`: brought before them all now.
+void ps_topmost(int32_t wid, int32_t on, int32_t front) {
+  HWND h = own_window(wid);
+  if (!h) return;
+  SetWindowPos(h, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  if (front) {
+    if (!on) SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetForegroundWindow(h);
+  }
+}
+
+// Window `wid` seen through: 255 not at all, less as it is fainter (a layered window's alpha, which DWM composes the
+// window's DirectComposition content by).
+void ps_opacity(int32_t wid, int32_t alpha) {
+  HWND h = own_window(wid);
+  if (!h) return;
+  LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+  if (alpha >= 255) {
+    if (ex & WS_EX_LAYERED) SetWindowLongPtrW(h, GWL_EXSTYLE, ex & ~(LONG_PTR)WS_EX_LAYERED);
+    return;
+  }
+  if (!(ex & WS_EX_LAYERED)) SetWindowLongPtrW(h, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+  SetLayeredWindowAttributes(h, 0, (BYTE)(alpha < 20 ? 20 : alpha), LWA_ALPHA);
+}
+
+// Where window `wid` is: "x,y,w,h,dpi" (the screen's pixels).
+moonbit_bytes_t ps_window_rect(int32_t wid) {
+  HWND h = own_window(wid);
+  RECT r = {0};
+  if (!h || !GetWindowRect(h, &r)) return moonbit_make_bytes(0, 0);
+  char s[96];
+  snprintf(s, sizeof s, "%ld,%ld,%ld,%ld,%u", r.left, r.top, r.right - r.left, r.bottom - r.top, GetDpiForWindow(h));
+  return ps_text(s);
+}
+
+// The pointer on the screen: "x,y" (pixels).
+moonbit_bytes_t ps_pointer(void) {
+  POINT p;
+  GetCursorPos(&p);
+  char s[48];
+  snprintf(s, sizeof s, "%ld,%ld", p.x, p.y);
+  return ps_text(s);
+}
+
+// What the GPU was asked to let go of let go, between frames (the tray window's message: no frame is being drawn): the
+// renderer's context's state cleared (an overlay's last picture is still bound there: D3D frees a texture only as
+// nothing holds it, and a hidden window draws no frame that binds another) and flushed, the driver's pools of what was
+// let go trimmed (a 4K overlay's ~140 MB), and the working set given back. The renderer binds all it draws with each
+// frame, so nothing of it is lost.
+extern void *mb_render_context(void);
+extern void *mb_render_device(void);
+static void gpu_trim_now(void) {
+  ID3D11DeviceContext *ctx = (ID3D11DeviceContext *)mb_render_context();
+  if (ctx) {
+    ID3D11DeviceContext_ClearState(ctx);
+    ID3D11DeviceContext_Flush(ctx);
+  }
+  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+  IDXGIDevice3 *xd = NULL;
+  if (dev && SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice3, (void **)&xd))) {
+    IDXGIDevice3_Trim(xd);
+    IDXGIDevice3_Release(xd);
+  }
+  SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+}
+
+void ps_gpu_flush(void) {
+  if (tray_hwnd) PostMessageW(tray_hwnd, WM_PS_TRIM, 0, 0);
+}
+
+// The working set given back to the system (what the overlay held is let go of: its picture, its decode).
+void ps_trim(void) { SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); }
+
+// "ws,private" in bytes: how much of the machine's memory the run holds.
+moonbit_bytes_t ps_memory(void) {
+  PROCESS_MEMORY_COUNTERS_EX pm;
+  memset(&pm, 0, sizeof pm);
+  pm.cb = sizeof pm;
+  typedef BOOL(WINAPI * GetPmi)(HANDLE, PROCESS_MEMORY_COUNTERS *, DWORD);
+  static GetPmi get;
+  if (!get) get = (GetPmi)GetProcAddress(LoadLibraryW(L"kernel32.dll"), "K32GetProcessMemoryInfo");
+  if (get) get(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pm, sizeof pm);
+  char s[64];
+  snprintf(s, sizeof s, "%llu,%llu", (unsigned long long)pm.WorkingSetSize, (unsigned long long)pm.PrivateUsage);
+  return ps_text(s);
+}
+
+// ---- files ----
+
+// The folder PinShot keeps its settings in (%APPDATA%\PinShot), made where it is not.
+moonbit_bytes_t ps_data_dir(void) {
+  wchar_t *p = NULL;
+  wchar_t dir[MAX_PATH * 2] = {0};
+  if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &p))) {
+    _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
+    CoTaskMemFree(p);
+  }
+  CreateDirectoryW(dir, NULL);
+  return ps_utf8_bytes(dir);
+}
+
+// The pictures folder's PinShot (%USERPROFILE%\Pictures\PinShot), not made.
+moonbit_bytes_t ps_pictures_dir(void) {
+  wchar_t *p = NULL;
+  wchar_t dir[MAX_PATH * 2] = {0};
+  if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_Pictures, 0, NULL, &p))) {
+    _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
+    CoTaskMemFree(p);
+  }
+  return ps_utf8_bytes(dir);
 }
 
 moonbit_bytes_t ps_read_file(moonbit_bytes_t path) {
-  wchar_t *wp = ps_wide((const char *)path);
-  HANDLE f = CreateFileW(wp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-  free(wp);
+  wchar_t *w = ps_wide((const char *)path);
+  HANDLE f = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+  free(w);
   if (f == INVALID_HANDLE_VALUE) return moonbit_make_bytes(0, 0);
   LARGE_INTEGER sz;
-  if (!GetFileSizeEx(f, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 64 * 1024 * 1024) {
+  if (!GetFileSizeEx(f, &sz) || sz.QuadPart > 512LL * 1024 * 1024) {
     CloseHandle(f);
     return moonbit_make_bytes(0, 0);
   }
-  DWORD len = (DWORD)sz.QuadPart;
-  moonbit_bytes_t b = moonbit_make_bytes((int32_t)len, 0);
+  moonbit_bytes_t b = moonbit_make_bytes((int32_t)sz.QuadPart, 0);
   DWORD got = 0;
-  if (!ReadFile(f, b, len, &got, NULL) || got != len) {
-    CloseHandle(f);
-    return moonbit_make_bytes(0, 0);
-  }
+  BOOL ok = ReadFile(f, b, (DWORD)sz.QuadPart, &got, NULL);
   CloseHandle(f);
+  if (!ok || got != (DWORD)sz.QuadPart) return moonbit_make_bytes(0, 0);
   return b;
 }
 
-void ps_delete_file(moonbit_bytes_t path) {
-  wchar_t *wp = ps_wide((const char *)path);
-  DeleteFileW(wp);
-  free(wp);
+// `data` written to `path` whole (its folder made): 1 when it is there. Written beside and moved over, so a file read
+// meanwhile is the old or the new, never half.
+int32_t ps_write_file(moonbit_bytes_t path, moonbit_bytes_t data) {
+  wchar_t *w = ps_wide((const char *)path);
+  size_t n = wcslen(w);
+  for (size_t i = 0; i < n; i++)
+    if (w[i] == L'\\' && i > 2) {
+      w[i] = 0;
+      CreateDirectoryW(w, NULL);
+      w[i] = L'\\';
+    }
+  wchar_t *tmp = (wchar_t *)malloc((n + 8) * sizeof(wchar_t));
+  _snwprintf(tmp, n + 8, L"%ls.part", w);
+  HANDLE f = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+  int ok = 0;
+  if (f != INVALID_HANDLE_VALUE) {
+    DWORD put = 0;
+    DWORD len = (DWORD)Moonbit_array_length(data);
+    ok = WriteFile(f, data, len, &put, NULL) && put == len;
+    CloseHandle(f);
+    if (ok) ok = MoveFileExW(tmp, w, MOVEFILE_REPLACE_EXISTING) != 0;
+    if (!ok) DeleteFileW(tmp);
+  }
+  free(tmp);
+  free(w);
+  return ok;
 }
 
-moonbit_bytes_t ps_clipboard_png(void) {
-  if (!OpenClipboard(NULL)) return moonbit_make_bytes(0, 0);
-  UINT png_fmt = RegisterClipboardFormatW(L"PNG");
-  HANDLE h = png_fmt ? GetClipboardData(png_fmt) : NULL;
-  if (h) {
-    SIZE_T sz = GlobalSize(h);
-    void *p = GlobalLock(h);
-    moonbit_bytes_t out = (p && sz > 0) ? ps_bytes(p, (int32_t)sz) : moonbit_make_bytes(0, 0);
-    if (p) GlobalUnlock(h);
-    CloseClipboard();
-    if (Moonbit_array_length(out) > 0) return out;
-    if (!OpenClipboard(NULL)) return moonbit_make_bytes(0, 0);
-  }
-  // Fallback: CF_DIB -> 32-bit BMP bytes (handled by WIC/mbui image loader)
-  HANDLE hdib = GetClipboardData(CF_DIB);
-  if (!hdib) {
-    CloseClipboard();
-    return moonbit_make_bytes(0, 0);
-  }
-  SIZE_T dsz = GlobalSize(hdib);
-  uint8_t *dp = (uint8_t *)GlobalLock(hdib);
+// The system's dialog to save a picture: `dir` its folder at first, `name` its name. The path chosen ("" called off).
+moonbit_bytes_t ps_save_dialog(int32_t wid, moonbit_bytes_t dir, moonbit_bytes_t name) {
+  IFileSaveDialog *d = NULL;
   moonbit_bytes_t out = moonbit_make_bytes(0, 0);
-  if (dp && dsz >= sizeof(BITMAPINFOHEADER)) {
-    const BITMAPINFOHEADER *bih = (const BITMAPINFOHEADER *)dp;
-    uint32_t clr = bih->biClrUsed;
-    if (clr == 0 && bih->biBitCount <= 8) clr = 1u << bih->biBitCount;
-    uint32_t off = 14 + bih->biSize + clr * 4 + (bih->biCompression == BI_BITFIELDS ? 12 : 0);
-    int32_t total = 14 + (int32_t)dsz;
-    out = moonbit_make_bytes(total, 0);
-    uint8_t *dst = (uint8_t *)out;
-    ZeroMemory(dst, 14);
-    dst[0] = 'B';
-    dst[1] = 'M';
-    memcpy(dst + 2, &total, 4);
-    memcpy(dst + 10, &off, 4);
-    memcpy(dst + 14, dp, dsz);
+  if (FAILED(CoCreateInstance(&CLSID_FileSaveDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileSaveDialog, (void **)&d)))
+    return out;
+  COMDLG_FILTERSPEC types[] = {{L"PNG", L"*.png"}};
+  IFileSaveDialog_SetFileTypes(d, 1, types);
+  IFileSaveDialog_SetDefaultExtension(d, L"png");
+  wchar_t *wn = ps_wide((const char *)name);
+  IFileSaveDialog_SetFileName(d, wn);
+  free(wn);
+  wchar_t *wd = ps_wide((const char *)dir);
+  CreateDirectoryW(wd, NULL);
+  IShellItem *folder = NULL;
+  if (SUCCEEDED(SHCreateItemFromParsingName(wd, NULL, &IID_IShellItem, (void **)&folder))) {
+    IFileSaveDialog_SetFolder(d, folder);
+    IShellItem_Release(folder);
   }
-  if (dp) GlobalUnlock(hdib);
+  free(wd);
+  HWND owner = own_window(wid);
+  if (SUCCEEDED(IFileSaveDialog_Show(d, owner))) {
+    IShellItem *item = NULL;
+    if (SUCCEEDED(IFileSaveDialog_GetResult(d, &item))) {
+      wchar_t *p = NULL;
+      if (SUCCEEDED(IShellItem_GetDisplayName(item, SIGDN_FILESYSPATH, &p))) {
+        out = ps_utf8_bytes(p);
+        CoTaskMemFree(p);
+      }
+      IShellItem_Release(item);
+    }
+  }
+  IFileSaveDialog_Release(d);
+  return out;
+}
+
+// A folder (or a file, selected in its folder) shown in Explorer.
+void ps_reveal(moonbit_bytes_t path) {
+  wchar_t *w = ps_wide((const char *)path);
+  DWORD a = GetFileAttributesW(w);
+  if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY)) {
+    wchar_t args[MAX_PATH * 2 + 16];
+    _snwprintf(args, MAX_PATH * 2 + 15, L"/select,\"%ls\"", w);
+    ShellExecuteW(NULL, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+  } else {
+    CreateDirectoryW(w, NULL);
+    ShellExecuteW(NULL, L"open", w, NULL, NULL, SW_SHOWNORMAL);
+  }
+  free(w);
+}
+
+// A line in the run's log (%APPDATA%\PinShot\pinshot.log), its local time before it; the log begun anew past 1 MB.
+void ps_log(moonbit_bytes_t line) {
+  static wchar_t path[MAX_PATH * 2];
+  if (!path[0]) {
+    wchar_t *p = NULL;
+    if (FAILED(SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &p))) return;
+    _snwprintf(path, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
+    CoTaskMemFree(p);
+    CreateDirectoryW(path, NULL);
+    wcscat_s(path, MAX_PATH * 2, L"\\pinshot.log");
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (GetFileAttributesExW(path, GetFileExInfoStandard, &a) && a.nFileSizeLow > 1024 * 1024) DeleteFileW(path);
+  }
+  HANDLE f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, 0, NULL);
+  if (f == INVALID_HANDLE_VALUE) return;
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  char head[48];
+  int n = snprintf(head, sizeof head, "%02d-%02d %02d:%02d:%02d.%03d ", t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond,
+                   t.wMilliseconds);
+  DWORD put;
+  WriteFile(f, head, (DWORD)n, &put, NULL);
+  WriteFile(f, line, (DWORD)strlen((const char *)line), &put, NULL);
+  WriteFile(f, "\r\n", 2, &put, NULL);
+  CloseHandle(f);
+}
+
+// The time now as a file's name says it: "20261117-083015".
+moonbit_bytes_t ps_stamp(void) {
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  char s[32];
+  snprintf(s, sizeof s, "%04d%02d%02d-%02d%02d%02d", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+  return ps_text(s);
+}
+
+// ---- started with Windows ----
+
+#define RUN_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+
+int32_t ps_autostart(void) {
+  HKEY k;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
+  DWORD type = 0, size = 0;
+  LONG r = RegQueryValueExW(k, L"PinShot", NULL, &type, NULL, &size);
+  RegCloseKey(k);
+  return r == ERROR_SUCCESS && size > 0;
+}
+
+int32_t ps_set_autostart(int32_t on) {
+  HKEY k;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &k) != ERROR_SUCCESS) return 0;
+  LONG r;
+  if (on) {
+    wchar_t exe[MAX_PATH], v[MAX_PATH + 4];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    _snwprintf(v, MAX_PATH + 3, L"\"%ls\"", exe);
+    v[MAX_PATH + 3] = 0;
+    r = RegSetValueExW(k, L"PinShot", 0, REG_SZ, (const BYTE *)v, (DWORD)((wcslen(v) + 1) * sizeof(wchar_t)));
+  } else {
+    r = RegDeleteValueW(k, L"PinShot");
+    if (r == ERROR_FILE_NOT_FOUND) r = ERROR_SUCCESS;
+  }
+  RegCloseKey(k);
+  return r == ERROR_SUCCESS;
+}
+
+// The run's arguments after the program's name, one a line (UTF-8).
+moonbit_bytes_t ps_args(void) {
+  int argc = 0;
+  LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (!argv) return moonbit_make_bytes(0, 0);
+  size_t total = 0;
+  for (int i = 1; i < argc; i++) total += wcslen(argv[i]) * 3 + 1;
+  char *out = (char *)malloc(total + 1);
+  size_t len = 0;
+  for (int i = 1; i < argc; i++) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, out + len, (int)(total + 1 - len), NULL, NULL);
+    if (n > 0) len += (size_t)n - 1;
+    out[len++] = '\n';
+  }
+  LocalFree(argv);
+  moonbit_bytes_t b = ps_bytes(out, len);
+  free(out);
+  return b;
+}
+
+// ---- a pin's menu, the clipboard's picture ----
+
+// A menu at the pointer, over window `wid`: "key\twords\tflags" lines (flags: c checked, g greyed), "-" a separator.
+// The key of what was chosen ("" none). Modal: the window's frames wait while it is open.
+moonbit_bytes_t ps_popup_menu(int32_t wid, moonbit_bytes_t lines) {
+  HWND owner = own_window(wid);
+  if (!owner) owner = tray_hwnd;
+  HMENU m = CreatePopupMenu();
+  char keys[32][32];
+  int n = 0;
+  int len = (int)Moonbit_array_length(lines);
+  const char *s = (const char *)lines;
+  int at = 0;
+  while (at < len && n < 32) {
+    int end = at;
+    while (end < len && s[end] != '\n') end++;
+    char line[512] = {0};
+    int ll = end - at < 511 ? end - at : 511;
+    memcpy(line, s + at, (size_t)ll);
+    at = end + 1;
+    if (!strcmp(line, "-")) {
+      AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+      continue;
+    }
+    char *t1 = strchr(line, '\t');
+    if (!t1) continue;
+    *t1 = 0;
+    char *t2 = strchr(t1 + 1, '\t');
+    const char *flags = "";
+    if (t2) {
+      *t2 = 0;
+      flags = t2 + 1;
+    }
+    lstrcpynA(keys[n], line, 32);
+    wchar_t *w = ps_wide(t1 + 1);
+    UINT f = MF_STRING;
+    if (strchr(flags, 'c')) f |= MF_CHECKED;
+    if (strchr(flags, 'g')) f |= MF_GRAYED;
+    AppendMenuW(m, f, (UINT_PTR)(n + 1), w);
+    free(w);
+    n++;
+  }
+  POINT p;
+  GetCursorPos(&p);
+  SetForegroundWindow(owner);
+  int chose = (int)TrackPopupMenuEx(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, p.x, p.y, owner, NULL);
+  PostMessageW(owner, WM_NULL, 0, 0);
+  DestroyMenu(m);
+  if (chose > 0 && chose <= n) return ps_text(keys[chose - 1]);
+  return moonbit_make_bytes(0, 0);
+}
+
+// The picture on the clipboard as a file's bytes: its PNG where it has one, else its bitmap as a BMP file; empty
+// where it holds none.
+moonbit_bytes_t ps_clipboard_image(void) {
+  moonbit_bytes_t out = moonbit_make_bytes(0, 0);
+  if (!OpenClipboard(tray_hwnd)) return out;
+  UINT png = RegisterClipboardFormatW(L"PNG");
+  HANDLE h = GetClipboardData(png);
+  if (h) {
+    void *p = GlobalLock(h);
+    if (p) {
+      out = ps_bytes(p, GlobalSize(h));
+      GlobalUnlock(h);
+    }
+  } else if ((h = GetClipboardData(CF_DIB)) != NULL) {
+    BITMAPINFOHEADER *bi = (BITMAPINFOHEADER *)GlobalLock(h);
+    if (bi) {
+      size_t n = GlobalSize(h);
+      size_t colors = bi->biClrUsed ? bi->biClrUsed : (bi->biBitCount <= 8 ? (size_t)1 << bi->biBitCount : 0);
+      size_t masks = (bi->biCompression == BI_BITFIELDS && bi->biSize == sizeof(BITMAPINFOHEADER)) ? 12 : 0;
+      size_t off = sizeof(BmpFileHead) + bi->biSize + masks + colors * 4;
+      out = moonbit_make_bytes((int32_t)(sizeof(BmpFileHead) + n), 0);
+      BmpFileHead fh = {0x4D42, (uint32_t)(sizeof(BmpFileHead) + n), 0, (uint32_t)off};
+      memcpy(out, &fh, sizeof fh);
+      memcpy(out + sizeof fh, bi, n);
+      GlobalUnlock(h);
+    }
+  }
   CloseClipboard();
   return out;
+}
+
+// The run ended (the icon's 退出): its icon taken away first.
+void ps_quit(void) {
+  tray_gone();
+  ExitProcess(0);
 }

@@ -5,8 +5,8 @@ import {
   "mbui/view",
   "mbui/signals",
   "mbui/pixels",
-  "moonbitlang/core/cmp",
-  "moonbitlang/core/math",
+  "moonbitlang/core/json",
+  "moonbitlang/core/string",
   "moonbitlang/core/encoding/utf8",
 }
 

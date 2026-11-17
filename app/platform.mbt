@@ -1,101 +1,199 @@
-// Cross-platform host boundary for PinShot.
-// On Windows implemented in `platform_win.c`; on macOS in `platform_mac.m`.
+// What PinShot asks of the system, and nothing of its UI: one set of calls, answered on Windows by platform_win.c (and
+// on a Mac by a platform_mac.m of the same names). Text crosses as UTF-8 (paths ending in a NUL: cstr); what happens
+// outside the frames (a shortcut, the icon, its menu, a window's close) comes on the channel "ps" (main.mbt).
 
 ///|
+/// `s` as the native side reads a path or a name: UTF-8 ending in a NUL.
 fn cstr(s : String) -> Bytes {
   @utf8.encode(s + "\u{0}")
 }
 
 ///|
-extern "C" fn ps_args_str() -> Bytes = "ps_args_str"
+/// UTF-8 bytes as a string.
+fn text_of(b : Bytes) -> String {
+  @utf8.decode_lossy(b[:])
+}
 
 ///|
-extern "C" fn ps_capture_screen() -> Int = "ps_capture_screen"
+/// The run begun: true it is the one run; false another runs (told to take the screen): this one ends.
+extern "C" fn ps_start() -> Int = "ps_start"
 
 ///|
+/// The run's arguments after the program's name, one a line.
+extern "C" fn ps_args() -> Bytes = "ps_args"
+
+///|
+/// The run ended, its icon taken away first.
+extern "C" fn ps_quit() -> Unit = "ps_quit"
+
+///|
+/// The icon's menu: "key\twords" lines, "-" a separator; each item's key is told back as it is chosen.
+#borrow(lines)
+extern "C" fn ps_set_menu(lines : Bytes) -> Unit = "ps_set_menu"
+
+///|
+/// A global shortcut (1 capture, 2 pin the clipboard, 3 show or hide the pins) set to `mods` (Alt 1, Ctrl 2, Shift 4,
+/// Win 8) with `vk` (0: none): 1 it is ours, 0 another program has it.
+extern "C" fn ps_hotkey(which : Int, mods : Int, vk : Int) -> Int = "ps_hotkey"
+
+///|
+/// A key's name as the keyboard says it ("F1", "A").
+extern "C" fn ps_key_name(vk : Int) -> Bytes = "ps_key_name"
+
+///|
+/// The screen taken now (the monitor the pointer is on): 1 when taken.
+extern "C" fn ps_capture_now() -> Int = "ps_capture_now"
+
+///|
+/// A capture asked for (the icon's menu): as the shortcut, told back as "prepare" and "capture".
+extern "C" fn ps_capture_ask() -> Unit = "ps_capture_ask"
+
+///|
+/// A line in the run's log (pinshot.log in the settings' folder), its time before it.
+#borrow(line)
+extern "C" fn ps_log(line : Bytes) -> Unit = "ps_log"
+
+///|
+fn log(line : String) -> Unit {
+  ps_log(cstr(line))
+}
+
+///|
+/// What was taken: "x,y,w,h,dpi,ms"; "" none.
 extern "C" fn ps_capture_info() -> Bytes = "ps_capture_info"
 
 ///|
-extern "C" fn ps_capture_bmp() -> Bytes = "ps_capture_bmp"
+/// The picture taken (a BMP file's bytes, rows from the top, BGRX), handed over and let go there.
+extern "C" fn ps_capture_take() -> Bytes = "ps_capture_take"
 
 ///|
-extern "C" fn ps_enum_windows() -> Bytes = "ps_enum_windows"
+/// The windows on the monitor taken, the front first: "x,y,w,h" lines in its pixels (a window's parts after it).
+extern "C" fn ps_windows() -> Bytes = "ps_windows"
 
 ///|
-extern "C" fn ps_setup_popup(x : Int, y : Int, w : Int, h : Int, topmost : Int) -> Int = "ps_setup_popup"
+/// Window `wid` made one of PinShot's own: no frame, not on the taskbar, over the others where `topmost`.
+extern "C" fn ps_own(wid : Int, topmost : Int) -> Int = "ps_own"
 
 ///|
-extern "C" fn ps_show_popup(x : Int, y : Int, w : Int, h : Int) -> Unit = "ps_show_popup"
+/// Window `wid` at x, y, w by h (the screen's pixels); shown where `show`, taking the keyboard where `focus`.
+extern "C" fn ps_place(wid : Int, x : Int, y : Int, w : Int, h : Int, show : Int, focus : Int) -> Unit = "ps_place"
 
 ///|
-extern "C" fn ps_hide_window() -> Unit = "ps_hide_window"
+extern "C" fn ps_hide(wid : Int) -> Unit = "ps_hide"
 
 ///|
-extern "C" fn ps_set_opacity(alpha : Int) -> Unit = "ps_set_opacity"
+/// Window `wid` about to be closed by the app (its close let through, not told back as a close asked for).
+extern "C" fn ps_let_close(wid : Int) -> Unit = "ps_let_close"
 
 ///|
-extern "C" fn ps_set_topmost(on : Int) -> Unit = "ps_set_topmost"
+/// One of PinShot's windows beside the overlay closed (a pin, the settings).
+fn close_window(wid : Int) -> Unit {
+  ps_let_close(wid)
+  @ui.window_close_here(wid)
+}
 
 ///|
-extern "C" fn ps_now_us() -> Int64 = "ps_now_us"
+/// Window `wid`, `w` by `h` points, in the middle of the monitor the pointer is on, shown and in front.
+extern "C" fn ps_center(wid : Int, w : Int, h : Int) -> Unit = "ps_center"
 
 ///|
-extern "C" fn ps_tray_start() -> Int = "ps_tray_start"
+/// Window `wid` kept out of sight while it is still drawn (1), or seen (0).
+extern "C" fn ps_cloak(wid : Int, on : Int) -> Unit = "ps_cloak"
 
 ///|
-extern "C" fn ps_poll_action() -> Int = "ps_poll_action"
+/// Window `wid` over the others or among them; `front`: brought before them all now.
+extern "C" fn ps_topmost(wid : Int, on : Int, front : Int) -> Unit = "ps_topmost"
 
 ///|
-#borrow(png, name)
-extern "C" fn ps_save_png_dialog(png : Bytes, name : Bytes) -> Int = "ps_save_png_dialog"
+/// Window `wid` seen through: 255 not at all.
+extern "C" fn ps_opacity(wid : Int, alpha : Int) -> Unit = "ps_opacity"
 
 ///|
-#borrow(png)
-extern "C" fn ps_launch_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Int = "ps_launch_pin"
+/// Where window `wid` is: "x,y,w,h,dpi".
+extern "C" fn ps_window_rect(wid : Int) -> Bytes = "ps_window_rect"
+
+///|
+/// The pointer on the screen: "x,y" (pixels).
+extern "C" fn ps_pointer() -> Bytes = "ps_pointer"
+
+///|
+/// What the GPU was asked to let go of let go now (the renderer's context flushed: D3D frees a texture released only
+/// as its context is flushed, which a hidden window's frames never do).
+extern "C" fn ps_gpu_flush() -> Unit = "ps_gpu_flush"
+
+///|
+/// The working set given back to the system.
+extern "C" fn ps_trim() -> Unit = "ps_trim"
+
+///|
+/// "ws,private": the run's memory, in bytes.
+extern "C" fn ps_memory() -> Bytes = "ps_memory"
+
+///|
+extern "C" fn ps_now_ms() -> Double = "ps_now_ms"
+
+///|
+/// The folder of the settings (made).
+extern "C" fn ps_data_dir() -> Bytes = "ps_data_dir"
+
+///|
+/// The pictures' folder for PinShot (not made).
+extern "C" fn ps_pictures_dir() -> Bytes = "ps_pictures_dir"
 
 ///|
 #borrow(path)
 extern "C" fn ps_read_file(path : Bytes) -> Bytes = "ps_read_file"
 
 ///|
+/// `data` written to `path` whole (its folder made): 1 when it is there.
+#borrow(path, data)
+extern "C" fn ps_write_file(path : Bytes, data : Bytes) -> Int = "ps_write_file"
+
+///|
+/// The system's save dialog (owned by window `wid`): the path chosen, "" none.
+#borrow(dir, name)
+extern "C" fn ps_save_dialog(wid : Int, dir : Bytes, name : Bytes) -> Bytes = "ps_save_dialog"
+
+///|
+/// A folder, or a file in its folder, shown.
 #borrow(path)
-extern "C" fn ps_delete_file(path : Bytes) -> Unit = "ps_delete_file"
+extern "C" fn ps_reveal(path : Bytes) -> Unit = "ps_reveal"
 
 ///|
-extern "C" fn ps_clipboard_png() -> Bytes = "ps_clipboard_png"
+/// The time now as a file's name says it: "20261117-083015".
+extern "C" fn ps_stamp() -> Bytes = "ps_stamp"
 
 ///|
-extern "C" fn ps_release_capture() -> Unit = "ps_release_capture"
-
-///|
-extern "C" fn ps_trim_memory() -> Unit = "ps_trim_memory"
-
-///|
-extern "C" fn ps_encode_crop_png(x : Int, y : Int, w : Int, h : Int) -> Bytes = "ps_encode_crop_png"
-
-///|
-#borrow(rgba)
-extern "C" fn ps_encode_rgba_png(w : Int, h : Int, rgba : FixedArray[Byte]) -> Bytes = "ps_encode_rgba_png"
-
-///|
-extern "C" fn ps_read_settings() -> Bytes = "ps_read_settings"
-
-///|
-#borrow(data)
-extern "C" fn ps_write_settings(data : Bytes) -> Int = "ps_write_settings"
-
-///|
-extern "C" fn ps_get_autostart() -> Int = "ps_get_autostart"
+extern "C" fn ps_autostart() -> Int = "ps_autostart"
 
 ///|
 extern "C" fn ps_set_autostart(on : Int) -> Int = "ps_set_autostart"
 
 ///|
-extern "C" fn ps_default_save_dir() -> Bytes = "ps_default_save_dir"
+/// A menu at the pointer over window `wid`: "key\twords\tflags" lines (c checked, g greyed), "-" a separator. The key
+/// chosen, "" none.
+#borrow(lines)
+extern "C" fn ps_popup_menu(wid : Int, lines : Bytes) -> Bytes = "ps_popup_menu"
 
 ///|
-#borrow(png, dir)
-extern "C" fn ps_auto_save_png(png : Bytes, dir : Bytes) -> Int = "ps_auto_save_png"
+/// The clipboard's picture as a file's bytes (PNG, or a BMP of its bitmap); empty: none.
+extern "C" fn ps_clipboard_image() -> Bytes = "ps_clipboard_image"
 
 ///|
-extern "C" fn ps_notify_reload_settings() -> Unit = "ps_notify_reload_settings"
+/// A comma-separated line's numbers.
+fn numbers_of(s : String) -> Array[Double] {
+  let out : Array[Double] = []
+  for part in s.split(",") {
+    let t = part.trim()
+    out.push(@string.parse_double(t) catch { _ => 0.0 })
+  }
+  out
+}
+
+///|
+/// `s` read as JSON (None: it is not).
+fn json_of(s : String) -> Json? {
+  try Some(@json.parse(s)) catch {
+    _ => None
+  }
+}
