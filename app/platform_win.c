@@ -485,14 +485,21 @@ static void tray_menu(int x, int y) {
 }
 
 static char cap_by[16];
-static int capture_open;  // the app has a capture open (ps_capture_open)
+static int capture_open;  // the app has a capture open (ps_capture_open): 1 the person's, 2 the one taken as it starts
+static char ask_waiting[16];  // a capture asked for while the one taken as it starts was open: asked as that closes
+#define WM_PS_ASK (WM_APP + 45)
 static void gpu_trim_now(void);
 #define WM_PS_TRIM (WM_APP + 43)
 
 static HWND own_window(int wid);
 
 static void capture_asked(const char *by) {
-  // (not while a capture is open: the overlay would be taken too)
+  // (not while a capture is open: the overlay would be taken too; while the one taken as the run starts is, asked
+  // for as soon as it closes: a shortcut pressed as the run starts is not lost)
+  if (capture_open == 2) {
+    lstrcpynA(ask_waiting, by, sizeof ask_waiting);
+    return;
+  }
   if (capture_open) return;
   if (!cap_begin()) return;
   lstrcpynA(cap_by, by, sizeof cap_by);
@@ -520,6 +527,14 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_PS_TRIM:
       gpu_trim_now();
+      return 0;
+    case WM_PS_ASK:
+      if (ask_waiting[0] && !capture_open) {
+        char by[16];
+        lstrcpynA(by, ask_waiting, sizeof by);
+        ask_waiting[0] = 0;
+        capture_asked(by);
+      }
       return 0;
     case WM_DISPLAYCHANGE:  // (the monitors changed: each one's capture made again)
       ps_wgc_restart();
@@ -552,7 +567,11 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // Whether the app has a capture open: no other is taken meanwhile (its shortcut pressed again does nothing).
-void ps_capture_open(int32_t on) { capture_open = on != 0; }
+void ps_capture_open(int32_t on) {
+  capture_open = on;
+  // (asked for once the app is through closing it: a message to the icon's window, after what closes it now)
+  if (!on && ask_waiting[0] && tray_hwnd) PostMessageW(tray_hwnd, WM_PS_ASK, 0, 0);
+}
 
 // The tray window (what the icon, the shortcuts and the capture tell): made once.
 static void tray_window_made(void) {

@@ -169,12 +169,26 @@ fn overlay_first_frame() -> Unit {
   }
   if started_with_settings.val {
     open_settings()
-  } else {
+  } else if !capturing.untracked() {
+    // (none when the person's own is open already: a shortcut pressed as the run started, shown as its first frame)
     // (one capture taken out of sight as it starts, all of it as one is (the screen taken, the overlay at the
     // monitor's size, the picture a texture, a frame drawn) and let go: the first the person takes is as quick as
     // any, not ~50 ms slower; what it held given back after, as any capture's)
     warming.val = true
+    log("warm-up: asked")
     ps_capture_ask()
+    // (let go however it went, should its frame never come: a capture asked for meanwhile waits on it)
+    match overlay_root.val {
+      Some(r) =>
+        r.at_moment(now() + 2500.0, fn() {
+          if warming.val && capturing.untracked() {
+            log("warm-up: not drawn in 2.5 s, let go")
+            close_capture()
+          }
+        }, later=true)
+        |> ignore
+      None => ()
+    }
   }
 }
 

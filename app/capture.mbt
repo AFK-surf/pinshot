@@ -162,7 +162,7 @@ fn prepare_capture(x : Int, y : Int, w : Int, h : Int, dpi : Double) -> Unit {
   if was != "" {
     @ui.forget_image(was)
   }
-  ps_capture_open(1)
+  ps_capture_open(if warming.val { 2 } else { 1 })
   ps_cloak(0, 1)
   // (the keyboard taken but by the capture taken as the run starts: that one is never seen)
   ps_place(0, x, y, w, h, 1, if warming.val { 0 } else { 1 })
@@ -203,6 +203,9 @@ let taken_at : Ref[Double] = Ref(0.0)
 fn close_capture() -> Unit {
   if !capturing.untracked() {
     return
+  }
+  if warming.val {
+    log("warm-up: done")
   }
   ps_capture_open(0)
   warming.val = false

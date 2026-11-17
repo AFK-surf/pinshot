@@ -58,6 +58,8 @@ fn main {
   }
   @ui.run("PinShot", fn(c) {
     c.set_clear(0x000000L)
+    // (said each frame: a window's tree let go lets go of what was said)
+    @ui.set_tree_theme(app_theme)
     overlay_first_frame()
   }, tree=overlay_window)
 }
@@ -141,3 +143,11 @@ fn bench() -> Unit {
 ///|
 /// Whether the run was started to open its settings (they open once its window is there).
 let started_with_settings : Ref[Bool] = Ref(false)
+
+///|
+/// The theme every window's words are in: dark, as PinShot is, and digits all one width (the user, 2026-11-17: 「有的数字需要用等宽模式」:
+/// a number that changes where it stands, the magnifier's place and colour, a size, a zoom, keeps its width).
+let app_theme : () -> @ui.Theme = fn() { theme_kept }
+
+///|
+let theme_kept : @ui.Theme = { ..@ui.Theme::dark(), tabular: true }
