@@ -457,6 +457,8 @@ fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
       let (a, b, c, d) = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+      // (anywhere in it as well with the select tool held)
+      (inside && x >= dmin(x0, x1) && x <= dmax(x0, x1) && y >= dmin(y0, y1) && y <= dmax(y0, y1)) ||
       to_segment(x, y, a, b) <= reach ||
       to_segment(x, y, b, c) <= reach ||
       to_segment(x, y, c, d) <= reach ||
@@ -470,7 +472,7 @@ fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool
       let dx = (x - (x0 + x1) / 2.0) / rx
       let dy = (y - (y0 + y1) / 2.0) / ry
       // (how far off its edge, near enough: along the nearer radius)
-      ((dx * dx + dy * dy).sqrt() - 1.0).abs() * dmin(rx, ry) <= reach
+      (inside && dx * dx + dy * dy <= 1.0) || ((dx * dx + dy * dy).sqrt() - 1.0).abs() * dmin(rx, ry) <= reach
     }
     Mosaic => {
       let (x0, y0) = m.pts[0]

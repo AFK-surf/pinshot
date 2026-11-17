@@ -364,6 +364,7 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
         .radius(Is(4.0))
         .ground(Is(0x17181BD9L))
         .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
         .laid_nowhere(By(fn() { root.drawn_past(p.zoomed_at.get() + 900.0) }))
         |> ignore
         l.box(fn(t) {

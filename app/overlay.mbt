@@ -743,6 +743,7 @@ fn overlay_keys() -> @view.Keymap {
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
     k(@ui.key_code_delete, "delete", 0),
+    ch('v', "select", 0),
     k(@ui.key_code_backspace, "delete", 0),
     k(@ui.key_code_enter, "copy", 0),
     ch('c', "copy", ctrl),
@@ -789,6 +790,7 @@ fn overlay_actions(root : @view.View) -> Unit {
     }
   })
   on("delete", fn() { delete_selected() |> ignore })
+  on("select", fn() { tool.set(Move) })
   on("copy", copy_out)
   on("save", save_out)
   on("pin", pin_out)

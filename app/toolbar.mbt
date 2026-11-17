@@ -15,6 +15,8 @@ let bar_rule : Double = 9.0
 ///|
 /// The tools on the bar, in order: what each is, its glyph, its name and key.
 let bar_tools : Array[(Tool, String, String)] = [
+  // (no mark drawn: a press picks a mark, anywhere in it, and moves it; the user, 2026-11-17: 「好像没有选择模式，用来稳定选择中图案」)
+  (Move, "select", "选择（V）"),
   (Box, "box", "矩形"),
   (Oval, "oval", "椭圆"),
   (Arrow, "arrow", "箭头（按住 Shift 水平、垂直或 45°）"),
@@ -27,7 +29,7 @@ let bar_tools : Array[(Tool, String, String)] = [
 
 ///|
 fn bar_width() -> Double {
-  bar_pad * 2.0 + bar_button * 14.0 + bar_rule * 2.0
+  bar_pad * 2.0 + bar_button * 15.0 + bar_rule * 2.0
 }
 
 ///|
@@ -277,6 +279,12 @@ fn glyph(name : String) -> @pixels.Vector {
     { w: 18.0, h: 18.0, layers: paths.map(fn(d) { stroke_layer(d, 0x000000FFL, 1.6) }) }
   }
   match name {
+    "select" =>
+      {
+        w: 18.0,
+        h: 18.0,
+        layers: [stroke_layer("M5 2.8v11.4l2.9-2.8 2.1 4.6 2-.9-2.1-4.5h4z", 0x000000FFL, 1.4)],
+      }
     "box" => lines(["M3.5 4.5h11v9h-11z"])
     "oval" => lines([oval_path(2.5, 4.0, 13.0, 10.0)])
     "arrow" => lines(["M4 14 14 4", "M7.5 4H14v6.5"])
