@@ -1,5 +1,5 @@
 param(
-  # Partner Center's Product identity of the reserved name
+  # Partner Center's Product identity of the reserved name (Store ID 9PG140MHXTBM, reserved 2026-11-17; PFN pengx17.PinShot_3t6r3b27cpzdr)
   [string]$Name = "pengx17.PinShot",
   [string]$Publisher = "CN=0A62AE73-FF5C-4B40-9E2B-F24486072C86",
   [string]$PublisherDisplayName = "pengx17",

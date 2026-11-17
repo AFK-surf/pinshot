@@ -1,4 +1,5 @@
 # PinShot — Microsoft Store submission (1.0.0)
+nStore ID 9PG140MHXTBM · https://apps.microsoft.com/detail/9PG140MHXTBM · identity pengx17.PinShot / CN=0A62AE73-FF5C-4B40-9E2B-F24486072C86 (publisher pengx17) · PFN pengx17.PinShot_3t6r3b27cpzdr
 
 Free · no ads · no in-app purchases · category Productivity › Utilities & tools (or Photo & video) · age rating: IARC
 questionnaire, no user interaction, no data shared, no network access · privacy: the app collects nothing and never
