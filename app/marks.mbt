@@ -221,29 +221,22 @@ fn mark_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
       [stroke_layer(oval_path(dmin(x0, x1), dmin(y0, y1), (x1 - x0).abs(), (y1 - y0).abs()), m.color, w)]
     }
     Arrow => [fill_layer(arrow_path(m.pts[0], m.pts[m.pts.length() - 1], w), m.color)]
-    Line => {
-      let (ax, ay) = m.pts[0]
-      let (bx, by) = m.pts[m.pts.length() - 1]
-      [
-        stroke_layer("M\{num(ax)} \{num(ay)}L\{num(bx)} \{num(by)}", m.color, w),
-        fill_layer(circle_path(ax, ay, w / 2.0) + circle_path(bx, by, w / 2.0), m.color),
-      ]
-    }
+    Line => [fill_layer(capsule_path(m.pts[0], m.pts[m.pts.length() - 1], w), m.color)]
     Pen => {
+      // (each step a round-ended band, all one filled outline: round joins and ends, no seam where a stroke and a dot
+      // would meet; a point the pointer hardly moved past left out)
       let sb = StringBuilder()
-      for i, p in m.pts {
-        sb.write_string(if i == 0 { "M" } else { "L" })
-        sb.write_string(num(p.0))
-        sb.write_char(' ')
-        sb.write_string(num(p.1))
+      let mut last = m.pts[0]
+      sb.write_string(capsule_path(last, last, w))
+      for p in m.pts {
+        let dx = p.0 - last.0
+        let dy = p.1 - last.1
+        if dx * dx + dy * dy >= 1.0 {
+          sb.write_string(capsule_path(last, p, w))
+          last = p
+        }
       }
-      // (round ends: a dot at each, as wide as the line)
-      let (ax, ay) = m.pts[0]
-      let (bx, by) = m.pts[m.pts.length() - 1]
-      [
-        stroke_layer(sb.to_string(), m.color, w),
-        fill_layer(circle_path(ax, ay, w / 2.0) + circle_path(bx, by, w / 2.0), m.color),
-      ]
+      [fill_layer(sb.to_string(), m.color)]
     }
     Number => {
       let (cx, cy) = m.pts[0]
@@ -398,4 +391,24 @@ test "snap45" {
   assert_true((y).abs() < 0.001 && x > 99.0)
   let (x2, y2) = snap45(0.0, 0.0, 3.0, 100.0)
   assert_true(x2.abs() < 0.001 && y2 > 99.0)
+}
+
+///|
+/// A line from `a` to `b`, `w` wide, its ends round: one filled outline (two half circles and the band between), so
+/// its ends are not a stroke and a dot drawn over each other, edge on edge.
+fn capsule_path(a : (Double, Double), b : (Double, Double), w : Double) -> String {
+  let (ax, ay) = a
+  let (bx, by) = b
+  let r = w / 2.0
+  let dx = bx - ax
+  let dy = by - ay
+  let len = (dx * dx + dy * dy).sqrt()
+  if len < 0.01 {
+    return circle_path(ax, ay, r)
+  }
+  // (across it, r long)
+  let nx = -dy / len * r
+  let ny = dx / len * r
+  let rr = num(r)
+  "M\{num(ax + nx)} \{num(ay + ny)}L\{num(bx + nx)} \{num(by + ny)}A\{rr} \{rr} 0 0 0 \{num(bx - nx)} \{num(by - ny)}L\{num(ax - nx)} \{num(ay - ny)}A\{rr} \{rr} 0 0 0 \{num(ax + nx)} \{num(ay + ny)}Z"
 }
