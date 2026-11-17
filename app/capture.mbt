@@ -59,8 +59,9 @@ enum Hand {
   /// a mark being drawn
   Marking
   /// a mark dragged from where it went down: the mark as it was, the marks as they were (it out of them while it is
-  /// dragged, drawn as the draft), where it was among them
-  Dragging(Double, Double, Mark, Array[Mark], Int)
+  /// dragged, drawn as the draft), where it was among them, and by what: its handle (hx, hy: marks.mbt's
+  /// mark_handles), or (-1, -1) the whole of it
+  Dragging(Double, Double, Mark, Array[Mark], Int, Int, Int)
 }
 
 ///|

@@ -75,7 +75,8 @@ fn side_cursor(side : (Int, Int)) -> @view.Cursor {
 fn overlay_cursor() -> @view.Cursor? {
   match hand.get() {
     Drawing(_, _) | Marking => return Some(Crosshair)
-    Moving(_, _, _) | Dragging(_, _, _, _, _) => return Some(Grabbing)
+    Moving(_, _, _) | Dragging(_, _, _, _, _, -1, _) => return Some(Grabbing)
+    Dragging(_, _, _, _, _, _, _) => return Some(Crosshair)
     Sizing(hx, hy, _) => return Some(side_cursor((hx, hy)))
     Free => ()
   }
@@ -83,6 +84,9 @@ fn overlay_cursor() -> @view.Cursor? {
     None => Some(Crosshair)
     Some(r) => {
       let (x, y) = pointer_px.get()
+      if selected_handle_at(x, y) is Some(_) {
+        return Some(Crosshair)
+      }
       match handle_at(r, x, y) {
         Some((0, 0)) =>
           if tool.get() == Move || mark_at(x, y, false) is Some(_) {
@@ -269,6 +273,7 @@ fn marks_layer(parent : @view.View, editing~ : Bool) -> Unit {
     })
     |> ignore
     if editing {
+      layer.box(fn(h) { h.over(Is(true)).presses(Is(false)).picture(By(picked_picture)) |> ignore }) |> ignore
       words_editor(layer)
     }
   })
@@ -410,7 +415,7 @@ fn stage_drag(d : @view.Drag) -> Unit {
 /// What the hand holds let go of as it was: a mark being drawn called off, one dragged put back where it was.
 fn drop_held() -> Unit {
   @signals.start_batch()
-  if hand.untracked() is Dragging(_, _, _, before, _) {
+  if hand.untracked() is Dragging(_, _, _, before, _, _, _) {
     marks.set(before)
   }
   draft.set(None)
@@ -430,6 +435,50 @@ fn dragged(m : Mark, dx : Double, dy : Double) -> Mark {
 }
 
 ///|
+/// Where mark `m` held by (hx, hy) (-1: whole) from (x0, y0) is with the pointer at (x, y): a line's or an arrow's end
+/// kept straight with Shift held.
+fn held_to(m : Mark, hx : Int, hy : Int, x0 : Double, y0 : Double, x : Double, y : Double) -> Mark {
+  if hx < 0 {
+    return dragged(m, x - x0, y - y0)
+  }
+  let (x, y) = if (m.tool == Line || m.tool == Arrow) && ps_shift_down() == 1 {
+    let (ox, oy) = m.pts[if hx == 0 { m.pts.length() - 1 } else { 0 }]
+    snap45(ox, oy, x, y)
+  } else {
+    (x, y)
+  }
+  reshaped(m, hx, hy, x, y)
+}
+
+///|
+/// Which handle of the mark picked the point (pixels) is on: (its index, hx, hy).
+fn selected_handle_at(x : Double, y : Double) -> (Int, Int, Int)? {
+  guard selected.get() is Some(id) && mark_index(id) is Some(i) else { return None }
+  let reach = 7.0 * mon_scale.untracked()
+  for h in mark_handles(marks.untracked()[i]) {
+    let (hx, hy, px, py) = h
+    if (x - px).abs() <= reach && (y - py).abs() <= reach {
+      return Some((i, hx, hy))
+    }
+  }
+  None
+}
+
+///|
+/// The mark at `i` taken up by the hand from (x, y): out of the marks while it is held, drawn as the draft, picked.
+fn take_up(i : Int, x : Double, y : Double, hx : Int, hy : Int) -> Unit {
+  let before = marks.untracked()
+  let rest = before.copy()
+  let m = rest.remove(i)
+  @signals.start_batch()
+  marks.set(rest)
+  draft.set(Some(m))
+  selected.set(Some(m.id))
+  hand.set(Dragging(x, y, m, before, i, hx, hy))
+  @signals.end_batch()
+}
+
+///|
 fn press_down(x : Double, y : Double) -> Unit {
   down_at.val = (x, y, false)
   // (a press while words are written puts them down, and only that)
@@ -438,24 +487,21 @@ fn press_down(x : Double, y : Double) -> Unit {
     commit_words()
     words_put_down.val = true
   }
+  // (a handle of the mark picked: that end or corner moved)
+  if selected_handle_at(x, y) is Some((i, hx, hy)) {
+    take_up(i, x, y, hx, hy)
+    return
+  }
   match sel.untracked() {
     None => hand.set(Drawing(x, y))
     Some(r) =>
       match handle_at(r, x, y) {
         Some((0, 0)) =>
           match mark_at(x, y, tool.untracked() == Move) {
-            // (on a mark: it is dragged, whatever tool is held)
-            Some(i) => {
-              let before = marks.untracked()
-              let rest = before.copy()
-              let m = rest.remove(i)
-              @signals.start_batch()
-              marks.set(rest)
-              draft.set(Some(m))
-              hand.set(Dragging(x, y, m, before, i))
-              @signals.end_batch()
-            }
-            None =>
+            // (on a mark: it is picked and dragged, whatever tool is held)
+            Some(i) => take_up(i, x, y, -1, -1)
+            None => {
+              selected.set(None)
           match tool.untracked() {
             Move => hand.set(Moving(x, y, r))
             Number | Words => hand.set(Marking)
@@ -470,8 +516,12 @@ fn press_down(x : Double, y : Double) -> Unit {
               draft.set(Some(new_mark(t, [start, start])))
             }
           }
+            }
           }
-        Some((hx, hy)) => hand.set(Sizing(hx, hy, r))
+        Some((hx, hy)) => {
+          selected.set(None)
+          hand.set(Sizing(hx, hy, r))
+        }
         // (outside it: a part dragged out anew, where nothing is marked yet)
         None => if marks.untracked().is_empty() { hand.set(Drawing(x, y)) }
       }
@@ -506,7 +556,7 @@ fn press_moved(x : Double, y : Double) -> Unit {
         _ => ()
       }
     }
-    Dragging(x0, y0, m, _, _) => if moved { draft.set(Some(dragged(m, x - x0, y - y0))) }
+    Dragging(x0, y0, m, _, _, hx, hy) => if moved { draft.set(Some(held_to(m, hx, hy, x0, y0, x, y))) }
     Marking =>
       match draft.untracked() {
         Some(m) => {
@@ -609,19 +659,17 @@ fn press_up(x : Double, y : Double) -> Unit {
           _ => ()
         }
       }
-    Dragging(x0, y0, m, before, i) => {
+    Dragging(x0, y0, m, before, i, hx, hy) => {
       @signals.start_batch()
       draft.set(None)
+      // (put back where it was among the marks: moved, one step to undo; else as it was, picked, its colour and
+      // thickness the bar's)
+      marks.set(before)
       if moved {
-        // (put back where it was among the marks, moved: one step to undo)
-        done_before.val.push(before)
-        undone.val = []
-        let next = before.copy()
-        mark_ids.val += 1
-        next[i] = { ..dragged(m, x - x0, y - y0), id: mark_ids.val }
-        marks.set(next)
+        replace_mark(i, held_to(m, hx, hy, x0, y0, x, y))
       } else {
-        marks.set(before)
+        color_now.set(m.color)
+        size_now.set(m.size)
       }
       hand.set(Free)
       @signals.end_batch()
@@ -655,6 +703,8 @@ fn step_back() -> Unit {
     words_open.set(None)
   } else if draft.untracked() is Some(_) {
     drop_held()
+  } else if selected.untracked() is Some(_) {
+    selected.set(None)
   } else if sel.untracked() is Some(_) {
     @signals.start_batch()
     sel.set(None)
@@ -678,6 +728,8 @@ fn overlay_keys() -> @view.Keymap {
   let shift = @ui.mod_shift_key
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
+    k(@ui.key_code_delete, "delete", 0),
+    k(@ui.key_code_backspace, "delete", 0),
     k(@ui.key_code_enter, "copy", 0),
     ch('c', "copy", ctrl),
     ch('s', "save", ctrl),
@@ -716,10 +768,13 @@ fn overlay_actions(root : @view.View) -> Unit {
   on("close", fn() {
     if words_open.untracked() is Some(_) {
       commit_words()
+    } else if selected.untracked() is Some(_) {
+      selected.set(None)
     } else {
       close_capture()
     }
   })
+  on("delete", fn() { delete_selected() |> ignore })
   on("copy", copy_out)
   on("save", save_out)
   on("pin", pin_out)
@@ -728,10 +783,16 @@ fn overlay_actions(root : @view.View) -> Unit {
   on("copy-color", copy_color)
   for step in [(1, ""), (10, "10")] {
     let (n, s) = step
-    on("left" + s, fn() { nudge(-n, 0) })
-    on("right" + s, fn() { nudge(n, 0) })
-    on("up" + s, fn() { nudge(0, -n) })
-    on("down" + s, fn() { nudge(0, n) })
+    // (the mark picked moved, else the part)
+    let k = fn(dx : Int, dy : Int) {
+      if !nudge_selected(dx.to_double(), dy.to_double()) {
+        nudge(dx, dy)
+      }
+    }
+    on("left" + s, fn() { k(-n, 0) })
+    on("right" + s, fn() { k(n, 0) })
+    on("up" + s, fn() { k(0, -n) })
+    on("down" + s, fn() { k(0, n) })
   }
 }
 
@@ -777,4 +838,33 @@ fn said_shown() -> Unit {
   log(
     "capture \{mon.val.w}x\{mon.val.h}@\{num(mon_scale.untracked())}: taken \{num(took_ms.val)} ms (\{took_how.val}), handed over +\{num(taken_at.val - asked_at.val)}, seen +\{num(t - asked_at.val)} ms",
   )
+}
+
+///|
+/// The mark picked, its handles (a line's ends, a box's corners) or, where it has none, a thin frame round it: in the
+/// monitor's pixels, over the marks.
+fn picked_picture() -> @pixels.Vector? {
+  let m = match hand.get() {
+    Dragging(_, _, _, _, _, _, _) => draft.get()
+    _ =>
+      match selected.get() {
+        Some(id) => marks.get().iter().find_first(fn(m) { m.id == id })
+        None => None
+      }
+  }
+  guard m is Some(m) else { return None }
+  let k = mon_scale.get()
+  let layers : Array[@pixels.VectorPath] = []
+  let handles = mark_handles(m)
+  if handles.is_empty() {
+    let (x0, y0, x1, y1) = mark_box(m, k)
+    let pad = 4.0 * k
+    layers.push(stroke_layer(rect_path(x0 - pad, y0 - pad, x1 - x0 + pad * 2.0, y1 - y0 + pad * 2.0), accent, k))
+  }
+  for h in handles {
+    let (_, _, x, y) = h
+    layers.push(fill_layer(circle_path(x, y, 5.0 * k), accent))
+    layers.push(fill_layer(circle_path(x, y, 3.5 * k), 0xFFFFFFFFL))
+  }
+  Some({ w: mon.val.w.to_double(), h: mon.val.h.to_double(), layers })
 }

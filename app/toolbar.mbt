@@ -47,7 +47,7 @@ fn bar_place() -> (Double, Double) {
       let ry0 = r.y.to_double() / k
       let ry1 = r.bottom().to_double() / k
       let w = bar_width()
-      let h = bar_height + (if tool.get() != Move { style_height + 4.0 } else { 0.0 })
+      let h = bar_height + (if styling() { style_height + 4.0 } else { 0.0 })
       let x = clamp(rx1 - w, 4.0, sw - w - 4.0)
       let y = if ry1 + 8.0 + h <= sh - 4.0 {
         ry1 + 8.0
@@ -109,7 +109,7 @@ fn toolbar(stage : @view.View) -> Unit {
         tool_button(bar, "check", "复制 Enter", fn() { false }, copy_out, strong=true)
       })
       |> ignore
-      col.show(fn() { tool.get() != Move }, fn(row) { style_row(row) }, at_once=true)
+      col.show(fn() { styling() }, fn(row) { style_row(row) }, at_once=true)
     })
     |> ignore
   })
@@ -196,6 +196,12 @@ fn tool_button(
 }
 
 ///|
+/// Whether the second row is shown: a tool held, or a mark picked (its colour and thickness then).
+fn styling() -> Bool {
+  tool.get() != Move || selected.get() is Some(_)
+}
+
+///|
 /// The second row: three thicknesses, then the colours.
 fn style_row(row : @view.View) -> Unit {
   bar_panel(row)
@@ -210,7 +216,10 @@ fn style_row(row : @view.View) -> Unit {
       .lies_along(Is(Middle))
       .presses(Is(true))
       .says(Is(Some(@view.said(Button, label=["细", "中", "粗"][s]))))
-      .on_press(fn() { size_now.set(s) })
+      .on_press(fn() {
+        size_now.set(s)
+        restyle_selected(s~)
+      })
       .ground(By(fn() {
         if size_now.get() == s {
           0xFFFFFF2EL
@@ -240,7 +249,10 @@ fn style_row(row : @view.View) -> Unit {
       .lies_along(Is(Middle))
       .presses(Is(true))
       .says(Is(Some(@view.said(Button, label=hex6((c >> 8).to_int())))))
-      .on_press(fn() { color_now.set(c) })
+      .on_press(fn() {
+        color_now.set(c)
+        restyle_selected(c~)
+      })
       .ground(By(fn() { if b.pointed() { 0xFFFFFF17L } else { 0L } }))
       |> ignore
       b.box(fn(sw) {

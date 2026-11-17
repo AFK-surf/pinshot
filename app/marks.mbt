@@ -101,6 +101,7 @@ fn number_pt(size : Int) -> Double {
 fn reset_marks() -> Unit {
   marks.set([])
   draft.set(None)
+  selected.set(None)
   undone.val = []
   done_before.val = []
 }
@@ -121,6 +122,7 @@ fn undo() -> Bool {
   guard done_before.val.pop() is Some(before) else { return false }
   undone.val.push(marks.untracked())
   marks.set(before)
+  selected.set(None)
   true
 }
 
@@ -129,6 +131,7 @@ fn redo() -> Bool {
   guard undone.val.pop() is Some(after) else { return false }
   done_before.val.push(marks.untracked())
   marks.set(after)
+  selected.set(None)
   true
 }
 
@@ -524,4 +527,146 @@ test "mark hit" {
   assert_false(mark_hit(oval, 50.0, 25.0, 1.0, false))
   let moved = moved_by(line, 10.0, 5.0)
   assert_eq(moved.pts[1], (110.0, 5.0))
+}
+
+// ---- picked ----
+
+///|
+/// The mark picked (its id; None none): its handles shown, Delete takes it away, the arrows move it, a colour or a
+/// thickness chosen is its.
+let selected : @signals.Signal[Int?] = @signals.signal(None)
+
+///|
+/// Where the mark with id `id` is among the marks.
+fn mark_index(id : Int) -> Int? {
+  for i, m in marks.untracked() {
+    if m.id == id {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
+/// The handles of mark `m` (pixels): (hx, hy, x, y), a corner (x of its point hx, y of its point hy) or a line's end
+/// (both of the same point). A pen's line, a number and words have none (they are moved whole).
+fn mark_handles(m : Mark) -> Array[(Int, Int, Double, Double)] {
+  let (x0, y0) = m.pts[0]
+  let (x1, y1) = m.pts[m.pts.length() - 1]
+  match m.tool {
+    Line | Arrow => [(0, 0, x0, y0), (1, 1, x1, y1)]
+    Box | Oval | Mosaic => [(0, 0, x0, y0), (1, 0, x1, y0), (1, 1, x1, y1), (0, 1, x0, y1)]
+    _ => []
+  }
+}
+
+///|
+/// Mark `m` with handle (hx, hy) put at (x, y).
+fn reshaped(m : Mark, hx : Int, hy : Int, x : Double, y : Double) -> Mark {
+  let pts = [m.pts[0], m.pts[m.pts.length() - 1]]
+  pts[hx] = (x, pts[hx].1)
+  pts[hy] = (pts[hy].0, y)
+  { ..m, pts, }
+}
+
+///|
+/// The marks with the one at `i` put in place of what it was: one step to undo, it picked (a new id: its node drawn
+/// anew).
+fn replace_mark(i : Int, m : Mark) -> Unit {
+  let before = marks.untracked()
+  done_before.val.push(before)
+  undone.val = []
+  let next = before.copy()
+  mark_ids.val += 1
+  next[i] = { ..m, id: mark_ids.val }
+  marks.set(next)
+  selected.set(Some(mark_ids.val))
+}
+
+///|
+/// The mark picked given colour `c` / thickness `s`: whether one is picked.
+fn restyle_selected(c? : Int64, s? : Int) -> Unit {
+  guard selected.untracked() is Some(id) && mark_index(id) is Some(i) else { return }
+  let m = marks.untracked()[i]
+  let m2 = {
+    ..m,
+    color: match c {
+      Some(c) => c
+      None => m.color
+    },
+    size: match s {
+      Some(s) => s
+      None => m.size
+    },
+  }
+  if m2 != m {
+    replace_mark(i, m2)
+  }
+}
+
+///|
+/// The mark picked taken away (one step to undo); whether there was one.
+fn delete_selected() -> Bool {
+  guard selected.untracked() is Some(id) && mark_index(id) is Some(i) else { return false }
+  let before = marks.untracked()
+  done_before.val.push(before)
+  undone.val = []
+  let next = before.copy()
+  next.remove(i) |> ignore
+  marks.set(next)
+  selected.set(None)
+  true
+}
+
+///|
+/// The mark picked moved by (dx, dy) pixels; whether there was one.
+fn nudge_selected(dx : Double, dy : Double) -> Bool {
+  guard selected.untracked() is Some(id) && mark_index(id) is Some(i) else { return false }
+  replace_mark(i, moved_by(marks.untracked()[i], dx, dy))
+  true
+}
+
+///|
+test "reshaped" {
+  let box = { id: 1, tool: Box, pts: [(0.0, 0.0), (100.0, 100.0)], color: 0L, size: 1, n: 0, words: "" }
+  let b = reshaped(box, 1, 0, 150.0, -20.0)
+  assert_eq(b.pts, [(0.0, -20.0), (150.0, 100.0)])
+  let line = { ..box, tool: Line }
+  let l = reshaped(line, 1, 1, 30.0, 40.0)
+  assert_eq(l.pts, [(0.0, 0.0), (30.0, 40.0)])
+}
+
+///|
+/// What mark `m` covers (pixels, `k` a point): (x0, y0, x1, y1).
+fn mark_box(m : Mark, k : Double) -> (Double, Double, Double, Double) {
+  match m.tool {
+    Number => {
+      let (cx, cy) = m.pts[0]
+      let r = number_pt(m.size) * k / 2.0
+      (cx - r, cy - r, cx + r, cy + r)
+    }
+    Words => {
+      let (wx, wy) = m.pts[0]
+      let size = words_pt(m.size) * k
+      let mut wide = 0.0
+      for c in m.words {
+        wide += if c.to_int() >= 0x2E80 { size } else { size * 0.6 }
+      }
+      (wx, wy, wx + wide + 3.0 * k, wy + size * 1.3)
+    }
+    _ => {
+      let half = line_pt(m.size) * k / 2.0
+      let mut x0 = m.pts[0].0
+      let mut y0 = m.pts[0].1
+      let mut x1 = x0
+      let mut y1 = y0
+      for p in m.pts {
+        x0 = dmin(x0, p.0)
+        y0 = dmin(y0, p.1)
+        x1 = dmax(x1, p.0)
+        y1 = dmax(y1, p.1)
+      }
+      (x0 - half, y0 - half, x1 + half, y1 + half)
+    }
+  }
 }
