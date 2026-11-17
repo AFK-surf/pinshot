@@ -68,6 +68,8 @@ fn toolbar(stage : @view.View) -> Unit {
     o.box(fn(col) {
       col
       .gap(Is(4.0))
+      // (each row as wide as what it holds, from the bar's left: the style row is not stretched to the bar's width)
+      .lines_up(Is(Some(Start)))
       .offset(By(bar_place))
       // (out of the way while the part is dragged or resized)
       .laid_nowhere(By(fn() {
@@ -196,7 +198,7 @@ fn tool_button(
 /// The second row: three thicknesses, then the colours.
 fn style_row(row : @view.View) -> Unit {
   bar_panel(row)
-  row.row(Is(true)).height(Is(Some(style_height))).gap(Is(2.0)).lies_along(Is(End)) |> ignore
+  row.row(Is(true)).height(Is(Some(style_height))).gap(Is(2.0)) |> ignore
   for s in 0..<3 {
     row.box(fn(b) {
       b
