@@ -685,6 +685,42 @@ int32_t ps_own(int32_t wid, int32_t topmost) {
   return 1;
 }
 
+// Window `wid` given DWM's shadow round it (a pin: it stands off what is under it). A popup has none of its own; DWM
+// draws one round a window whose frame it renders and that reaches into the client by a pixel.
+void ps_shadow(int32_t wid) {
+  HWND h = own_window(wid);
+  if (!h) return;
+  enum DWMNCRENDERINGPOLICY p = DWMNCRP_ENABLED;
+  DwmSetWindowAttribute(h, DWMWA_NCRENDERING_POLICY, &p, sizeof p);
+  MARGINS m = {1, 1, 1, 1};
+  DwmExtendFrameIntoClientArea(h, &m);
+}
+
+// Window `wid` (w by h points) under the pointer, on its monitor's work area, round-cornered, over the others, shown
+// without taking the keyboard: a word said for a moment (toast.mbt).
+void ps_toast_place(int32_t wid, int32_t w, int32_t h) {
+  HWND hw = own_window(wid);
+  if (!hw) return;
+  POINT p;
+  GetCursorPos(&p);
+  HMONITOR mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = {sizeof mi};
+  GetMonitorInfoW(mon, &mi);
+  UINT dx = 96, dy = 96;
+  typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
+  GetDpiForMonitorFn dpi_of = (GetDpiForMonitorFn)GetProcAddress(LoadLibraryW(L"shcore.dll"), "GetDpiForMonitor");
+  if (dpi_of) dpi_of(mon, 0, &dx, &dy);
+  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+  DwmSetWindowAttribute(hw, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
+  int ww = MulDiv(w, (int)dx, 96), wh = MulDiv(h, (int)dx, 96);
+  RECT a = mi.rcWork;
+  int x = p.x - ww / 2, y = p.y + MulDiv(24, (int)dx, 96);
+  if (y + wh > a.bottom) y = p.y - MulDiv(16, (int)dx, 96) - wh;
+  if (x < a.left) x = a.left;
+  if (x + ww > a.right) x = a.right - ww;
+  SetWindowPos(hw, HWND_TOPMOST, x, y, ww, wh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
 // Window `wid` at x, y, w by h (the screen's pixels), shown (`show` 1, taking the keyboard where `focus`) or as it is.
 void ps_place(int32_t wid, int32_t x, int32_t y, int32_t w, int32_t h, int32_t show, int32_t focus) {
   HWND hw = own_window(wid);
@@ -1160,20 +1196,19 @@ static void snd_make(void) {
   double hp = 0, last = 0;
   for (int i = 0; i < SND_N; i++) {
     double t = (double)i / SND_RATE, v = 0;
-    const double at[2] = {0.0, 0.060}, loud[2] = {1.0, 0.7};
+    const double at[2] = {0.0, 0.060}, loud[2] = {1.0, 0.75};
     seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
     double noise = (double)(seed & 0xFFFF) / 32768.0 - 1.0;
     for (int k = 0; k < 2; k++) {
       double d = t - at[k];
       if (d < 0) continue;
-      v += loud[k] * (noise * exp(-d / 0.0035) * 0.8 + sin(2 * 3.14159265 * 190 * d) * exp(-d / 0.012) * 0.45);
+      v += loud[k] * (noise * exp(-d / 0.006) * 0.8 + sin(2 * 3.14159265 * 190 * d) * exp(-d / 0.012) * 0.45);
     }
     // (the lowest of it taken off: a click, not a thud)
     hp = 0.92 * (hp + v - last);
     last = v;
-    double o = hp * 0.42;
-    if (o > 1) o = 1;
-    if (o < -1) o = -1;
+    // (loud as a camera's, its peaks rounded off rather than cut: 2026-11-17, the first was too faint)
+    double o = tanh(hp * 1.8);
     int16_t q = (int16_t)(o * 32000);
     snd_wav[44 + i * 2] = (uint8_t)q, snd_wav[45 + i * 2] = (uint8_t)((uint16_t)q >> 8);
   }

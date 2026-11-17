@@ -28,6 +28,14 @@ extern "C" fn ps_tray_note(title : Bytes, text : Bytes) -> Unit = "ps_tray_note"
 extern "C" fn ps_shutter() -> Unit = "ps_shutter"
 
 ///|
+extern "C" fn ps_shadow(wid : Int) -> Unit = "ps_shadow"
+
+///|
+/// Window `wid`, `w` by `h` points, under the pointer (kept on its monitor), its corners round, over the others,
+/// shown without the keyboard.
+extern "C" fn ps_toast_place(wid : Int, w : Int, h : Int) -> Unit = "ps_toast_place"
+
+///|
 /// Whether the icon is in the notification area.
 extern "C" fn ps_tray_on() -> Int = "ps_tray_on"
 

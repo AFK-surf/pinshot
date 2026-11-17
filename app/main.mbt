@@ -34,6 +34,8 @@ fn main {
   @ui.set_window_tree(fn(wid, what) {
     if what == "settings" {
       settings_window
+    } else if what == "toast" {
+      toast_window
     } else {
       pin_window(wid, what)
     }
@@ -41,6 +43,9 @@ fn main {
   @ui.when_window_closed(fn(wid) {
     if wid == settings_wid.val {
       settings_wid.val = 0
+    }
+    if wid == toast_wid.val {
+      toast_wid.val = 0
     }
     pin_gone(wid)
   })

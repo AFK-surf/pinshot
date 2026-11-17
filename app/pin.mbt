@@ -58,6 +58,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
   }
   p.wid.val = wid
   ps_own(wid, if s.pin_top { 1 } else { 0 }) |> ignore
+  ps_shadow(wid)
   ps_place(wid, x, y, w, h, 1, 1)
   if s.pin_alpha < 255 {
     ps_opacity(wid, s.pin_alpha)
@@ -69,11 +70,13 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
 ///|
 /// The clipboard's picture pinned by the pointer (none there: nothing).
 fn pin_clipboard() -> Unit {
-  let b = ps_clipboard_image()
-  if b.length() == 0 {
+  // (a test run: the clipboard as if it held none, the person's left alone)
+  let b = if @ui.env("PINSHOT_TEST_NO_CLIP") != "" { Bytes::new(0) } else { ps_clipboard_image() }
+  guard b.length() > 0 && @pixels.image_size(b) is Some((w, h)) else {
+    log("pin: no picture on the clipboard")
+    toast("剪贴板里没有图片")
     return
   }
-  guard @pixels.image_size(b) is Some((w, h)) else { return }
   let p = numbers_of(text_of(ps_pointer()))
   let (x, y) = if p.length() == 2 { (p[0].to_int() - w / 2, p[1].to_int() - h / 2) } else { (100, 100) }
   open_pin(b, x, y, w, h)
