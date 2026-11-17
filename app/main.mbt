@@ -4,6 +4,8 @@
 // and kept hidden between captures), and each pin is a window of the same run beside it.
 //
 //   pinshot.exe            the run (started again: the one running takes the screen, as its shortcut)
+//   pinshot.exe --settings the settings opened (in the one running, or in this one as it starts)
+//   pinshot.exe --quit     the one running ended
 //   pinshot.exe --bench    the screen taken 10 times and the windows listed, timed; no window
 
 ///|
@@ -13,10 +15,18 @@ fn main {
     bench()
     return
   }
-  if ps_start() == 0 {
+  let again = if args.length() > 0 && args[0] == "--settings" {
+    1
+  } else if args.length() > 0 && args[0] == "--quit" {
+    2
+  } else {
+    0
+  }
+  if ps_start(again) == 0 || again == 2 {
     return
   }
   load_settings()
+  log("started: icon \{if ps_tray_on() == 1 { "shown" } else { "not shown" }}")
   @ui.on_message_said("ps", fn(json, _) {
     told(json)
     true
@@ -38,6 +48,9 @@ fn main {
   // (the overlay made out of sight: it shows only as a capture opens)
   @hostapi.window_hold()
   @hostapi.window_setup(100.0, 100.0, 320.0, 200.0)
+  if again == 1 {
+    started_with_settings.val = true
+  }
   @ui.run("PinShot", fn(c) { c.set_clear(0x000000L) }, tree=overlay_window)
 }
 
@@ -114,3 +127,7 @@ fn bench() -> Unit {
   println("bench: windows listed: \{n} in \{num(wins)} ms")
   println("bench: memory ws,private: \{text_of(ps_memory())}")
 }
+
+///|
+/// Whether the run was started to open its settings (they open once its window is there).
+let started_with_settings : Ref[Bool] = Ref(false)

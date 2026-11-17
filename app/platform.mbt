@@ -15,8 +15,13 @@ fn text_of(b : Bytes) -> String {
 }
 
 ///|
-/// The run begun: true it is the one run; false another runs (told to take the screen): this one ends.
-extern "C" fn ps_start() -> Int = "ps_start"
+/// The run begun: 1 it is the one run; 0 another runs (told `again`: 0 take the screen, 1 open the settings, 2 quit):
+/// this one ends.
+extern "C" fn ps_start(again : Int) -> Int = "ps_start"
+
+///|
+/// Whether the icon is in the notification area.
+extern "C" fn ps_tray_on() -> Int = "ps_tray_on"
 
 ///|
 /// The run's arguments after the program's name, one a line.
@@ -35,10 +40,6 @@ extern "C" fn ps_set_menu(lines : Bytes) -> Unit = "ps_set_menu"
 /// A global shortcut (1 capture, 2 pin the clipboard, 3 show or hide the pins) set to `mods` (Alt 1, Ctrl 2, Shift 4,
 /// Win 8) with `vk` (0: none): 1 it is ours, 0 another program has it.
 extern "C" fn ps_hotkey(which : Int, mods : Int, vk : Int) -> Int = "ps_hotkey"
-
-///|
-/// A key's name as the keyboard says it ("F1", "A").
-extern "C" fn ps_key_name(vk : Int) -> Bytes = "ps_key_name"
 
 ///|
 /// The screen taken now (the monitor the pointer is on): 1 when taken.
@@ -120,10 +121,6 @@ extern "C" fn ps_pointer() -> Bytes = "ps_pointer"
 /// What the GPU was asked to let go of let go now (the renderer's context flushed: D3D frees a texture released only
 /// as its context is flushed, which a hidden window's frames never do).
 extern "C" fn ps_gpu_flush() -> Unit = "ps_gpu_flush"
-
-///|
-/// The working set given back to the system.
-extern "C" fn ps_trim() -> Unit = "ps_trim"
 
 ///|
 /// "ws,private": the run's memory, in bytes.

@@ -1,8 +1,8 @@
 #!/bin/bash
 # PinShot: app/ built as an app of still.fail's apps/mbui (its design system, @sf), with mbui's Windows build
-# (libs/mbui/scripts/win.sh), into out/pinshot.exe. Run in Git Bash inside MSVC's environment (scripts/build.ps1 sets
-# it up) with MoonBit on PATH. MODE=debug|release (release by default). STRICT=1 keeps every warning an error, as the
-# app module says; otherwise unused-code warnings are let through while working.
+# (libs/mbui/scripts/win.sh), into out/build/pinshot.exe. Run in Git Bash inside MSVC's environment (scripts/build.ps1 sets
+# it up) with MoonBit on PATH. MODE=debug|release (release by default). Every warning is an error, as the app module
+# says (STRICT=0: unused code let through while working).
 set -e -o pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODE=${MODE:-release}
@@ -16,7 +16,7 @@ restore() {
   (cd "$APPS" && git checkout -q moon.mod)
 }
 trap restore EXIT
-[ "${STRICT:-0}" = 1 ] || sed -i 's/^warnings = "@a-33-79-29"$/warnings = "@a-33-79-29-1-2-7"/' "$APPS/moon.mod"
+[ "${STRICT:-1}" = 1 ] || sed -i 's/^warnings = "@a-33-79-29"$/warnings = "@a-33-79-29-1-2-7"/' "$APPS/moon.mod"
 mkdir -p "$ROOT/out"
 RES="$ROOT/out/pinshot.res"
 (cd "$ROOT/assets" && rc.exe -nologo -fo "$(cygpath -w "$RES")" pinshot.rc)

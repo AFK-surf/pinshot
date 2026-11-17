@@ -151,6 +151,7 @@ fn apply_keys() -> Unit {
   let (pw, pm, pv) = pin_choices[s.pin_key]
   capture_key_ok.set(ps_hotkey(1, cm, cv) == 1)
   pin_key_ok.set(ps_hotkey(2, pm, pv) == 1)
+  log("keys: capture \{cw} \{if capture_key_ok.untracked() { "ok" } else { "taken by another program" }}, pin \{pw} \{if pin_key_ok.untracked() { "ok" } else { "taken by another program" }}")
   let pin_words = if pv == 0 { "贴图剪贴板中的图片" } else { "贴图剪贴板中的图片\u{8}" + pw }
   let menu = "capture\t截图\u{8}" +
     cw +
@@ -175,7 +176,7 @@ fn open_settings() -> Unit {
     return
   }
   settings_wid.val = wid
-  ps_center(wid, 520, 560)
+  ps_center(wid, 540, 600)
 }
 
 ///|
@@ -193,8 +194,16 @@ let set_card : Int64 = 0x232428FFL
 ///|
 fn settings_window(root : @view.View) -> Unit {
   root.tree.hand_over_presses(false)
-  root.ground(Is(set_ground)).padding(Is((24.0, 22.0, 24.0, 22.0))).gap(Is(18.0)) |> ignore
-  set_words(root, fn() { "PinShot 设置" }, 18.0, set_ink, weight=600)
+  root.box(fn(page) {
+    page.over(Is(true)).ground(Is(set_ground)).padding(Is((24.0, 18.0, 24.0, 20.0))).gap(Is(14.0)) |> ignore
+    settings_page(page)
+  })
+  |> ignore
+}
+
+///|
+fn settings_page(root : @view.View) -> Unit {
+  set_words(root, fn() { "PinShot 设置" }, 17.0, set_ink, weight=600)
   set_group(root, "快捷键", fn(g) {
     set_row(g, "截图", fn(r) {
       choice(r, key_choices.map(fn(c) { c.0 }), fn() { settings.get().capture_key }, fn(i) {
@@ -263,7 +272,7 @@ fn set_words(parent : @view.View, text : () -> String, size : Double, ink : Int6
 ///|
 fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -> Unit {
   parent.box(fn(g) {
-    g.gap(Is(8.0)) |> ignore
+    g.gap(Is(6.0)) |> ignore
     set_words(g, fn() { title }, 12.0, set_muted, weight=500)
     g.box(fn(card) {
       card.ground(Is(set_card)).radius(Is(10.0)).edge(Is((1.0, 0xFFFFFF14L))).padding(Is((14.0, 4.0, 14.0, 4.0))) |> ignore
@@ -277,7 +286,7 @@ fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -
 ///|
 fn set_row(parent : @view.View, label : String, make : (@view.View) -> Unit, note? : () -> String = fn() { "" }) -> Unit {
   parent.box(fn(row) {
-    row.row(Is(true)).min_height(Is(Some(44.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+    row.row(Is(true)).min_height(Is(Some(42.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
     row.box(fn(l) {
       l.grow(Is(1.0)).gap(Is(2.0)) |> ignore
       set_words(l, fn() { label }, 13.0, set_ink)
@@ -348,7 +357,8 @@ fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
     .says(By(fn() { Some(@view.said(Switch, label="", check=if on() { On } else { Off })) }))
     .on_press(fn() { set(!on()) })
     .ground(By(fn() { if on() { 0x2F9BFFFFL } else { 0x3A3C42FFL } }))
-    .lines_up(Is(Some(Middle)))
+    .lines_up(Is(Some(Start)))
+    .lies_along(Is(Middle))
     |> ignore
     s.box(fn(k) {
       k
@@ -373,6 +383,7 @@ fn small_button(parent : @view.View, label : String, press : () -> Unit) -> Unit
     .radius(Is(6.0))
     .shrink(Is(0.0))
     .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
     .presses(Is(true))
     .says(Is(Some(@view.said(Button, label~))))
     .on_press(press)

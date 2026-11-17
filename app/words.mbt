@@ -9,8 +9,13 @@ let words_open : @signals.Signal[(Double, Double)?] = @signals.signal(None)
 let words_field : @ui.Field = @ui.Field::new()
 
 ///|
+/// What is typed, as it is typed (how wide its line is drawn).
+let words_typed : @signals.Signal[String] = @signals.signal("")
+
+///|
 fn open_words(x : Double, y : Double) -> Unit {
   words_field.set("")
+  words_typed.set("")
   let size = words_pt(size_now.untracked()) * mon_scale.untracked()
   // (the line's middle where it was clicked)
   words_open.set(Some((x, y - size * 0.65)))
@@ -45,9 +50,15 @@ fn words_editor(layer : @view.View) -> Unit {
           None => (0.0, 0.0)
         }
       }))
-      .min_width(Is(Some(160.0)))
-      .padding(Is((3.0, 2.0, 3.0, 2.0)))
-      .edge(Is((1.0, 0xFFFFFF99L)))
+      .width(By(fn() {
+        // (as wide as what is typed, and room for what comes next)
+        let size = words_pt(size_now.get())
+        let longest = words_typed.get().split("\n").fold(init=0, fn(m, l) { if l.length() > m { l.length() } else { m } })
+        Some(dmax(120.0, longest.to_double() * size * 1.05 + size * 2.0))
+      }))
+      .padding(Is((4.0, 2.0, 4.0, 2.0)))
+      .ground(Is(0x0000004DL))
+      .edge(Is((1.0, 0xFFFFFFB3L)))
       .radius(Is(3.0))
       |> ignore
       let size = @signals.untracked(fn() { words_pt(size_now.get()) })
@@ -63,6 +74,7 @@ fn words_editor(layer : @view.View) -> Unit {
         placeholder_color=0xFFFFFF99L,
         caret_color=color,
         enter_sends=false,
+        edited=fn(t) { words_typed.set(t) },
       )
       ignore(node)
       words_field.focus()

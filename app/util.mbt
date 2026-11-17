@@ -57,12 +57,6 @@ fn mix(a : Int64, b : Int64, k : Double) -> Int64 {
 }
 
 ///|
-/// `c` (RGBA) at alpha `alpha` (0..255).
-fn with_alpha(c : Int64, alpha : Int) -> Int64 {
-  (c & 0xFFFFFF00L) | (alpha.to_int64() & 0xFFL)
-}
-
-///|
 /// A rectangle of the screen's pixels (x, y its top left), whole pixels.
 #derive(Eq, Debug)
 struct Rect {

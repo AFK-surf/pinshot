@@ -297,6 +297,7 @@ moonbit_bytes_t ps_windows(void) { return ps_bytes(win_list, win_list_len); }
 #define WM_PS_TRAY (WM_APP + 40)
 #define WM_PS_AGAIN (WM_APP + 41)
 static NOTIFYICONDATAW tray;
+static int tray_on;  // the icon is in the notification area (ps_tray_on)
 static UINT taskbar_created;
 static HANDLE one_run;
 
@@ -320,6 +321,7 @@ static void tray_put(void) {
   if (Shell_NotifyIconW(NIM_ADD, &tray)) {
     tray.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &tray);
+    tray_on = 1;
   }
 }
 
@@ -405,8 +407,10 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       else if (wp == HK_PIN_CLIP) ps_tell("{\"do\":\"pin-clipboard\"}");
       else if (wp == HK_PINS) ps_tell("{\"do\":\"pins\"}");
       return 0;
-    case WM_PS_AGAIN:  // started again: as the shortcut
-      capture_asked("again");
+    case WM_PS_AGAIN:  // started again: as the shortcut, or as its arguments say (ps_start)
+      if (wp == 1) ps_tell("{\"do\":\"menu\",\"item\":\"settings\"}");
+      else if (wp == 2) ps_tell("{\"do\":\"menu\",\"item\":\"quit\"}");
+      else capture_asked("again");
       return 0;
     case WM_PS_TRIM:
       gpu_trim_now();
@@ -434,9 +438,9 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 // A capture asked for by the app (the icon's menu): as the shortcut.
 void ps_capture_ask(void) { capture_asked("menu"); }
 
-// The run begun: 1 it is the one run (its icon put, its window made), 0 another runs already (told to take the screen,
-// as its shortcut does): this one ends.
-int32_t ps_start(void) {
+// The run begun: 1 it is the one run (its icon put, its window made), 0 another runs already (told `again`: 0 take
+// the screen, as its shortcut does; 1 open the settings; 2 quit): this one ends.
+int32_t ps_start(int32_t again) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   one_run = CreateMutexW(NULL, TRUE, L"Local\\PinShot.OneRun");
   if (one_run && GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -445,7 +449,7 @@ int32_t ps_start(void) {
       DWORD pid = 0;
       GetWindowThreadProcessId(other, &pid);
       AllowSetForegroundWindow(pid);
-      PostMessageW(other, WM_PS_AGAIN, 0, 0);
+      PostMessageW(other, WM_PS_AGAIN, (WPARAM)again, 0);
     }
     return 0;
   }
@@ -463,6 +467,9 @@ int32_t ps_start(void) {
   return 1;
 }
 
+// Whether the icon is in the notification area.
+int32_t ps_tray_on(void) { return tray_on; }
+
 // A global shortcut set (`mods`: MOD_ALT 1, MOD_CONTROL 2, MOD_SHIFT 4, MOD_WIN 8; `vk` 0: none): 1 it is ours now, 0 the
 // system or another program has it (it is left unset).
 int32_t ps_hotkey(int32_t which, int32_t mods, int32_t vk) {
@@ -472,21 +479,6 @@ int32_t ps_hotkey(int32_t which, int32_t mods, int32_t vk) {
   if (vk == 0) return 1;
   hk_on[which] = RegisterHotKey(tray_hwnd, which, (UINT)mods | MOD_NOREPEAT, (UINT)vk) ? 1 : 0;
   return hk_on[which];
-}
-
-// A key's name as the keyboard says it ("F1", "A", "PrtSc"...).
-moonbit_bytes_t ps_key_name(int32_t vk) {
-  wchar_t name[64] = {0};
-  UINT sc = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
-  LONG lp = (LONG)(sc << 16);
-  switch (vk) {
-    case VK_LEFT: case VK_UP: case VK_RIGHT: case VK_DOWN: case VK_PRIOR: case VK_NEXT:
-    case VK_END: case VK_HOME: case VK_INSERT: case VK_DELETE: case VK_SNAPSHOT:
-      lp |= 1 << 24;
-  }
-  if (vk == VK_SNAPSHOT) return ps_text("PrtSc");
-  if (!GetKeyNameTextW(lp, name, 64)) return moonbit_make_bytes(0, 0);
-  return ps_utf8_bytes(name);
 }
 
 // ---- PinShot's own windows ----
@@ -577,6 +569,9 @@ void ps_center(int32_t wid, int32_t w, int32_t h) {
   typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
   GetDpiForMonitorFn dpi_of = (GetDpiForMonitorFn)GetProcAddress(LoadLibraryW(L"shcore.dll"), "GetDpiForMonitor");
   if (dpi_of) dpi_of(mon, 0, &dx, &dy);
+  // (its frame dark, as what it shows is)
+  BOOL dark = TRUE;
+  DwmSetWindowAttribute(hw, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
   RECT r = {0, 0, MulDiv(w, (int)dx, 96), MulDiv(h, (int)dx, 96)};
   AdjustWindowRectExForDpi(&r, (DWORD)GetWindowLongPtrW(hw, GWL_STYLE), FALSE, (DWORD)GetWindowLongPtrW(hw, GWL_EXSTYLE), dx);
   int ww = r.right - r.left, wh = r.bottom - r.top;
@@ -669,8 +664,6 @@ void ps_gpu_flush(void) {
   if (tray_hwnd) PostMessageW(tray_hwnd, WM_PS_TRIM, 0, 0);
 }
 
-// The working set given back to the system (what the overlay held is let go of: its picture, its decode).
-void ps_trim(void) { SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); }
 
 // "ws,private" in bytes: how much of the machine's memory the run holds.
 moonbit_bytes_t ps_memory(void) {

@@ -152,6 +152,9 @@ fn overlay_window(root : @view.View) -> Unit {
   root.at_moment(root.cause_at() + 1.0, fn() {
     ps_own(0, 1) |> ignore
     ps_hide(0)
+    if started_with_settings.val {
+      open_settings()
+    }
   }, later=true)
   |> ignore
   root.ground(Is(0x000000FFL)).keymap(Is(overlay_keys())) |> ignore
@@ -300,8 +303,9 @@ fn words_mark(b : @view.View, m : Mark, k : Double) -> Unit {
   let size = words_pt(m.size)
   b.box(fn(t) {
     t
-    .offset(Is((x / k, y / k)))
-    .words(Is(m.words), look={ ..@view.words_plain, size, weight: 600, line: (size * 1.3).round(), wrap: false })
+    // (where the line typed in showed them: its frame 3 points before the place, 4 points in)
+    .offset(Is((x / k + 1.0, y / k)))
+    .words(Is(m.words), look={ ..@view.words_plain, size, weight: 400, line: (size * 1.3).round(), wrap: false })
     .ink(Is(m.color))
     |> ignore
   })
@@ -359,6 +363,10 @@ fn size_label(stage : @view.View) -> Unit {
 let down_at : Ref[(Double, Double, Bool)] = Ref((0.0, 0.0, false))
 
 ///|
+/// Whether the press under way put down words being written (it opens no new ones).
+let words_put_down : Ref[Bool] = Ref(false)
+
+///|
 fn stage_drag(d : @view.Drag) -> Unit {
   let (x, y) = to_px(d.x, d.y)
   pointer_px.set((x, y))
@@ -383,8 +391,11 @@ fn stage_drag(d : @view.Drag) -> Unit {
 ///|
 fn press_down(x : Double, y : Double) -> Unit {
   down_at.val = (x, y, false)
+  // (a press while words are written puts them down, and only that)
+  words_put_down.val = false
   if words_open.untracked() is Some(_) {
     commit_words()
+    words_put_down.val = true
   }
   match sel.untracked() {
     None => hand.set(Drawing(x, y))
@@ -480,7 +491,7 @@ fn press_up(x : Double, y : Double) -> Unit {
     Marking =>
       match tool.untracked() {
         Number => add_mark(new_mark(Number, [(x, y)]))
-        Words => open_words(x, y)
+        Words => if !words_put_down.val { open_words(x, y) }
         _ =>
           match draft.untracked() {
             Some(m) => {
