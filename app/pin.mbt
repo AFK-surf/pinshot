@@ -79,7 +79,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
 fn pin_clipboard() -> Unit {
   // (a test run: the clipboard as if it held none, the person's left alone)
   let b = if @ui.env("PINSHOT_TEST_NO_CLIP") != "" {
-    Bytes::new(0)
+    b""
   } else if @ui.env("PINSHOT_TEST_PIN_FILE") != "" {
     ps_read_file(cstr(@ui.env("PINSHOT_TEST_PIN_FILE")))
   } else {

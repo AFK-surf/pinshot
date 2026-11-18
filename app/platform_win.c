@@ -623,6 +623,7 @@ static void tray_window_made(void) {
 void ps_capture_ask(void) { capture_asked("menu"); }
 
 // (elevate.cpp: over every window, Task Manager's too)
+void ps_log_w(const wchar_t *line);
 int ps_above_wanted(void);
 int ps_above_on(void);
 int ps_above_restart(const wchar_t *args);
@@ -668,6 +669,9 @@ int32_t ps_start(int32_t again, int32_t restart) {
   tray_window_made();
   taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
   ChangeWindowMessageFilterEx(tray_hwnd, taskbar_created, MSGFLT_ALLOW, NULL);
+  // (run as administrator, over every window: the icon's clicks (Explorer's) and another run's word let through)
+  ChangeWindowMessageFilterEx(tray_hwnd, WM_PS_TRAY, MSGFLT_ALLOW, NULL);
+  ChangeWindowMessageFilterEx(tray_hwnd, WM_PS_AGAIN, MSGFLT_ALLOW, NULL);
   tray_put();
   atexit(tray_gone);
   // (each monitor's capture kept on from now: capture_wgc.cpp; PINSHOT_CAPTURE=gdi none, GDI's every time)

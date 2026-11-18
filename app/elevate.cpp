@@ -63,7 +63,7 @@ static bool elevated() { return token_dword(TokenElevation) != 0; }
 // winlogon's token of session `session` (it holds SeTcbPrivilege), to impersonate.
 static HANDLE winlogon_token(DWORD session) {
   LUID tcb;
-  if (!LookupPrivilegeValueW(NULL, SE_TCB_NAME, &tcb)) return NULL;
+  if (!LookupPrivilegeValueW(NULL, L"SeTcbPrivilege", &tcb)) return NULL;
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snap == INVALID_HANDLE_VALUE) return NULL;
   HANDLE out = NULL;
