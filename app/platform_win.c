@@ -25,6 +25,7 @@
 #include <string.h>
 #include <math.h>
 #include <mmsystem.h>
+#include <wtsapi32.h>
 #include "moonbit.h"
 
 #pragma comment(lib, "user32.lib")
@@ -37,6 +38,7 @@
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "wtsapi32.lib")
 
 // (mbui's Windows host, linked in the same program)
 extern void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
@@ -92,6 +94,10 @@ double ps_now_ms(void) { return ps_ms(); }
 
 #define WM_PS_TAKEN (WM_APP + 42)
 #define PS_FREE_TIMER 7
+#define PS_WGC_TIMER 8  // the captures made again a moment after the monitors wake (tray_proc)
+static int wgc_off;     // PINSHOT_CAPTURE=gdi: no capture kept
+// GUID_CONSOLE_DISPLAY_STATE (the monitors off 0, on 1, dimmed 2)
+static const GUID display_state_guid = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47}};
 
 typedef struct {
   HBITMAP dib;    // GDI's section, or
@@ -252,12 +258,13 @@ void ps_wgc_timing(double *out);
 void ps_wgc_state(char *out, int n);
 moonbit_bytes_t ps_capture_info(void) {
   if (!cap.bits || cap_busy) return moonbit_make_bytes(0, 0);
-  char s[192];
+  char s[256];
   if (cap.staging) {
-    double t[3];
+    double t[5];
     ps_wgc_timing(t);
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f; hdr white %.2f%s", cap_x, cap_y, cap_w, cap_h, cap_dpi,
-             cap_ms, t[0], t[1], t[2] > 0 ? " (copied first)" : "");
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f; hdr white %.2f%s; frame %.1f s old%s", cap_x, cap_y, cap_w,
+             cap_h, cap_dpi, cap_ms, t[0], t[1], t[2] > 0 ? " (copied first)" : "", t[3],
+             t[4] > 0 ? " (session made again)" : "");
   } else {
     char st[96];
     ps_wgc_state(st, sizeof st);
@@ -549,7 +556,24 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DISPLAYCHANGE:  // (the monitors changed: each one's capture made again)
       ps_wgc_restart();
       return 0;
+    // (the monitors woken, the computer resumed, the session unlocked or connected to again: each one's capture made
+    // again a moment later, once DWM composes again; a session can stop across these with its last frame kept)
+    case WM_POWERBROADCAST:
+      if (wp == PBT_APMRESUMEAUTOMATIC ||
+          (wp == PBT_POWERSETTINGCHANGE && lp &&
+           !memcmp(&((POWERBROADCAST_SETTING *)lp)->PowerSetting, &display_state_guid, sizeof(GUID)) &&
+           ((POWERBROADCAST_SETTING *)lp)->DataLength >= sizeof(DWORD) && *(DWORD *)((POWERBROADCAST_SETTING *)lp)->Data == 1))
+        SetTimer(h, PS_WGC_TIMER, 1500, NULL);
+      return TRUE;
+    case WM_WTSSESSION_CHANGE:
+      if (wp == WTS_SESSION_UNLOCK || wp == WTS_CONSOLE_CONNECT || wp == WTS_REMOTE_CONNECT)
+        SetTimer(h, PS_WGC_TIMER, 1500, NULL);
+      return 0;
     case WM_TIMER:
+      if (wp == PS_WGC_TIMER) {
+        KillTimer(h, PS_WGC_TIMER);
+        if (!wgc_off) ps_wgc_restart();
+      }
       if (wp == PS_FREE_TIMER) {
         KillTimer(h, PS_FREE_TIMER);
         cap_old_free();
@@ -620,7 +644,12 @@ int32_t ps_start(int32_t again) {
   atexit(tray_gone);
   // (each monitor's capture kept on from now: capture_wgc.cpp; PINSHOT_CAPTURE=gdi none, GDI's every time)
   const char *how = getenv("PINSHOT_CAPTURE");
-  if (!(how && !strcmp(how, "gdi"))) ps_wgc_restart();
+  wgc_off = how && !strcmp(how, "gdi");
+  if (!wgc_off) {
+    ps_wgc_restart();
+    RegisterPowerSettingNotification(tray_hwnd, &display_state_guid, DEVICE_NOTIFY_WINDOW_HANDLE);
+    WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION);
+  }
   return 1;
 }
 

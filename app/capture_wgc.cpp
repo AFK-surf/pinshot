@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <d3dcompiler.h>
 #include <windows.security.authorization.appcapabilityaccess.h>
 
@@ -64,7 +65,10 @@ struct Mon {
   ComPtr<WGC::IDirect3D11CaptureFrame> last;
   int frames;  // how many came
   int hdr;      // its frames 16-bit floats (the monitor in HDR as its session was made)
+  LONGLONG last_at;  // when the last one came (QueryPerformanceCounter, under frame_lock)
 };
+// Set as any frame comes (a session made again waited on for its first: ps_wgc_take_now).
+static HANDLE frame_came;
 static Mon mons[MONS_MOST];
 static int nmons;
 static HRESULT last_hr;  // what the last step that failed said (ps_wgc_state)
@@ -72,12 +76,22 @@ static double take_ms;
 static int said_half;  // the last HDR frame taken was copied first (the shader could not read it where it was)
 static double take_white;  // the SDR white the last one taken was brought down by (0: not HDR)
 
-extern "C" void ps_wgc_timing(double *out) { out[0] = take_ms, out[1] = take_white, out[2] = said_half; }
+static double take_age;  // how old the frame taken was, in seconds
+static int take_fresh;  // its session was made again as it was taken (its last frame too old to trust)
+
+extern "C" void ps_wgc_timing(double *out) {
+  out[0] = take_ms, out[1] = take_white, out[2] = said_half, out[3] = take_age, out[4] = take_fresh;
+}
 
 extern "C" int ps_wgc_ready(void) {
   if (ready) return ready > 0;
   ready = -1;
-  InitializeCriticalSection(&frame_lock);
+  static int lock_made;
+  if (!lock_made) {
+    InitializeCriticalSection(&frame_lock);
+    frame_came = CreateEventW(NULL, FALSE, FALSE, NULL);
+    lock_made = 1;
+  }
   // (the window's thread has COM already, OLE's: then this says so and changes nothing; a bench's has none)
   RoInitialize(RO_INIT_SINGLETHREADED);
   D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
@@ -223,7 +237,11 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h) {
           old = m->last;
           m->last = f;
           m->frames++;
+          LARGE_INTEGER now;
+          QueryPerformanceCounter(&now);
+          m->last_at = now.QuadPart;
           LeaveCriticalSection(&frame_lock);
+          SetEvent(frame_came);
           // (the one before back to the pool: two in it, one held, one for the next)
           ComPtr<ABI::Windows::Foundation::IClosable> c;
           if (old && SUCCEEDED(old.As(&c))) c->Close();
@@ -306,12 +324,33 @@ extern "C" int ps_wgc_restart(void) {
   return nmons;
 }
 
+// The device gone (the driver reset or updated, the GPU lost: its sessions give no frame again and their last stays
+// as it was): everything made again from the device up, at the tray window (ps_wgc_wake).
+static void device_lost(void) {
+  for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
+  nmons = 0;
+  to_srgb.Reset(), to_srgb_k.Reset(), pool_statics.Reset(), item_interop.Reset(), rt_dev.Reset(), ctx.Reset(), dev.Reset();
+  ready = 0;
+  ps_wgc_wake();
+}
+
+// A frame older than this is not trusted (seconds): its session made again first and its first frame waited for.
+// The system gives none while the screen does not change, but a session can also stop for good with its last frame
+// kept (2026-11-18: the monitor asleep overnight, every capture in the morning the screen of the night before).
+#define FRAME_TRUSTED_S 5.0
+#define FIRST_FRAME_MS 250
+
 // The picture of monitor `mon` (w by h) as it is now: its last frame copied into a staging texture and mapped. The
 // texture (an opaque handle, ps_wgc_release lets it go) and where its pixels are (rows `pitch` bytes apart); NULL
 // where its session has had no frame yet, or is of another size.
 extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch) {
   LARGE_INTEGER t0, t1, f;
   QueryPerformanceCounter(&t0);
+  QueryPerformanceFrequency(&f);
+  if (ready > 0 && dev->GetDeviceRemovedReason() != S_OK) {
+    device_lost();
+    return NULL;
+  }
   Mon *m = NULL;
   for (int i = 0; i < nmons; i++)
     if (mons[i].mon == mon) m = &mons[i];
@@ -327,7 +366,40 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
   ComPtr<WGC::IDirect3D11CaptureFrame> fr;
   EnterCriticalSection(&frame_lock);
   fr = m->last;
+  LONGLONG at = m->last_at;
   LeaveCriticalSection(&frame_lock);
+  take_fresh = 0;
+  // (PINSHOT_FRAME_TRUSTED_S: another limit, for a test)
+  static double trusted = -1;
+  if (trusted < 0) {
+    const char *e = getenv("PINSHOT_FRAME_TRUSTED_S");
+    trusted = e ? atof(e) : FRAME_TRUSTED_S;
+  }
+  double age = fr ? (t0.QuadPart - at) / (double)f.QuadPart : 1e9;
+  if (age > trusted) {
+    // (made again, its first frame waited for: the system gives one as a session starts)
+    fr.Reset();
+    mon_stop(m);
+    ResetEvent(frame_came);
+    if (!mon_start(m, mon, w, h)) return NULL;
+    take_fresh = 1;
+    for (;;) {
+      EnterCriticalSection(&frame_lock);
+      fr = m->last;
+      at = m->last_at;
+      LeaveCriticalSection(&frame_lock);
+      if (fr) break;
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      double left = FIRST_FRAME_MS - (now.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+      if (left <= 0) return NULL;
+      WaitForSingleObject(frame_came, (DWORD)left + 1);
+    }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    age = (now.QuadPart - at) / (double)f.QuadPart;
+  }
+  take_age = age;
   if (!fr) return NULL;
   ComPtr<WD3D::IDirect3DSurface> surface;
   ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> access;
@@ -400,7 +472,6 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
   *bits = (uint8_t *)mp.pData;
   *pitch = (int)mp.RowPitch;
   QueryPerformanceCounter(&t1);
-  QueryPerformanceFrequency(&f);
   take_white = m->hdr ? white : 0.0;
   take_ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
   return staging.Detach();
@@ -412,12 +483,17 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
 extern "C" void ps_wgc_release(void *taken) {
   ID3D11Texture2D *t = (ID3D11Texture2D *)taken;
   if (!t) return;
-  ctx->Unmap(t, 0);
+  // (its own device's: the one now may have been made again since, device_lost)
+  ComPtr<ID3D11Device> d;
+  ComPtr<ID3D11DeviceContext> c;
+  t->GetDevice(&d);
+  d->GetImmediateContext(&c);
+  c->Unmap(t, 0);
   t->Release();
-  ctx->ClearState();
-  ctx->Flush();
+  c->ClearState();
+  c->Flush();
   ComPtr<IDXGIDevice3> d3;
-  if (SUCCEEDED(dev.As(&d3))) d3->Trim();
+  if (SUCCEEDED(d.As(&d3))) d3->Trim();
 }
 
 // How the captures stand, for the log: "sessions N; frames A B...; hr 0x..".
