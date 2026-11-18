@@ -39,7 +39,7 @@
   h2.headline { font: 800 clamp(30px, 4.6vw, 46px)/1.12 var(--display); margin: 6px 0 12px; }
   .deck { font-size: 19px; font-style: italic; color: var(--muted); margin: 0 0 14px; }
   .body p { margin: 0 0 12px; text-align: justify; hyphens: auto; }
-  .body p:first-of-type::first-letter { float: left; font: 800 64px/.86 var(--display); padding: 6px 8px 0 0; }
+  .body p.first::first-letter { float: left; font: 800 64px/.86 var(--display); padding: 6px 8px 0 0; }
   figure { margin: 18px 0 0; }
   figure img { width: 100%; height: auto; display: block; border: 1px solid var(--rule); filter: grayscale(.15) contrast(1.02); }
   figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; font-style: italic; }
@@ -106,9 +106,9 @@
         <span data-l="en">Press Ctrl+Alt+A and the screen freezes at once: box it, point at it, blur it, then copy it or pin it to a corner of the screen.</span>
       </p>
       <div class="body">
-        <p data-l="zh">PinShot 是一款 Windows 截图工具，体积不到 5 MB，常驻托盘、开销很小。截图几乎不用等待：它一直保留着屏幕的最新画面，按键后约五十毫秒遮罩就出现。HDR 显示器上截出来的颜色也和眼睛看到的一致。</p>
+        <p class="first" data-l="zh">PinShot 是一款 Windows 截图工具，体积不到 5 MB，常驻托盘、开销很小。截图几乎不用等待：它一直保留着屏幕的最新画面，按键后约五十毫秒遮罩就出现。HDR 显示器上截出来的颜色也和眼睛看到的一致。</p>
         <p data-l="zh">点一下选中窗口，拖动框选区域；矩形、椭圆、箭头、画笔、马赛克、序号、文字一应俱全，画完的标记还能再选中修改。截好的图可以钉在屏幕上：拖动、缩放、调透明度，双击即关。</p>
-        <p data-l="en">PinShot is a screenshot tool for Windows, under 5 MB, that sits in the tray and costs little while it waits. Capturing is all but instant: it keeps the screen's latest picture ready, and the overlay appears about fifty milliseconds after the key. On HDR monitors the colours come out as you see them.</p>
+        <p class="first" data-l="en">PinShot is a screenshot tool for Windows, under 5 MB, that sits in the tray and costs little while it waits. Capturing is all but instant: it keeps the screen's latest picture ready, and the overlay appears about fifty milliseconds after the key. On HDR monitors the colours come out as you see them.</p>
         <p data-l="en">Click to take a window, drag for an area; rectangle, ellipse, arrow, pen, mosaic, numbered markers and text are all there, and every mark can be selected and changed afterwards. A capture can be pinned on top of everything: drag it, zoom it, fade it, double-click to close.</p>
       </div>
       <figure>
