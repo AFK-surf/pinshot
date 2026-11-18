@@ -1,6 +1,6 @@
 # PinShot
 
-[中文](#中文) · [Download](https://github.com/motion-space/pinshot/releases/latest)
+[中文](#中文) · [Download](https://pinshot-ahb.pages.dev)
 
 Screenshot, mark up and pin to the screen, PixPin-style, for Windows. Written in MoonBit with still.fail's
 [mbui](https://github.com/AFK-surf/still.fail): the UI and logic are written once, and what is system-specific is a
@@ -10,7 +10,7 @@ thin native layer (Windows: `app/platform_win.c`, `app/capture_wgc.cpp`).
 
 ## Install
 
-Download `PinShot-Setup-<version>.exe` from [Releases](https://github.com/motion-space/pinshot/releases/latest) and run
+Download `PinShot-Setup.exe` from [pinshot-ahb.pages.dev](https://pinshot-ahb.pages.dev) (or [Releases](https://github.com/motion-space/pinshot/releases/latest)) and run
 it. It installs for the current user (no administrator needed), adds a Start menu entry and an uninstall entry in
 Settings › Apps, and can start PinShot with Windows. `pinshot.exe` on the same page is the portable build: one file,
 run it from anywhere.
@@ -77,7 +77,7 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 
 ### 安装
 
-在 [Releases](https://github.com/motion-space/pinshot/releases/latest) 下载 `PinShot-Setup-<版本>.exe` 运行即可：装在当前用户下，不需要管理员权限，会建开始菜单快捷方式、在「设置 › 应用」里加卸载项，可选开机自启。同一页的 `pinshot.exe` 是免安装版，单个文件，放哪里都能直接运行。
+在 [pinshot-ahb.pages.dev](https://pinshot-ahb.pages.dev)（或 [Releases](https://github.com/motion-space/pinshot/releases/latest)）下载 `PinShot-Setup-<版本>.exe` 运行即可：装在当前用户下，不需要管理员权限，会建开始菜单快捷方式、在「设置 › 应用」里加卸载项，可选开机自启。同一页的 `pinshot.exe` 是免安装版，单个文件，放哪里都能直接运行。
 
 安装包没有代码签名，第一次运行时 SmartScreen 可能提示「Windows 已保护你的电脑」，点「更多信息 › 仍要运行」。需要 Windows 10 2004 及以上、x64。
 
