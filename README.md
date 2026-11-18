@@ -29,8 +29,10 @@ anyway. Windows 10 2004 or later, x64.
   - `Enter`, `Ctrl+C` or double-click in the selection: copy; `Ctrl+S`: save; `Ctrl+T`: pin; `Ctrl+Z` / `Ctrl+Y`:
     undo / redo; `C`: copy the colour under the pointer
   - Right-click: clear the selection, again to quit; `Esc`: quit
-- Pins: drag to move; drag an edge or corner, or the wheel, to zoom; `Ctrl+wheel` for opacity; double-click or `Esc`
-  to close; the right-click menu has copy, save as, always on top, original size, opacity, close all
+- Pins: drag to move; drag an edge to stretch it that way, a corner to resize it (`Shift`: freely), the wheel to zoom;
+  `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has copy, save as, always on top,
+  rotate left / right 90° (`Ctrl+Shift+R` / `Ctrl+R`), flip horizontally / vertically, reset (`Ctrl+0`), opacity,
+  close all
 - `Ctrl+2`: pin the image on the clipboard
 - Tray menu: capture, pin clipboard, show / hide all pins, settings, open the screenshots folder, quit
 - Command line: `pinshot.exe --settings`, `pinshot.exe --quit`, `pinshot.exe --bench` (times the capture)
@@ -88,7 +90,7 @@ packaging/pack-msix.ps1      # the Microsoft Store package
   - 工具条：矩形、椭圆、箭头、直线（按住 Shift 只走水平、垂直或 45°）、画笔、马赛克、序号、文字、撤销 / 重做、贴图、保存、关闭、复制
   - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存；`Ctrl+T` 贴图；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色
   - 右键先取消选区，再右键退出；`Esc` 退出
-- 贴图：拖动移动；拖边框或四角、或滚轮缩放（保持比例）；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、置顶、原始大小、不透明度、关闭全部
+- 贴图：拖动移动；拖边框单向拉伸、拖四角等比缩放（按住 `Shift` 自由拉伸）、滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、置顶、向左 / 向右旋转 90°（`Ctrl+Shift+R` / `Ctrl+R`）、水平 / 垂直翻转、重置（`Ctrl+0`）、不透明度、关闭全部
 - `Ctrl+2`：把剪贴板里的图片贴到屏幕上
 - 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、退出
 

@@ -1,18 +1,30 @@
 // Pins: a picture kept over the other windows (a part just captured, where it was; or the clipboard's picture), each a
 // window of this run beside the overlay (mbui's window_open_here: the same program, no start of its own), with no
-// frame, at its picture's own pixels. Dragged anywhere to move it; dragged by an edge or a corner (8 points of it) to
-// make it bigger or smaller, its picture's proportions kept, the opposite side staying where it was; the wheel zooms it
-// about the pointer; Ctrl and the wheel make it fainter or clearer; a double click or Esc closes it; its right click is
-// its menu (copy, save, over the others or not, as big as it is, how clear, close).
+// frame, at its picture's own pixels. Dragged anywhere to move it; dragged by an edge (8 points of it) to stretch it
+// that way alone, by a corner to make it bigger or smaller as it is (Shift: freely), the opposite side staying where it
+// was; the wheel zooms it about the pointer; Ctrl and the wheel make it fainter or clearer; a double click or Esc closes
+// it; its right click is its menu (copy, save, over the others or not, turned a quarter either way, flipped either way,
+// put back as it was pinned, how clear, close).
 
 ///|
 struct Pin {
   wid : Ref[Int]
-  key : String
-  png : Bytes
-  w : Int
-  h : Int
-  zoom : @signals.Signal[Double]
+  /// the picture as it was pinned (what a reset puts back)
+  first_png : Bytes
+  first_w : Int
+  first_h : Int
+  /// the picture as it is turned now (what is shown, copied and saved), its key among the images and its pixels
+  key : @signals.Signal[String]
+  /// what its pictures' keys start with ("mem:pin:N:")
+  key_base : String
+  mut png : Bytes
+  mut w : Int
+  mut h : Int
+  /// whether its picture is turned or flipped from how it was pinned
+  mut turned : Bool
+  /// how big it is drawn across and down, to its picture's pixels (each 0.1 to 8; apart, it is stretched)
+  zx : @signals.Signal[Double]
+  zy : @signals.Signal[Double]
   alpha : @signals.Signal[Int]
   top : @signals.Signal[Bool]
   /// when its zoom last changed (its label shown a moment)
@@ -29,14 +41,15 @@ struct Pin {
 
 ///|
 /// A pin being sized by an edge or a corner: which (pin_edge's bits), its window as the press went down (x, y, w, h,
-/// the screen's pixels), its zoom then, and the pointer then.
+/// the screen's pixels), its zoom across and down then, and the pointer then.
 struct PinSizing {
   edge : Int
   x : Double
   y : Double
   w : Double
   h : Double
-  zoom : Double
+  zx : Double
+  zy : Double
   px : Double
   py : Double
 }
@@ -57,16 +70,23 @@ let pins_hidden : Ref[Bool] = Ref(false)
 fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
   pin_n.val += 1
   let what = "pin:\{pin_n.val}"
-  let key = "mem:" + what
+  let key_base = "mem:" + what + ":"
+  let key = key_base + "0"
   @ui.add_image(key, png)
   let s = settings.untracked()
   let p : Pin = {
     wid: Ref(0),
-    key,
+    first_png: png,
+    first_w: w,
+    first_h: h,
+    key: @signals.signal(key),
+    key_base,
     png,
     w,
     h,
-    zoom: @signals.signal(1.0),
+    turned: false,
+    zx: @signals.signal(1.0),
+    zy: @signals.signal(1.0),
     alpha: @signals.signal(s.pin_alpha),
     top: @signals.signal(s.pin_top),
     zoomed_at: @signals.signal(-10000.0),
@@ -137,7 +157,7 @@ fn close_pin(wid : Int) -> Unit {
 fn pin_gone(wid : Int) -> Unit {
   guard pin_of_wid(wid) is Some((what, p)) else { return }
   pins.remove(what)
-  @ui.forget_image(p.key)
+  @ui.forget_image(p.key.untracked())
   trim_soon()
 }
 
@@ -176,16 +196,18 @@ fn ps_place_show(wid : Int) -> Unit {
 }
 
 ///|
-/// The pin zoomed to `z` (0.1 to 8), about the pointer where it is over it.
-fn zoom_pin(p : Pin, z : Double) -> Unit {
-  let z = clamp(z, 0.1, 8.0)
+/// The pin at `zx` by `zy` of its picture's pixels (each 0.1 to 8), about the pointer where it is over it, else its
+/// middle.
+fn zoom_pin(p : Pin, zx : Double, zy : Double) -> Unit {
+  let zx = clamp(zx, 0.1, 8.0)
+  let zy = clamp(zy, 0.1, 8.0)
   let r = numbers_of(text_of(ps_window_rect(p.wid.val)))
   if r.length() < 4 {
     return
   }
   let (x, y, w, h) = (r[0], r[1], r[2], r[3])
-  let nw = dmax(16.0, (p.w.to_double() * z).round())
-  let nh = dmax(16.0, (p.h.to_double() * z).round())
+  let nw = dmax(16.0, (p.w.to_double() * zx).round())
+  let nh = dmax(16.0, (p.h.to_double() * zy).round())
   let q = numbers_of(text_of(ps_pointer()))
   let (ax, ay) = if q.length() == 2 && q[0] >= x && q[0] < x + w && q[1] >= y && q[1] < y + h {
     (q[0], q[1])
@@ -194,9 +216,194 @@ fn zoom_pin(p : Pin, z : Double) -> Unit {
   }
   let nx = ax - (ax - x) * nw / w
   let ny = ay - (ay - y) * nh / h
-  p.zoom.set(z)
+  p.zx.set(zx)
+  p.zy.set(zy)
   p.zoomed_at.set(now_of(p))
   ps_place(p.wid.val, nx.round().to_int(), ny.round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
+}
+
+///|
+/// The pin zoomed by `k` as it is (a wheel's notch), neither side past 0.1 or 8.
+fn scale_pin(p : Pin, k : Double) -> Unit {
+  let (zx, zy) = (p.zx.untracked(), p.zy.untracked())
+  let k = clamp(k, dmax(0.1 / zx, 0.1 / zy), dmin(8.0 / zx, 8.0 / zy))
+  let r = fn(z : Double) { (z * k * 100.0).round() / 100.0 }
+  zoom_pin(p, r(zx), r(zy))
+}
+
+///|
+/// The pin with picture `png` (`w` by `h`, `turned` from how it was pinned or not) at `zx` by `zy`, kept about its
+/// middle: what turning, flipping and putting it back do.
+fn repicture_pin(p : Pin, png : Bytes, w : Int, h : Int, turned : Bool, zx : Double, zy : Double) -> Unit {
+  let r = numbers_of(text_of(ps_window_rect(p.wid.val)))
+  if r.length() < 4 {
+    return
+  }
+  let old = p.key.untracked()
+  pin_key_n.val += 1
+  let key = p.key_base + pin_key_n.val.to_string()
+  @ui.add_image(key, png)
+  p.png = png
+  p.w = w
+  p.h = h
+  p.turned = turned
+  p.key.set(key)
+  @ui.forget_image(old)
+  let (cx, cy) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+  let nw = dmax(16.0, (w.to_double() * zx).round())
+  let nh = dmax(16.0, (h.to_double() * zy).round())
+  p.zx.set(zx)
+  p.zy.set(zy)
+  p.zoomed_at.set(now_of(p))
+  ps_place(p.wid.val, (cx - nw / 2.0).round().to_int(), (cy - nh / 2.0).round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
+}
+
+///|
+/// For the images' keys of turned pictures.
+let pin_key_n : Ref[Int] = Ref(0)
+
+///|
+/// The pin turned a quarter clockwise (`cw`) or the other way: its picture's pixels turned, its sides and zooms swapped.
+fn turn_pin(p : Pin, cw : Bool) -> Unit {
+  guard picture_rgba(p.png) is Some((w, h, px)) else {
+    log("pin: its picture could not be read to turn it")
+    return
+  }
+  let out = quarter_turn(w, h, px, cw)
+  repicture_pin(p, @pixels.png(h, w, out), h, w, true, p.zy.untracked(), p.zx.untracked())
+}
+
+///|
+/// The pin flipped left to right (`across`) or top to bottom: its picture's pixels mirrored, its size kept.
+fn flip_pin(p : Pin, across : Bool) -> Unit {
+  guard picture_rgba(p.png) is Some((w, h, px)) else {
+    log("pin: its picture could not be read to flip it")
+    return
+  }
+  let out = mirrored(w, h, px, across)
+  repicture_pin(p, @pixels.png(w, h, out), w, h, true, p.zx.untracked(), p.zy.untracked())
+}
+
+///|
+/// RGBA pixels `w` by `h` mirrored left to right (`across`) or top to bottom.
+fn mirrored(w : Int, h : Int, px : FixedArray[Byte], across : Bool) -> FixedArray[Byte] {
+  let out = FixedArray::make(w * h * 4, b'\x00')
+  for y in 0..<h {
+    for x in 0..<w {
+      let (nx, ny) = if across { (w - 1 - x, y) } else { (x, h - 1 - y) }
+      let i = (y * w + x) * 4
+      let o = (ny * w + nx) * 4
+      out[o] = px[i]
+      out[o + 1] = px[i + 1]
+      out[o + 2] = px[i + 2]
+      out[o + 3] = px[i + 3]
+    }
+  }
+  out
+}
+
+///|
+/// The pin put back as it was pinned: its picture neither turned nor flipped, its own pixels' size, not stretched.
+fn reset_pin(p : Pin) -> Unit {
+  if p.turned {
+    repicture_pin(p, p.first_png, p.first_w, p.first_h, false, 1.0, 1.0)
+  } else {
+    zoom_pin(p, 1.0, 1.0)
+  }
+}
+
+///|
+/// Whether the pin is as it was pinned.
+fn pin_as_pinned(p : Pin) -> Bool {
+  !p.turned && p.zx.untracked() == 1.0 && p.zy.untracked() == 1.0
+}
+
+///|
+/// A picture's pixels (RGBA, a row after another), as a pin has it: a PNG, a JPEG or a BMP (the clipboard's bitmap).
+fn picture_rgba(b : Bytes) -> (Int, Int, FixedArray[Byte])? {
+  match @pixels.decode_png(b) {
+    Some(r) => Some(r)
+    None =>
+      match @pixels.decode_jpeg(b) {
+        Some(r) => Some(r)
+        None => bmp_rgba(b)
+      }
+  }
+}
+
+///|
+/// A BMP's pixels (32 or 24 bits a pixel, uncompressed or of bit fields as Windows' clipboard writes it; its rows
+/// from the foot up, or from the top where its height is below 0): RGBA.
+fn bmp_rgba(b : Bytes) -> (Int, Int, FixedArray[Byte])? {
+  let n = b.length()
+  let u8 = fn(i : Int) -> Int { if i >= 0 && i < n { b[i].to_int() } else { 0 } }
+  let le32 = fn(i : Int) -> Int { u8(i) | (u8(i + 1) << 8) | (u8(i + 2) << 16) | (u8(i + 3) << 24) }
+  if n < 54 || u8(0) != 0x42 || u8(1) != 0x4D {
+    return None
+  }
+  let off = le32(10)
+  let w = le32(18)
+  let h0 = le32(22)
+  let bpp = u8(28) | (u8(29) << 8)
+  let comp = le32(30)
+  let (h, down) = if h0 < 0 { (-h0, true) } else { (h0, false) }
+  if w <= 0 || h <= 0 || (bpp != 32 && bpp != 24) || (comp != 0 && comp != 3) {
+    return None
+  }
+  let bpx = bpp / 8
+  let stride = (w * bpx + 3) / 4 * 4
+  if off + stride * h > n {
+    return None
+  }
+  // (32 bits whose alpha is all 0: an old bitmap's, opaque)
+  let mut any_alpha = false
+  if bpp == 32 {
+    for y in 0..<h {
+      for x in 0..<w {
+        if u8(off + y * stride + x * 4 + 3) != 0 {
+          any_alpha = true
+          break
+        }
+      }
+      if any_alpha {
+        break
+      }
+    }
+  }
+  let out = FixedArray::make(w * h * 4, b'\xff')
+  for y in 0..<h {
+    let row = off + (if down { y } else { h - 1 - y }) * stride
+    for x in 0..<w {
+      let i = row + x * bpx
+      let o = (y * w + x) * 4
+      out[o] = b[i + 2]
+      out[o + 1] = b[i + 1]
+      out[o + 2] = b[i]
+      if bpp == 32 && any_alpha {
+        out[o + 3] = b[i + 3]
+      }
+    }
+  }
+  Some((w, h, out))
+}
+
+///|
+/// RGBA pixels `w` by `h` turned a quarter, clockwise (`cw`) or the other way: `h` by `w`.
+fn quarter_turn(w : Int, h : Int, px : FixedArray[Byte], cw : Bool) -> FixedArray[Byte] {
+  let out = FixedArray::make(w * h * 4, b'\x00')
+  for y in 0..<h {
+    for x in 0..<w {
+      // (where (x, y) goes in the turned picture, h wide)
+      let (nx, ny) = if cw { (h - 1 - y, x) } else { (y, w - 1 - x) }
+      let i = (y * w + x) * 4
+      let o = (ny * h + nx) * 4
+      out[o] = px[i]
+      out[o + 1] = px[i + 1]
+      out[o + 2] = px[i + 2]
+      out[o + 3] = px[i + 3]
+    }
+  }
+  out
 }
 
 ///|
@@ -234,9 +441,9 @@ fn edge_cursor(e : Int) -> @view.Cursor {
 }
 
 ///|
-/// Pin `p` sized by the drag `s` begun, the pointer where it is now: its picture's proportions kept (a corner by the
-/// side the pointer went further along), the zoom 0.1 to 8 as the wheel's, the opposite side or corner staying where it
-/// was (an edge's: the pin kept centred along it).
+/// Pin `p` sized by the drag `s` begun, the pointer where it is now: by an edge stretched that way alone, by a corner as
+/// it is (its proportions then kept, by the side the pointer went further along; Shift held: freely), each zoom 0.1 to
+/// 8 as the wheel's, the opposite side or corner staying where it was.
 fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let q = numbers_of(text_of(ps_pointer()))
   if q.length() < 2 || s.w <= 0.0 || s.h <= 0.0 {
@@ -248,19 +455,21 @@ fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let sy = (s.h + (if b { dy } else if t { -dy } else { 0.0 })) / s.h
   let across = l || r
   let down = t || b
-  let k = if across && down {
-    if (sx - 1.0).abs() >= (sy - 1.0).abs() { sx } else { sy }
-  } else if across {
-    sx
+  let (kx, ky) = if across && down && ps_shift_down() == 0 {
+    let k = if (sx - 1.0).abs() >= (sy - 1.0).abs() { sx } else { sy }
+    let k = clamp(k, dmax(0.1 / s.zx, 0.1 / s.zy), dmin(8.0 / s.zx, 8.0 / s.zy))
+    (k, k)
   } else {
-    sy
+    (if across { sx } else { 1.0 }, if down { sy } else { 1.0 })
   }
-  let z = clamp(s.zoom * k, 0.1, 8.0)
-  let nw = dmax(16.0, (p.w.to_double() * z).round())
-  let nh = dmax(16.0, (p.h.to_double() * z).round())
-  let nx = if l { s.x + s.w - nw } else if !across { s.x + (s.w - nw) / 2.0 } else { s.x }
-  let ny = if t { s.y + s.h - nh } else if !down { s.y + (s.h - nh) / 2.0 } else { s.y }
-  p.zoom.set(z)
+  let zx = clamp(s.zx * kx, 0.1, 8.0)
+  let zy = clamp(s.zy * ky, 0.1, 8.0)
+  let nw = dmax(16.0, (p.w.to_double() * zx).round())
+  let nh = dmax(16.0, (p.h.to_double() * zy).round())
+  let nx = if l { s.x + s.w - nw } else { s.x }
+  let ny = if t { s.y + s.h - nh } else { s.y }
+  p.zx.set(zx)
+  p.zy.set(zy)
   p.zoomed_at.set(now_of(p))
   ps_place(p.wid.val, nx.round().to_int(), ny.round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
 }
@@ -303,11 +512,12 @@ fn save_pin(p : Pin) -> Unit {
 fn pin_menu(p : Pin) -> Unit {
   let top = p.top.untracked()
   let a = p.alpha.untracked()
-  let z = p.zoom.untracked()
   let o = tr("不透明度")
   let lines = [
     "copy\t" + tr("复制") + "\tCtrl+C", "save\t" + tr("另存为…") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
-    "front\t" + tr("移到最前") + "\t", "-", "zoom1\t" + tr("原始大小 (100%)") + "\t" + (if z == 1.0 { "c" } else { "" }),
+    "front\t" + tr("移到最前") + "\t", "-", "turn-ccw\t" + tr("向左旋转 90°") + "\tCtrl+Shift+R",
+    "turn-cw\t" + tr("向右旋转 90°") + "\tCtrl+R",
+    "flip-x\t" + tr("水平翻转") + "\t", "flip-y\t" + tr("垂直翻转") + "\t", "reset\t" + tr("重置") + "\t" + (if pin_as_pinned(p) { "g" } else { "Ctrl+0" }), "-",
     "a100\t\{o} 100%\t" + (if a >= 255 { "c" } else { "" }), "a80\t\{o} 80%\t" + (if a == 204 { "c" } else { "" }),
     "a60\t\{o} 60%\t" + (if a == 153 { "c" } else { "" }), "a40\t\{o} 40%\t" + (if a == 102 { "c" } else { "" }), "-",
     "close\t" + tr("关闭") + "\tEsc", "close-all\t" + tr("关闭全部贴图") + "\t",
@@ -321,7 +531,11 @@ fn pin_menu(p : Pin) -> Unit {
       ps_topmost(p.wid.val, if top { 0 } else { 1 }, 0)
     }
     "front" => ps_topmost(p.wid.val, if top { 1 } else { 0 }, 1)
-    "zoom1" => zoom_pin(p, 1.0)
+    "turn-ccw" => turn_pin(p, false)
+    "turn-cw" => turn_pin(p, true)
+    "flip-x" => flip_pin(p, true)
+    "flip-y" => flip_pin(p, false)
+    "reset" => reset_pin(p)
     "a100" => set_alpha(p, 255)
     "a80" => set_alpha(p, 204)
     "a60" => set_alpha(p, 153)
@@ -416,7 +630,8 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
               y: r[1],
               w: r[2],
               h: r[3],
-              zoom: p.zoom.untracked(),
+              zx: p.zx.untracked(),
+              zy: p.zy.untracked(),
               px: q[0],
               py: q[1],
             })
@@ -438,13 +653,13 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
       if (w.mods & @ui.wheel_mod_ctrl) != 0 {
         set_alpha(p, p.alpha.untracked() - (notch * 26.0).to_int())
       } else {
-        let z = p.zoom.untracked()
-        zoom_pin(p, (z * (if notch < 0.0 { 1.1 } else { 1.0 / 1.1 }) * 100.0).round() / 100.0)
+        scale_pin(p, if notch < 0.0 { 1.1 } else { 1.0 / 1.1 })
       }
     })
     |> ignore
     let px = if p.w > p.h { p.w } else { p.h }
-    root.box(fn(i) { i.over(Is(true)).image(Is(Some((p.key, "", px)))).presses(Is(false)) |> ignore }) |> ignore
+    root.box(fn(i) { i.over(Is(true)).image(By(fn() { Some((p.key.get(), "", px)) })).presses(Is(false)) |> ignore })
+    |> ignore
     // (its edge: a hairline; the accent's while the pointer is on it; the window in front, a frame of the accent, and
     // as it is taken a flash: the frame comes in thick and narrows as a tint of the accent over it fades, 360 ms; the
     // user, 2026-11-17: 「选中pin的图片时应该有更强的动画提示」)
@@ -493,7 +708,10 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
           t
           .words(By(fn() {
             let a = p.alpha.get()
-            "\{(p.zoom.get() * 100.0).round().to_int()}%" + (if a < 255 { "  ·  \{a * 100 / 255}%" } else { "" })
+            let pc = fn(z : Double) { (z * 100.0).round().to_int() }
+            let (zx, zy) = (pc(p.zx.get()), pc(p.zy.get()))
+            (if zx == zy { "\{zx}%" } else { "\{zx}% × \{zy}%" }) +
+            (if a < 255 { "  ·  \{a * 100 / 255}%" } else { "" })
           }), look={ ..@view.words_plain, size: 11.0, weight: 500, line: 14.0, wrap: false })
           .ink(Is(0xEDEEF0FFL))
           |> ignore
@@ -518,7 +736,9 @@ fn pin_keys() -> @view.Keymap {
     ch('c', "copy", @ui.mod_ctrl),
     ch('s', "save", @ui.mod_ctrl),
     ch('t', "top", @ui.mod_ctrl),
-    ch('0', "zoom1", @ui.mod_ctrl),
+    ch('0', "reset", @ui.mod_ctrl),
+    ch('r', "turn-cw", @ui.mod_ctrl),
+    ch('r', "turn-ccw", @ui.mod_ctrl | @ui.mod_shift_key),
   ])
 }
 
@@ -539,7 +759,9 @@ fn pin_actions(root : @view.View, p : Pin) -> Unit {
     p.top.set(top)
     ps_topmost(p.wid.val, if top { 1 } else { 0 }, 0)
   })
-  on("zoom1", fn() { zoom_pin(p, 1.0) })
+  on("reset", fn() { reset_pin(p) })
+  on("turn-cw", fn() { turn_pin(p, true) })
+  on("turn-ccw", fn() { turn_pin(p, false) })
 }
 
 ///|
