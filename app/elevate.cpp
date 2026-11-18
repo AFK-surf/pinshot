@@ -60,27 +60,48 @@ extern "C" int ps_above_on(void) { return token_dword(TokenUIAccess) != 0; }
 // Whether this run is an administrator's, elevated.
 static bool elevated() { return token_dword(TokenElevation) != 0; }
 
+static void log_err(const wchar_t *what);
+
+// This run's own privilege `name` turned on (an elevated administrator's run holds SeDebugPrivilege, off).
+static void privilege_on(const wchar_t *name) {
+  HANDLE t;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &t)) return;
+  TOKEN_PRIVILEGES tp = {1};
+  if (LookupPrivilegeValueW(NULL, name, &tp.Privileges[0].Luid)) {
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    AdjustTokenPrivileges(t, FALSE, &tp, sizeof tp, NULL, NULL);
+  }
+  CloseHandle(t);
+}
+
 // winlogon's token of session `session` (it holds SeTcbPrivilege), to impersonate.
 static HANDLE winlogon_token(DWORD session) {
   LUID tcb;
   if (!LookupPrivilegeValueW(NULL, L"SeTcbPrivilege", &tcb)) return NULL;
+  // (winlogon's process and token opened by an administrator with SeDebugPrivilege on)
+  privilege_on(L"SeDebugPrivilege");
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snap == INVALID_HANDLE_VALUE) return NULL;
   HANDLE out = NULL;
   PROCESSENTRY32W pe = {sizeof pe};
   for (BOOL more = Process32FirstW(snap, &pe); more && !out; more = Process32NextW(snap, &pe)) {
     if (_wcsicmp(pe.szExeFile, L"winlogon.exe")) continue;
-    HANDLE p = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pe.th32ProcessID);
-    if (!p) continue;
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+    if (!p) {
+      log_err(L"opening winlogon");
+      continue;
+    }
     HANDLE t;
-    if (OpenProcessToken(p, TOKEN_QUERY | TOKEN_DUPLICATE, &t)) {
+    if (!OpenProcessToken(p, TOKEN_QUERY | TOKEN_DUPLICATE, &t)) log_err(L"opening winlogon's token");
+    else {
       PRIVILEGE_SET ps = {1, PRIVILEGE_SET_ALL_NECESSARY};
       ps.Privilege[0].Luid = tcb;
       BOOL has = FALSE;
       DWORD sid = 0, len = 0;
       if (PrivilegeCheck(t, &ps, &has) && has && GetTokenInformation(t, TokenSessionId, &sid, sizeof sid, &len) &&
           sid == session)
-        DuplicateTokenEx(t, TOKEN_IMPERSONATE, NULL, SecurityImpersonation, TokenImpersonation, &out);
+        if (!DuplicateTokenEx(t, TOKEN_IMPERSONATE, NULL, SecurityImpersonation, TokenImpersonation, &out))
+          log_err(L"duplicating winlogon's token");
       CloseHandle(t);
     }
     CloseHandle(p);
@@ -98,11 +119,15 @@ static HANDLE uiaccess_token(void) {
   if (GetTokenInformation(self, TokenSessionId, &session, sizeof session, &len)) {
     HANDLE sys = winlogon_token(session);
     if (sys) {
-      if (SetThreadToken(NULL, sys)) {
-        if (DuplicateTokenEx(self, TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT, NULL,
-                             SecurityAnonymous, TokenPrimary, &out)) {
+      if (!SetThreadToken(NULL, sys)) log_err(L"impersonating winlogon");
+      else {
+        if (!DuplicateTokenEx(self, TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT, NULL,
+                              SecurityAnonymous, TokenPrimary, &out))
+          log_err(L"duplicating the token");
+        else {
           DWORD on = 1;
           if (!SetTokenInformation(out, TokenUIAccess, &on, sizeof on)) {
+            log_err(L"setting UIAccess");
             CloseHandle(out);
             out = NULL;
           }
@@ -123,8 +148,9 @@ static std::wstring exe_path() {
 }
 
 static void log_err(const wchar_t *what) {
+  DWORD e = GetLastError();
   wchar_t line[160];
-  _snwprintf_s(line, _TRUNCATE, L"above all: %ls failed (%lu)", what, GetLastError());
+  _snwprintf_s(line, _TRUNCATE, L"above all: %ls failed (%lu)", what, e);
   ps_log_w(line);
 }
 
