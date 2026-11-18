@@ -11,186 +11,83 @@
     --paper: #f6f1e7;
     --ink: #1b1a17;
     --muted: #5c574d;
-    --rule: #1b1a17;
     --accent: #a3271b;
     --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
     --display: "Didot", "Bodoni MT", "Playfair Display", "Times New Roman", "Noto Serif SC", "Songti SC", "SimSun", serif;
   }
   * { box-sizing: border-box; }
   html { background: var(--paper); color: var(--ink); }
-  body { margin: 0; font: 17px/1.65 var(--serif); }
-  .sheet { max-width: 1040px; margin: 0 auto; padding: 28px 28px 48px; }
+  body { margin: 0; font: 17px/1.6 var(--serif); }
+  .sheet { max-width: 960px; margin: 0 auto; padding: 24px 24px 40px; }
   a { color: inherit; }
 
-  /* the masthead */
-  .ear { display: flex; justify-content: space-between; font-size: 13px; letter-spacing: .04em; color: var(--muted); }
+  .ear { display: flex; justify-content: flex-end; font-size: 13px; color: var(--muted); }
   .ear button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
-  .masthead { text-align: center; border-bottom: 1px solid var(--rule); padding: 6px 0 10px; }
-  .masthead h1 { font: 900 clamp(56px, 11vw, 112px)/1 var(--display); letter-spacing: -.01em; margin: 6px 0 4px; }
-  .masthead .motto { font-style: italic; color: var(--muted); font-size: 15px; }
-  .dateline { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-bottom: 3px double var(--rule); padding: 6px 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+  header { text-align: center; border-bottom: 3px double var(--ink); padding: 8px 0 18px; }
+  h1 { font: 900 clamp(56px, 12vw, 104px)/1 var(--display); letter-spacing: -.01em; margin: 0 0 10px; }
+  .motto { font-style: italic; color: var(--muted); font-size: 18px; margin: 0; }
 
-  /* the front page */
-  .lead { display: grid; grid-template-columns: 1.7fr 1fr; gap: 0; margin-top: 22px; }
-  .lead > * { padding: 0 22px; }
-  .lead > :first-child { padding-left: 0; border-right: 1px solid var(--rule); }
-  .lead > :last-child { padding-right: 0; }
-  .kicker { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
-  h2.headline { font: 800 clamp(30px, 4.6vw, 46px)/1.12 var(--display); margin: 6px 0 12px; }
-  .deck { font-size: 19px; font-style: italic; color: var(--muted); margin: 0 0 14px; }
-  .body p { margin: 0 0 12px; text-align: justify; hyphens: auto; }
-  .body p.first::first-letter { float: left; font: 800 64px/.86 var(--display); padding: 6px 8px 0 0; }
-  figure { margin: 18px 0 0; }
-  figure img { width: 100%; height: auto; display: block; border: 1px solid var(--rule); filter: grayscale(.15) contrast(1.02); }
-  figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; font-style: italic; }
-
-  .box { border: 2px solid var(--rule); padding: 16px 18px 18px; }
-  .box h3 { font: 800 22px/1.2 var(--display); margin: 0 0 4px; }
-  .box .meta { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
-  .dl { display: block; text-decoration: none; border: 1px solid var(--rule); padding: 10px 12px; margin-bottom: 10px; background: var(--ink); color: var(--paper); }
+  .get { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin: 26px 0 8px; }
+  .dl { text-decoration: none; border: 1px solid var(--ink); padding: 10px 20px; background: var(--ink); color: var(--paper); text-align: center; }
   .dl:hover { background: var(--accent); border-color: var(--accent); }
   .dl.alt { background: transparent; color: var(--ink); }
   .dl.alt:hover { background: var(--ink); color: var(--paper); }
   .dl b { display: block; font-size: 17px; }
   .dl span { font-size: 13px; opacity: .8; }
-  .fine { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
-  .side h4 { font: 700 13px/1 var(--serif); letter-spacing: .12em; text-transform: uppercase; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 6px 0; margin: 22px 0 10px; }
-  .side ul { list-style: none; margin: 0; padding: 0; font-size: 15px; }
-  .side li { padding: 5px 0; border-bottom: 1px dotted #b9b1a1; }
-  .side kbd { font: 600 13px/1 ui-monospace, Consolas, monospace; border: 1px solid var(--rule); padding: 1px 4px; }
+  .fine { text-align: center; font-size: 13px; color: var(--muted); margin: 0 auto; max-width: 560px; }
 
-  /* the columns below the fold */
-  .fold { border-top: 3px double var(--rule); margin-top: 28px; padding-top: 16px; columns: 3; column-gap: 32px; column-rule: 1px solid var(--rule); }
-  .fold section { break-inside: avoid; margin-bottom: 14px; }
-  .fold h5 { font: 800 20px/1.2 var(--display); margin: 0 0 6px; }
-  .fold p { margin: 0; font-size: 15px; text-align: justify; }
-  footer { border-top: 1px solid var(--rule); margin-top: 24px; padding-top: 10px; font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  figure { margin: 30px 0 0; }
+  figure img { width: 100%; height: auto; display: block; border: 1px solid var(--ink); }
+
+  footer { border-top: 1px solid var(--ink); margin-top: 30px; padding-top: 10px; font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 
   [data-l] { display: none; }
   html[lang="zh"] [data-l="zh"], html[lang="en"] [data-l="en"] { display: revert; }
-
-  @media (max-width: 760px) {
-    .lead { grid-template-columns: 1fr; }
-    .lead > * { padding: 0; border: 0 !important; }
-    .lead > :last-child { margin-top: 22px; }
-    .fold { columns: 1; }
-  }
 </style>
 </head>
 <body>
 <div class="sheet">
   <div class="ear">
-    <span><span data-l="zh">免费 · 开源 · MIT</span><span data-l="en">Free · Open source · MIT</span></span>
     <button id="lang" type="button"><span data-l="zh">English</span><span data-l="en">中文</span></button>
   </div>
 
-  <header class="masthead">
+  <header>
     <h1>PinShot</h1>
-    <div class="motto"><span data-l="zh">截下来，画上去，钉在屏幕上</span><span data-l="en">Capture it, mark it up, pin it to the screen</span></div>
+    <p class="motto"><span data-l="zh">Windows 截图工具：截下来，画上去，钉在屏幕上</span><span data-l="en">Screenshots for Windows: capture it, mark it up, pin it to the screen</span></p>
   </header>
-  <div class="dateline">
-    <span>Vol. 1 · <span class="ver">1.0.2</span></span>
-    <span data-l="zh">Windows 10 / 11 版</span><span data-l="en">Windows 10 / 11 Edition</span>
-    <span data-l="zh">定价：免费</span><span data-l="en">Price: Free</span>
+
+  <div class="get">
+    <a class="dl" href="/dl/PinShot-Setup.exe">
+      <b><span data-l="zh">下载安装包</span><span data-l="en">Download installer</span></b>
+      <span><span class="ver">1.0.2</span> · <span class="size-setup">3.5 MB</span></span>
+    </a>
+    <a class="dl alt" href="/dl/pinshot.exe">
+      <b><span data-l="zh">免安装版</span><span data-l="en">Portable</span></b>
+      <span>pinshot.exe · <span class="size-exe">4.8 MB</span></span>
+    </a>
   </div>
+  <p class="fine" data-l="zh">免费、开源。若 Windows 提示「已保护你的电脑」，点「更多信息 › 仍要运行」。</p>
+  <p class="fine" data-l="en">Free and open source. If Windows says it protected your PC, choose More info › Run anyway.</p>
 
-  <main class="lead">
-    <article>
-      <div class="kicker"><span data-l="zh">新品</span><span data-l="en">Just released</span></div>
-      <h2 class="headline">
-        <span data-l="zh">一个快捷键，截图、标注、贴图一气呵成</span>
-        <span data-l="en">One shortcut to capture, mark up and pin</span>
-      </h2>
-      <p class="deck">
-        <span data-l="zh">按下 Ctrl+Alt+A，屏幕即刻定格；画框、加箭头、打马赛克，复制或贴在屏幕一角，随手对照。</span>
-        <span data-l="en">Press Ctrl+Alt+A and the screen freezes at once: box it, point at it, blur it, then copy it or pin it to a corner of the screen.</span>
-      </p>
-      <div class="body">
-        <p class="first" data-l="zh">PinShot 是一款 Windows 截图工具，体积不到 5 MB，常驻托盘、开销很小。截图几乎不用等待：它一直保留着屏幕的最新画面，按键后约五十毫秒遮罩就出现。HDR 显示器上截出来的颜色也和眼睛看到的一致。</p>
-        <p data-l="zh">点一下选中窗口，拖动框选区域；矩形、椭圆、箭头、画笔、马赛克、序号、文字一应俱全，画完的标记还能再选中修改。截好的图可以钉在屏幕上：拖动、缩放、调透明度，双击即关。</p>
-        <p class="first" data-l="en">PinShot is a screenshot tool for Windows, under 5 MB, that sits in the tray and costs little while it waits. Capturing is all but instant: it keeps the screen's latest picture ready, and the overlay appears about fifty milliseconds after the key. On HDR monitors the colours come out as you see them.</p>
-        <p data-l="en">Click to take a window, drag for an area; rectangle, ellipse, arrow, pen, mosaic, numbered markers and text are all there, and every mark can be selected and changed afterwards. A capture can be pinned on top of everything: drag it, zoom it, fade it, double-click to close.</p>
-      </div>
-      <figure>
-        <img data-l="zh" src="/img/zh-1-markup.jpg" alt="PinShot 标注界面" width="1600" height="900">
-        <img data-l="en" src="/img/1-markup.jpg" alt="Marking up a capture in PinShot" width="1600" height="900">
-        <figcaption><span data-l="zh">图：框选后直接在原图上标注，工具条紧贴选区。</span><span data-l="en">Pictured: marking up right after the selection, the toolbar beside it.</span></figcaption>
-      </figure>
-    </article>
-
-    <aside class="side">
-      <div class="box" id="download">
-        <h3><span data-l="zh">下载</span><span data-l="en">Download</span></h3>
-        <div class="meta"><span data-l="zh">版本</span><span data-l="en">Version</span> <span class="ver">1.0.2</span> · x64</div>
-        <a class="dl" href="/dl/PinShot-Setup.exe">
-          <b><span data-l="zh">安装包</span><span data-l="en">Installer</span></b>
-          <span>PinShot-Setup.exe · <span class="size-setup">3.5 MB</span></span>
-        </a>
-        <a class="dl alt" href="/dl/pinshot.exe">
-          <b><span data-l="zh">免安装版</span><span data-l="en">Portable</span></b>
-          <span>pinshot.exe · <span class="size-exe">4.8 MB</span></span>
-        </a>
-        <p class="fine" data-l="zh">安装在当前用户下，无需管理员权限。安装包未做代码签名，若 Windows 提示「已保护你的电脑」，点「更多信息 › 仍要运行」。</p>
-        <p class="fine" data-l="en">Installs for the current user, no administrator needed. Not code-signed: if Windows says it protected your PC, choose More info › Run anyway.</p>
-      </div>
-
-      <h4><span data-l="zh">快捷键一览</span><span data-l="en">Shortcuts</span></h4>
-      <ul>
-        <li><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd> <span data-l="zh">截图</span><span data-l="en">capture</span></li>
-        <li><kbd>Ctrl</kbd>+<kbd>2</kbd> <span data-l="zh">贴剪贴板图片</span><span data-l="en">pin the clipboard</span></li>
-        <li><kbd>Enter</kbd> / <span data-l="zh">双击</span><span data-l="en">double-click</span> <span data-l="zh">复制</span><span data-l="en">copy</span></li>
-        <li><kbd>Ctrl</kbd>+<kbd>T</kbd> <span data-l="zh">贴图</span><span data-l="en">pin</span> · <kbd>Ctrl</kbd>+<kbd>S</kbd> <span data-l="zh">保存</span><span data-l="en">save</span></li>
-        <li><kbd>C</kbd> <span data-l="zh">复制鼠标下的颜色</span><span data-l="en">copy the colour under the pointer</span></li>
-      </ul>
-
-      <h4><span data-l="zh">源代码</span><span data-l="en">Source</span></h4>
-      <ul>
-        <li><a href="https://github.com/motion-space/pinshot">github.com/motion-space/pinshot</a></li>
-      </ul>
-    </aside>
-  </main>
-
-  <div class="fold">
-    <section>
-      <h5><span data-l="zh">定格即截</span><span data-l="en">Frozen on the key</span></h5>
-      <p data-l="zh">按键那一刻的画面就是截到的画面：菜单、悬停提示都不会因为截图而消失。显示器睡醒、解锁之后也照样是当下的画面。</p>
-      <p data-l="en">What was on screen as you pressed the key is what you get: menus and tooltips stay put. After the monitor sleeps or the PC unlocks, it is still the screen as it is now.</p>
-    </section>
-    <section>
-      <h5><span data-l="zh">标记可再改</span><span data-l="en">Marks stay editable</span></h5>
-      <p data-l="zh">每画完一个标记就自动选中，马上能改颜色和粗细、拖动、删除；马赛克也一样。撤销、重做随时可用。</p>
-      <p data-l="en">Each mark is selected as soon as it is drawn: change its colour or width, move it, delete it, mosaics included. Undo and redo all the way.</p>
-    </section>
-    <section>
-      <h5><span data-l="zh">钉在屏幕上</span><span data-l="en">Pinned on top</span></h5>
-      <p data-l="zh">贴图浮在所有窗口之上，适合对照资料、临摹界面。滚轮缩放，Ctrl+滚轮调透明度，右键可复制或另存。</p>
-      <p data-l="en">Pins float over every window, for reference while you work. Wheel to zoom, Ctrl+wheel for opacity, right-click to copy or save.</p>
-    </section>
-    <section>
-      <h5><span data-l="zh">轻巧省心</span><span data-l="en">Light and quiet</span></h5>
-      <p data-l="zh">单个程序文件，不联网、不收集任何数据。设置里可改快捷键、保存位置、开机自启和快门声。</p>
-      <p data-l="en">One program file; it never goes online and collects nothing. Shortcuts, save folder, start with Windows and the shutter sound are in the settings.</p>
-    </section>
-    <section>
-      <h5><span data-l="zh">开放源代码</span><span data-l="en">Open source</span></h5>
-      <p data-l="zh">以 MIT 许可证开源，用 MoonBit 和 still.fail 的 mbui 写成，欢迎来 GitHub 提问题和改进。</p>
-      <p data-l="en">MIT licensed, written in MoonBit with still.fail's mbui. Issues and improvements welcome on GitHub.</p>
-    </section>
-  </div>
+  <figure>
+    <img data-l="zh" src="/img/zh-markup.jpg" alt="PinShot 截图标注" width="1672" height="941">
+    <img data-l="en" src="/img/en-markup.jpg" alt="Marking up a capture in PinShot" width="1672" height="941">
+  </figure>
 
   <footer>
     <span>© 2026 PinShot · MIT</span>
-    <span><a href="https://github.com/motion-space/pinshot/releases">Release notes</a> · <a href="https://github.com/motion-space/pinshot">GitHub</a></span>
+    <span><a href="https://github.com/motion-space/pinshot">GitHub</a></span>
   </footer>
 </div>
 <script>
   (function () {
     var root = document.documentElement;
-    var saved = localStorage.getItem("lang");
+    var saved = null;
+    try { saved = localStorage.getItem("lang"); } catch (e) {}
     root.lang = saved || (/^zh/i.test(navigator.language || "") ? "zh" : "en");
     document.getElementById("lang").onclick = function () {
       root.lang = root.lang === "zh" ? "en" : "zh";
-      localStorage.setItem("lang", root.lang);
+      try { localStorage.setItem("lang", root.lang); } catch (e) {}
     };
     // (the version and sizes as the bucket has them now)
     fetch("/dl/latest.json").then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {

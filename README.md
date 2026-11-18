@@ -6,7 +6,7 @@ Screenshot, mark up and pin to the screen, PixPin-style, for Windows. Written in
 [mbui](https://github.com/AFK-surf/still.fail): the UI and logic are written once, and what is system-specific is a
 thin native layer (Windows: `app/platform_win.c`, `app/capture_wgc.cpp`).
 
-![PinShot](packaging/store/screenshots/en/1-markup.png)
+![PinShot](site/public/img/en-markup.jpg)
 
 ## Install
 
