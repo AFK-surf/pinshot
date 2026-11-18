@@ -1,8 +1,9 @@
 // Pins: a picture kept over the other windows (a part just captured, where it was; or the clipboard's picture), each a
 // window of this run beside the overlay (mbui's window_open_here: the same program, no start of its own), with no
-// frame, at its picture's own pixels. Dragged anywhere to move it; the wheel zooms it about the pointer; Ctrl and the
-// wheel make it fainter or clearer; a double click or Esc closes it; its right click is its menu (copy, save, over the
-// others or not, as big as it is, how clear, close).
+// frame, at its picture's own pixels. Dragged anywhere to move it; dragged by an edge or a corner (8 points of it) to
+// make it bigger or smaller, its picture's proportions kept, the opposite side staying where it was; the wheel zooms it
+// about the pointer; Ctrl and the wheel make it fainter or clearer; a double click or Esc closes it; its right click is
+// its menu (copy, save, over the others or not, as big as it is, how clear, close).
 
 ///|
 struct Pin {
@@ -20,6 +21,24 @@ struct Pin {
   active : @signals.Signal[Bool]
   active_at : @signals.Signal[Double]
   flash : @signals.Signal[Double]
+  /// which of its edges the pointer is by (pin_edge: 1 left, 2 right, 4 top, 8 bottom; 0 inside): the cursor's
+  edge : @signals.Signal[Int]
+  /// a drag by an edge under way: none, or where it went down
+  sizing : Ref[PinSizing?]
+}
+
+///|
+/// A pin being sized by an edge or a corner: which (pin_edge's bits), its window as the press went down (x, y, w, h,
+/// the screen's pixels), its zoom then, and the pointer then.
+struct PinSizing {
+  edge : Int
+  x : Double
+  y : Double
+  w : Double
+  h : Double
+  zoom : Double
+  px : Double
+  py : Double
 }
 
 ///|
@@ -54,6 +73,8 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
     active: @signals.signal(false),
     active_at: @signals.signal(-10000.0),
     flash: @signals.signal(0.0),
+    edge: @signals.signal(0),
+    sizing: Ref(None),
   }
   pins[what] = p
   let wid = @ui.window_open_here(what)
@@ -179,6 +200,72 @@ fn zoom_pin(p : Pin, z : Double) -> Unit {
 }
 
 ///|
+/// Which of pin `p`'s edges the pointer is by now (within 8 points of it, at most a quarter of the pin in from it):
+/// 1 left, 2 right, 4 top, 8 bottom, a corner two of them; 0 inside it, or not over it.
+fn pin_edge(p : Pin) -> Int {
+  let r = numbers_of(text_of(ps_window_rect(p.wid.val)))
+  let q = numbers_of(text_of(ps_pointer()))
+  if r.length() < 5 || q.length() < 2 {
+    return 0
+  }
+  let (x, y, w, h) = (r[0], r[1], r[2], r[3])
+  let (px, py) = (q[0] - x, q[1] - y)
+  if px < 0.0 || py < 0.0 || px >= w || py >= h {
+    return 0
+  }
+  let band = 8.0 * dmax(r[4], 96.0) / 96.0
+  let bx = dmin(band, w / 4.0)
+  let by = dmin(band, h / 4.0)
+  let ex = if px < bx { 1 } else if px >= w - bx { 2 } else { 0 }
+  let ey = if py < by { 4 } else if py >= h - by { 8 } else { 0 }
+  ex | ey
+}
+
+///|
+/// The pointer's shape by edge `e` (pin_edge's).
+fn edge_cursor(e : Int) -> @view.Cursor {
+  match e {
+    5 | 10 => ResizeNWSE
+    6 | 9 => ResizeNESW
+    1 | 2 => ResizeX
+    4 | 8 => ResizeY
+    _ => Arrow
+  }
+}
+
+///|
+/// Pin `p` sized by the drag `s` begun, the pointer where it is now: its picture's proportions kept (a corner by the
+/// side the pointer went further along), the zoom 0.1 to 8 as the wheel's, the opposite side or corner staying where it
+/// was (an edge's: the pin kept centred along it).
+fn size_pin(p : Pin, s : PinSizing) -> Unit {
+  let q = numbers_of(text_of(ps_pointer()))
+  if q.length() < 2 || s.w <= 0.0 || s.h <= 0.0 {
+    return
+  }
+  let (dx, dy) = (q[0] - s.px, q[1] - s.py)
+  let (l, r, t, b) = ((s.edge & 1) != 0, (s.edge & 2) != 0, (s.edge & 4) != 0, (s.edge & 8) != 0)
+  let sx = (s.w + (if r { dx } else if l { -dx } else { 0.0 })) / s.w
+  let sy = (s.h + (if b { dy } else if t { -dy } else { 0.0 })) / s.h
+  let across = l || r
+  let down = t || b
+  let k = if across && down {
+    if (sx - 1.0).abs() >= (sy - 1.0).abs() { sx } else { sy }
+  } else if across {
+    sx
+  } else {
+    sy
+  }
+  let z = clamp(s.zoom * k, 0.1, 8.0)
+  let nw = dmax(16.0, (p.w.to_double() * z).round())
+  let nh = dmax(16.0, (p.h.to_double() * z).round())
+  let nx = if l { s.x + s.w - nw } else if !across { s.x + (s.w - nw) / 2.0 } else { s.x }
+  let ny = if t { s.y + s.h - nh } else if !down { s.y + (s.h - nh) / 2.0 } else { s.y }
+  p.zoom.set(z)
+  p.zoomed_at.set(now_of(p))
+  ps_place(p.wid.val, nx.round().to_int(), ny.round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
+}
+
+///|
 let pin_roots : Map[Int, @view.View] = Map([])
 
 ///|
@@ -290,9 +377,23 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
     .ground(Is(0x000000FFL))
     .keymap(Is(pin_keys()))
     .presses(Is(true))
-    .cursor(Is(Some(Arrow)))
+    .cursor(By(fn() { Some(edge_cursor(p.edge.get())) }))
+    .on_pointer_moved(fn() { if p.sizing.val is None { p.edge.set(pin_edge(p)) } })
     .on_drag(fn(d) {
+      // (by an edge or a corner: sized as the pointer goes, till it is let go)
+      match p.sizing.val {
+        Some(s) if d.kind != Down => {
+          if d.kind == Moved {
+            size_pin(p, s)
+          } else {
+            p.sizing.val = None
+          }
+          return
+        }
+        _ => ()
+      }
       if d.kind == Down {
+        p.sizing.val = None
         // (the second press of a double click closes it: told here, mbui's double press is not told of a node that
         // drags)
         let t = ps_now_ms()
@@ -303,6 +404,25 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
           return
         }
         pin_last_down.val = (wid, t, d.x, d.y)
+        let e = pin_edge(p)
+        p.edge.set(e)
+        if e != 0 {
+          let r = numbers_of(text_of(ps_window_rect(wid)))
+          let q = numbers_of(text_of(ps_pointer()))
+          if r.length() >= 4 && q.length() >= 2 {
+            p.sizing.val = Some({
+              edge: e,
+              x: r[0],
+              y: r[1],
+              w: r[2],
+              h: r[3],
+              zoom: p.zoom.untracked(),
+              px: q[0],
+              py: q[1],
+            })
+            return
+          }
+        }
         // (moved by the system's own move, the press then let go of as the move ends: mbui hears no release from
         // it, and took the next press for one, every other press not moving the pin)
         ps_move_window(wid)
