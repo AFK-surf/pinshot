@@ -34,7 +34,7 @@ let bar_tools : Array[(Tool, String, String)] = [
 
 ///|
 fn bar_width() -> Double {
-  bar_pad * 2.0 + bar_button * 16.0 + bar_rule * 2.0 + bar_gap * 17.0
+  bar_pad * 2.0 + bar_button * 17.0 + bar_rule * 2.0 + bar_gap * 18.0
 }
 
 ///|
@@ -110,6 +110,7 @@ fn toolbar(stage : @view.View) -> Unit {
           undone.val.is_empty()
         })
         bar_rule_node(bar)
+        tool_button(bar, "ocr", "提取文字", fn() { false }, ocr_out)
         tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, pin_out)
         tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, save_out)
         tool_button(bar, "close", "关闭 Esc", fn() { false }, close_capture)
@@ -323,6 +324,7 @@ fn glyph(name : String) -> @pixels.Vector {
         ],
       }
     "words" => lines(["M4 5V3.8h10V5", "M9 3.8v10.7", "M7 14.5h4"])
+    "ocr" => lines(["M2.8 6V2.8H6", "M12 2.8h3.2V6", "M15.2 12v3.2H12", "M6 15.2H2.8V12", "M6 6.5h6", "M9 6.5v5.5"])
     "undo" => lines(["M6.5 4 3 7.5 6.5 11", "M3.5 7.5h7a4 4 0 0 1 0 8H8"])
     "redo" => lines(["M11.5 4 15 7.5 11.5 11", "M14.5 7.5h-7a4 4 0 0 0 0 8H10"])
     "pin" => lines(["M7 2.8h4l-.6 4.6 2.6 2.4v1.4H5v-1.4l2.6-2.4z", "M9 11.2v4.3"])

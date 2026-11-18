@@ -53,6 +53,7 @@ let en_words : Map[String, String] = {
   "保存 Ctrl+S": "Save Ctrl+S",
   "关闭 Esc": "Close Esc",
   "复制 Enter": "Copy Enter",
+  "提取文字": "Extract text",
   "细": "Thin",
   "中": "Medium",
   "粗": "Thick",
@@ -67,6 +68,13 @@ let en_words : Map[String, String] = {
   "不透明度": "Opacity",
   "关闭": "Close",
   "关闭全部贴图": "Close all pins",
+  // the words read (OCR)
+  "提取的文字": "Extracted text",
+  "正在识别…": "Reading text…",
+  "没有识别到文字": "No text found",
+  "识别失败": "Couldn't read the text",
+  "Windows 里没有可用的文字识别语言。到 设置 › 时间和语言 › 语言和区域 添加中文或英文后再试。": "Windows has no text recognition language installed. Add Chinese or English in Settings › Time & language › Language & region, then try again.",
+  "已复制": "Copied",
   // the icon's menu and its note
   "截图": "Screenshot",
   "贴图剪贴板中的图片": "Pin clipboard image",

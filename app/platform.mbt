@@ -223,6 +223,17 @@ extern "C" fn ps_popup_menu(wid : Int, lines : Bytes) -> Bytes = "ps_popup_menu"
 extern "C" fn ps_clipboard_image() -> Bytes = "ps_clipboard_image"
 
 ///|
+/// The words in `png` read on a thread of their own (Windows' OCR), told back on "ps" as {"do":"ocr","id":id,...}
+/// with them beside: 1 it is begun.
+#borrow(png)
+extern "C" fn ps_ocr(id : Int, png : Bytes) -> Int = "ps_ocr"
+
+///|
+/// The words in `png` read now: "why\tlang\tms\n" ("" why: read), then them.
+#borrow(png)
+extern "C" fn ps_ocr_now(png : Bytes) -> Bytes = "ps_ocr_now"
+
+///|
 /// A comma-separated line's numbers.
 fn numbers_of(s : String) -> Array[Double] {
   let out : Array[Double] = []

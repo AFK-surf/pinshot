@@ -1,0 +1,331 @@
+// The words in a picture read by Windows' own OCR (Windows.Media.Ocr: on the machine, offline, in a language whose OCR
+// is installed, Chinese where Windows is in Chinese). The picture (a PNG: a part taken, a pin) is read on a thread of
+// its own, the UI going on meanwhile; what it says comes back on the channel "ps" as {"do":"ocr","id":N,...}, its
+// words as UTF-8 bytes beside the JSON (main.mbt). `pinshot.exe --ocr <file>` reads one at once and prints it.
+//
+// What the engine is given: the picture in BGRA, brought up to twice its size where that keeps it under 4 million
+// pixels (small screen text is read better so: 12-14 px UI text, its digits and Latin letters split and misread at
+// its own size by the older engine some Windows still have), down to the engine's largest where it is over it. What it
+// gives: lines of words; a line is put back together with a space between words but between two of Chinese or
+// Japanese (it gives each such character as a word), the lines one under the other.
+#include <windows.h>
+#include <wincodec.h>
+#include <roapi.h>
+#include <wrl.h>
+#include <wrl/wrappers/corewrappers.h>
+#include <windows.foundation.h>
+#include <windows.foundation.collections.h>
+#include <windows.globalization.h>
+#include <windows.graphics.imaging.h>
+#include <windows.media.ocr.h>
+#include <MemoryBuffer.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <string>
+#include "moonbit.h"
+
+#pragma comment(lib, "runtimeobject.lib")
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "ole32.lib")
+
+using Microsoft::WRL::Callback;
+using Microsoft::WRL::ComPtr;
+using Microsoft::WRL::Wrappers::HString;
+using Microsoft::WRL::Wrappers::HStringReference;
+namespace WF = ABI::Windows::Foundation;
+namespace WFC = ABI::Windows::Foundation::Collections;
+namespace WG = ABI::Windows::Globalization;
+namespace WI = ABI::Windows::Graphics::Imaging;
+namespace OCR = ABI::Windows::Media::Ocr;
+
+extern "C" void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
+
+// `op` waited for (it ends on the system's threads: an agile handler sets an event), 20 s at most.
+template <typename T, typename R>
+static HRESULT ocr_wait(WF::IAsyncOperation<T> *op, R *out) {
+  HANDLE done = CreateEventW(NULL, TRUE, FALSE, NULL);
+  if (!done) return E_FAIL;
+  auto h = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+                                              WF::IAsyncOperationCompletedHandler<T>, Microsoft::WRL::FtmBase>>(
+      [done](WF::IAsyncOperation<T> *, WF::AsyncStatus) -> HRESULT {
+        SetEvent(done);
+        return S_OK;
+      });
+  HRESULT hr = op->put_Completed(h.Get());
+  if (SUCCEEDED(hr)) {
+    if (WaitForSingleObject(done, 20000) != WAIT_OBJECT_0) hr = E_FAIL;
+    else hr = op->GetResults(out);
+  }
+  CloseHandle(done);
+  return hr;
+}
+
+static std::string utf8_of(HSTRING s) {
+  UINT32 n = 0;
+  const wchar_t *w = WindowsGetStringRawBuffer(s, &n);
+  if (!w || n == 0) return std::string();
+  int m = WideCharToMultiByte(CP_UTF8, 0, w, (int)n, NULL, 0, NULL, NULL);
+  std::string out(m > 0 ? m : 0, '\0');
+  if (m > 0) WideCharToMultiByte(CP_UTF8, 0, w, (int)n, &out[0], m, NULL, NULL);
+  return out;
+}
+
+// A character written without spaces round it: Chinese, Japanese, their punctuation and full-width forms (not Korean,
+// which has spaces between its words).
+static int unspaced(wchar_t c) {
+  return (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFE30 && c <= 0xFE4F) ||
+         (c >= 0xFF00 && c <= 0xFFEF);
+}
+
+// The picture decoded and made the engine's: BGRA, `scale` times its size.
+static HRESULT bitmap_of(const uint8_t *png, int len, double scale_up, UINT32 most, ComPtr<WI::ISoftwareBitmap> &out,
+                         int *ow, int *oh) {
+  ComPtr<IWICImagingFactory> wic;
+  HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+  if (FAILED(hr)) return hr;
+  ComPtr<IWICStream> stream;
+  if (FAILED(hr = wic->CreateStream(&stream))) return hr;
+  if (FAILED(hr = stream->InitializeFromMemory((BYTE *)png, (DWORD)len))) return hr;
+  ComPtr<IWICBitmapDecoder> dec;
+  if (FAILED(hr = wic->CreateDecoderFromStream(stream.Get(), NULL, WICDecodeMetadataCacheOnDemand, &dec))) return hr;
+  ComPtr<IWICBitmapFrameDecode> frame;
+  if (FAILED(hr = dec->GetFrame(0, &frame))) return hr;
+  UINT w = 0, h = 0;
+  frame->GetSize(&w, &h);
+  if (w == 0 || h == 0) return E_FAIL;
+  double s = (double)w * h * scale_up * scale_up > 4.0e6 ? 1.0 : scale_up;
+  UINT big = w > h ? w : h;
+  if (big * s > most) s = (double)most / big;
+  if (s < 1.0 && big <= most) s = 1.0;
+  UINT nw = (UINT)(w * s + 0.5), nh = (UINT)(h * s + 0.5);
+  if (nw < 1) nw = 1;
+  if (nh < 1) nh = 1;
+  ComPtr<IWICBitmapSource> src = frame;
+  if (nw != w || nh != h) {
+    ComPtr<IWICBitmapScaler> scaler;
+    if (FAILED(hr = wic->CreateBitmapScaler(&scaler))) return hr;
+    if (FAILED(hr = scaler->Initialize(frame.Get(), nw, nh, WICBitmapInterpolationModeHighQualityCubic))) return hr;
+    src = scaler;
+  }
+  ComPtr<IWICFormatConverter> conv;
+  if (FAILED(hr = wic->CreateFormatConverter(&conv))) return hr;
+  if (FAILED(hr = conv->Initialize(src.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, NULL, 0.0,
+                                   WICBitmapPaletteTypeCustom)))
+    return hr;
+
+  ComPtr<WI::ISoftwareBitmapFactory> factory;
+  if (FAILED(hr = RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Graphics_Imaging_SoftwareBitmap).Get(),
+                                         IID_PPV_ARGS(&factory))))
+    return hr;
+  ComPtr<WI::ISoftwareBitmap> bmp;
+  if (FAILED(hr = factory->CreateWithAlpha(WI::BitmapPixelFormat_Bgra8, (INT32)nw, (INT32)nh,
+                                           WI::BitmapAlphaMode_Premultiplied, &bmp)))
+    return hr;
+  {
+    ComPtr<WI::IBitmapBuffer> buf;
+    if (FAILED(hr = bmp->LockBuffer(WI::BitmapBufferAccessMode_Write, &buf))) return hr;
+    WI::BitmapPlaneDescription plane;
+    if (FAILED(hr = buf->GetPlaneDescription(0, &plane))) return hr;
+    ComPtr<WF::IMemoryBuffer> mem;
+    if (FAILED(hr = buf.As(&mem))) return hr;
+    ComPtr<WF::IMemoryBufferReference> ref;
+    if (FAILED(hr = mem->CreateReference(&ref))) return hr;
+    ComPtr<::Windows::Foundation::IMemoryBufferByteAccess> access;
+    if (FAILED(hr = ref.As(&access))) return hr;
+    BYTE *data = NULL;
+    UINT32 cap = 0;
+    if (FAILED(hr = access->GetBuffer(&data, &cap))) return hr;
+    if ((UINT64)plane.StartIndex + (UINT64)plane.Stride * nh > cap) return E_FAIL;
+    WICRect all = {0, 0, (INT)nw, (INT)nh};
+    hr = conv->CopyPixels(&all, (UINT)plane.Stride, cap - plane.StartIndex, data + plane.StartIndex);
+    ComPtr<WF::IClosable> c;
+    if (SUCCEEDED(ref.As(&c))) c->Close();
+    if (SUCCEEDED(buf.As(&c))) c->Close();
+    if (FAILED(hr)) return hr;
+  }
+  out = bmp;
+  *ow = (int)nw;
+  *oh = (int)nh;
+  return S_OK;
+}
+
+// The engine: Chinese where its OCR is installed (it reads the Latin letters and digits among Chinese as well, while
+// the English one reads Chinese as nonsense: a Windows in English with Chinese added still reads Chinese), else
+// Japanese, else Korean, else the first of the person's languages it reads, else the first it has. S_FALSE: none.
+static HRESULT engine_of(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcrEngine> &engine) {
+  ComPtr<WFC::IVectorView<WG::Language *>> langs;
+  HRESULT hr = st->get_AvailableRecognizerLanguages(&langs);
+  if (FAILED(hr)) return hr;
+  UINT32 n = 0;
+  langs->get_Size(&n);
+  if (n == 0) return S_FALSE;
+  static const wchar_t *firsts[] = {L"zh-Hans", L"zh-Hant", L"zh", L"ja", L"ko"};
+  for (const wchar_t *want : firsts) {
+    size_t wl = wcslen(want);
+    for (UINT32 i = 0; i < n; i++) {
+      ComPtr<WG::ILanguage> lang;
+      HString tag;
+      if (FAILED(langs->GetAt(i, &lang)) || FAILED(lang->get_LanguageTag(tag.GetAddressOf()))) continue;
+      UINT32 tl = 0;
+      const wchar_t *t = WindowsGetStringRawBuffer(tag.Get(), &tl);
+      if (t && tl >= wl && _wcsnicmp(t, want, wl) == 0 && (tl == wl || t[wl] == L'-')) {
+        if (SUCCEEDED(st->TryCreateFromLanguage(lang.Get(), &engine)) && engine) return S_OK;
+      }
+    }
+  }
+  if (SUCCEEDED(st->TryCreateFromUserProfileLanguages(&engine)) && engine) return S_OK;
+  ComPtr<WG::ILanguage> lang;
+  if (FAILED(hr = langs->GetAt(0, &lang))) return hr;
+  hr = st->TryCreateFromLanguage(lang.Get(), &engine);
+  return SUCCEEDED(hr) && engine ? S_OK : S_FALSE;
+}
+
+// What came of a reading: its words (UTF-8), the language read in, why it failed ("" it did not).
+struct OcrOut {
+  std::string text;
+  std::string lang;
+  const char *why;
+  int lines;
+  double ms;
+};
+
+static void ocr_run(const uint8_t *png, int len, OcrOut *o) {
+  LARGE_INTEGER f, t0, t1;
+  QueryPerformanceFrequency(&f);
+  QueryPerformanceCounter(&t0);
+  o->why = "";
+  o->lines = 0;
+  ComPtr<OCR::IOcrEngineStatics> st;
+  if (FAILED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Media_Ocr_OcrEngine).Get(),
+                                    IID_PPV_ARGS(&st)))) {
+    o->why = "no-ocr";
+    return;
+  }
+  ComPtr<OCR::IOcrEngine> engine;
+  if (engine_of(st, engine) != S_OK || !engine) {
+    o->why = "no-language";
+    return;
+  }
+  {
+    ComPtr<WG::ILanguage> lang;
+    HString tag;
+    if (SUCCEEDED(engine->get_RecognizerLanguage(&lang)) && lang &&
+        SUCCEEDED(lang->get_LanguageTag(tag.GetAddressOf())))
+      o->lang = utf8_of(tag.Get());
+  }
+  UINT32 most = 0;
+  st->get_MaxImageDimension(&most);
+  if (most < 256) most = 2600;
+  ComPtr<WI::ISoftwareBitmap> bmp;
+  int w = 0, h = 0;
+  if (FAILED(bitmap_of(png, len, 2.0, most, bmp, &w, &h))) {
+    o->why = "bad-picture";
+    return;
+  }
+  ComPtr<WF::IAsyncOperation<OCR::OcrResult *>> op;
+  ComPtr<OCR::IOcrResult> res;
+  if (FAILED(engine->RecognizeAsync(bmp.Get(), &op)) || FAILED(ocr_wait(op.Get(), res.GetAddressOf())) || !res) {
+    o->why = "failed";
+    return;
+  }
+  ComPtr<WFC::IVectorView<OCR::OcrLine *>> lines;
+  if (FAILED(res->get_Lines(&lines))) {
+    o->why = "failed";
+    return;
+  }
+  UINT32 nl = 0;
+  lines->get_Size(&nl);
+  std::wstring all;
+  for (UINT32 i = 0; i < nl; i++) {
+    ComPtr<OCR::IOcrLine> line;
+    ComPtr<WFC::IVectorView<OCR::OcrWord *>> words;
+    if (FAILED(lines->GetAt(i, &line)) || FAILED(line->get_Words(&words))) continue;
+    UINT32 nw = 0;
+    words->get_Size(&nw);
+    std::wstring l;
+    for (UINT32 j = 0; j < nw; j++) {
+      ComPtr<OCR::IOcrWord> word;
+      HString t;
+      if (FAILED(words->GetAt(j, &word)) || FAILED(word->get_Text(t.GetAddressOf()))) continue;
+      UINT32 n = 0;
+      const wchar_t *s = WindowsGetStringRawBuffer(t.Get(), &n);
+      if (!s || n == 0) continue;
+      int space = !l.empty() && !(unspaced(l.back()) && unspaced(s[0]));
+      if (space) l.push_back(L' ');
+      l.append(s, n);
+    }
+    if (l.empty()) continue;
+    if (!all.empty()) all.push_back(L'\n');
+    all += l;
+    o->lines++;
+  }
+  if (!all.empty()) {
+    int m = WideCharToMultiByte(CP_UTF8, 0, all.data(), (int)all.size(), NULL, 0, NULL, NULL);
+    o->text.assign(m > 0 ? m : 0, '\0');
+    if (m > 0) WideCharToMultiByte(CP_UTF8, 0, all.data(), (int)all.size(), &o->text[0], m, NULL, NULL);
+  }
+  QueryPerformanceCounter(&t1);
+  o->ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / f.QuadPart;
+  (void)w;
+  (void)h;
+}
+
+struct OcrJob {
+  int id;
+  int len;
+  uint8_t png[1];
+};
+
+static DWORD WINAPI ocr_thread(LPVOID p) {
+  OcrJob *job = (OcrJob *)p;
+  RoInitialize(RO_INIT_MULTITHREADED);
+  OcrOut o;
+  ocr_run(job->png, job->len, &o);
+  char json[256];
+  int n = snprintf(json, sizeof json, "{\"do\":\"ocr\",\"id\":%d,\"why\":\"%s\",\"lang\":\"%.40s\",\"lines\":%d,\"ms\":%.0f}",
+                   job->id, o.why, o.lang.c_str(), o.lines, o.ms);
+  mb_post("ps", json, (size_t)n, (const uint8_t *)o.text.data(), o.text.size());
+  free(job);
+  RoUninitialize();
+  return 0;
+}
+
+// The words in `png` read on a thread of their own, told back as {"do":"ocr","id":id,...} with them: 1 it is begun.
+extern "C" int ps_ocr(int id, moonbit_bytes_t png) {
+  int len = (int)Moonbit_array_length(png);
+  if (len <= 0) return 0;
+  OcrJob *job = (OcrJob *)malloc(sizeof(OcrJob) + len);
+  if (!job) return 0;
+  job->id = id;
+  job->len = len;
+  memcpy(job->png, png, len);
+  HANDLE t = CreateThread(NULL, 0, ocr_thread, job, 0, NULL);
+  if (!t) {
+    free(job);
+    return 0;
+  }
+  CloseHandle(t);
+  return 1;
+}
+
+// The words in `png` read now (the command line's --ocr): "why\tlang\tms\n" then them.
+extern "C" moonbit_bytes_t ps_ocr_now(moonbit_bytes_t png) {
+  int len = (int)Moonbit_array_length(png);
+  OcrOut o;
+  o.why = "bad-picture";
+  o.lines = 0;
+  o.ms = 0;
+  if (len > 0) {
+    HRESULT ro = RoInitialize(RO_INIT_MULTITHREADED);
+    ocr_run(png, len, &o);
+    if (SUCCEEDED(ro)) RoUninitialize();
+  }
+  char head[128];
+  snprintf(head, sizeof head, "%s\t%.40s\t%.0f\n", o.why, o.lang.c_str(), o.ms);
+  std::string all = std::string(head) + o.text;
+  moonbit_bytes_t b = moonbit_make_bytes((int32_t)all.size(), 0);
+  if (!all.empty()) memcpy(b, all.data(), all.size());
+  return b;
+}

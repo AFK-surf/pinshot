@@ -25,15 +25,18 @@ anyway. Windows 10 2004 or later, x64.
   - Click without moving: select the window under the pointer; drag: select an area; drag edges and corners: resize;
     arrow keys: move the selection 1 px (Shift: 10 px)
   - Toolbar: rectangle, ellipse, arrow, line (Shift: horizontal, vertical or 45°), pen, mosaic, numbered marker, text,
-    undo / redo, pin, save, close, copy
+    undo / redo, extract text, pin, save, close, copy
   - `Enter`, `Ctrl+C` or double-click in the selection: copy; `Ctrl+S`: save; `Ctrl+T`: pin; `Ctrl+Z` / `Ctrl+Y`:
     undo / redo; `C`: copy the colour under the pointer
   - Right-click: clear the selection, again to quit; `Esc`: quit
 - Pins: drag to move; wheel to zoom; `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has
-  copy, save as, always on top, original size, opacity, close all
+  copy, save as, extract text, always on top, original size, opacity, close all
+- Extract text: the words in the selection or the pin, read by Windows' own OCR (offline; Chinese first where its OCR is
+  installed, it reads the English and digits among it too), shown in a window to correct and copy
 - `Ctrl+2`: pin the image on the clipboard
 - Tray menu: capture, pin clipboard, show / hide all pins, settings, open the screenshots folder, quit
-- Command line: `pinshot.exe --settings`, `pinshot.exe --quit`, `pinshot.exe --bench` (times the capture)
+- Command line: `pinshot.exe --settings`, `pinshot.exe --quit`, `pinshot.exe --bench` (times the capture),
+  `pinshot.exe --ocr <picture>` (prints the text in a picture)
 
 Settings are in `%APPDATA%\PinShot\settings.json`, the log (each capture's timings) in `%APPDATA%\PinShot\pinshot.log`.
 
@@ -85,10 +88,11 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 
 - `Ctrl+Alt+A`（或点托盘图标）：冻结鼠标所在的显示器进入截图（设置里可换快捷键）
   - 不动鼠标点一下选中窗口；拖动框选；拖边和角调整大小；方向键移动 1 像素（Shift 10 像素）
-  - 工具条：矩形、椭圆、箭头、直线（按住 Shift 只走水平、垂直或 45°）、画笔、马赛克、序号、文字、撤销 / 重做、贴图、保存、关闭、复制
+  - 工具条：矩形、椭圆、箭头、直线（按住 Shift 只走水平、垂直或 45°）、画笔、马赛克、序号、文字、撤销 / 重做、提取文字、贴图、保存、关闭、复制
   - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存；`Ctrl+T` 贴图；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色
   - 右键先取消选区，再右键退出；`Esc` 退出
-- 贴图：拖动移动；滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、置顶、原始大小、不透明度、关闭全部
+- 贴图：拖动移动；滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、提取文字、置顶、原始大小、不透明度、关闭全部
+- 提取文字：用 Windows 自带的 OCR 识别选区或贴图里的文字（不联网；装了中文 OCR 就优先用中文，里面的英文和数字也能认），在弹出的窗口里改、复制
 - `Ctrl+2`：把剪贴板里的图片贴到屏幕上
 - 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、退出
 

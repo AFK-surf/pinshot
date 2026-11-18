@@ -79,7 +79,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
 fn pin_clipboard() -> Unit {
   // (a test run: the clipboard as if it held none, the person's left alone)
   let b = if @ui.env("PINSHOT_TEST_NO_CLIP") != "" {
-    Bytes::new(0)
+    Bytes::make(0, b'\x00')
   } else if @ui.env("PINSHOT_TEST_PIN_FILE") != "" {
     ps_read_file(cstr(@ui.env("PINSHOT_TEST_PIN_FILE")))
   } else {
@@ -219,7 +219,7 @@ fn pin_menu(p : Pin) -> Unit {
   let z = p.zoom.untracked()
   let o = tr("不透明度")
   let lines = [
-    "copy\t" + tr("复制") + "\tCtrl+C", "save\t" + tr("另存为…") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
+    "copy\t" + tr("复制") + "\tCtrl+C", "save\t" + tr("另存为…") + "\t", "ocr\t" + tr("提取文字") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
     "front\t" + tr("移到最前") + "\t", "-", "zoom1\t" + tr("原始大小 (100%)") + "\t" + (if z == 1.0 { "c" } else { "" }),
     "a100\t\{o} 100%\t" + (if a >= 255 { "c" } else { "" }), "a80\t\{o} 80%\t" + (if a == 204 { "c" } else { "" }),
     "a60\t\{o} 60%\t" + (if a == 153 { "c" } else { "" }), "a40\t\{o} 40%\t" + (if a == 102 { "c" } else { "" }), "-",
@@ -229,6 +229,7 @@ fn pin_menu(p : Pin) -> Unit {
   match chose {
     "copy" => copy_pin(p)
     "save" => save_pin(p)
+    "ocr" => read_words(p.png)
     "top" => {
       p.top.set(!top)
       ps_topmost(p.wid.val, if top { 0 } else { 1 }, 0)

@@ -7,12 +7,17 @@
 //   pinshot.exe --settings the settings opened (in the one running, or in this one as it starts)
 //   pinshot.exe --quit     the one running ended
 //   pinshot.exe --bench    the screen taken 10 times and the windows listed, timed; no window
+//   pinshot.exe --ocr <f>  the words in picture file f read and printed; no window
 
 ///|
 fn main {
   let args = text_of(ps_args()).split("\n").map(fn(s) { s.to_owned() }).collect()
   if args.length() > 0 && args[0] == "--bench" {
     bench()
+    return
+  }
+  if args.length() > 1 && args[0] == "--ocr" {
+    println(text_of(ps_ocr_now(ps_read_file(cstr(args[1])))))
     return
   }
   let again = if args.length() > 0 && args[0] == "--settings" {
@@ -27,8 +32,8 @@ fn main {
   }
   load_settings()
   log("started: icon \{if ps_tray_on() == 1 { "shown" } else { "not shown" }}")
-  @ui.on_message_said("ps", fn(json, _) {
-    told(json)
+  @ui.on_message_said("ps", fn(json, bytes) {
+    told(json, bytes)
     true
   })
   @ui.set_window_tree(fn(wid, what) {
@@ -36,6 +41,8 @@ fn main {
       settings_window
     } else if what == "toast" {
       toast_window
+    } else if what == "ocr" {
+      ocr_window
     } else {
       pin_window(wid, what)
     }
@@ -46,6 +53,9 @@ fn main {
     }
     if wid == toast_wid.val {
       toast_wid.val = 0
+    }
+    if wid == ocr_wid.val {
+      ocr_wid.val = 0
     }
     pin_gone(wid)
   })
@@ -66,7 +76,7 @@ fn main {
 
 ///|
 /// What the native side told (a shortcut, the icon, its menu, a window's close).
-fn told(json : String) -> Unit {
+fn told(json : String, bytes : Bytes?) -> Unit {
   guard json_of(json) is Some(Json::Object(o)) else { return }
   let what = match o.get("do") {
     Some(String(s)) => s
@@ -85,6 +95,7 @@ fn told(json : String) -> Unit {
     }
     "capture" => if capturing.untracked() { capture_taken() }
     "pin-clipboard" => pin_clipboard()
+    "ocr" => ocr_told(o, bytes)
     "tick" =>
       match o.get("wid") {
         Some(Number(w, ..)) => pin_tick(w.to_int())
@@ -102,7 +113,7 @@ fn told(json : String) -> Unit {
           let wid = w.to_int()
           if wid == 0 {
             close_capture()
-          } else if wid == settings_wid.val {
+          } else if wid == settings_wid.val || wid == ocr_wid.val {
             close_window(wid)
           } else {
             close_pin(wid)
