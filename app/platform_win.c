@@ -622,11 +622,27 @@ static void tray_window_made(void) {
 // A capture asked for by the app (the icon's menu): as the shortcut.
 void ps_capture_ask(void) { capture_asked("menu"); }
 
+// (elevate.cpp: over every window, Task Manager's too)
+int ps_above_wanted(void);
+int ps_above_on(void);
+int ps_above_restart(const wchar_t *args);
+int ps_above_keep(int on);
+int ps_task_on(void);
+int ps_task_set(int on);
+static void autostart_follow(void);
+
 // The run begun: 1 it is the one run (its icon put, its window made), 0 another runs already (told `again`: 0 take
-// the screen, as its shortcut does; 1 open the settings; 2 quit): this one ends.
-int32_t ps_start(int32_t again) {
+// the screen, as its shortcut does; 1 open the settings; 2 quit): this one ends. `restart`: started by a run that is
+// ending (to be over every window): the one run once that one has ended.
+int32_t ps_start(int32_t again, int32_t restart) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   one_run = CreateMutexW(NULL, TRUE, test_run() ? L"Local\\PinShot.TestRun" : L"Local\\PinShot.OneRun");
+  // (the run that started this one lets go of the mutex as it ends: abandoned, it is this one's)
+  if (one_run && GetLastError() == ERROR_ALREADY_EXISTS && restart && again != 2) {
+    DWORD w = WaitForSingleObject(one_run, 10000);
+    if (w == WAIT_OBJECT_0 || w == WAIT_ABANDONED) SetLastError(0);
+    else SetLastError(ERROR_ALREADY_EXISTS);
+  }
   if (one_run && GetLastError() == ERROR_ALREADY_EXISTS) {
     HWND other = FindWindowW(ps_class(), NULL);
     if (other) {
@@ -636,6 +652,18 @@ int32_t ps_start(int32_t again) {
       PostMessageW(other, WM_PS_AGAIN, (WPARAM)again, 0);
     }
     return 0;
+  }
+  // (wanted over every window and not yet: started again so, as an administrator; refused, this run goes on as it is)
+  if (again != 2 && !test_run() && ps_above_wanted() && !ps_above_on() && !ps_packaged()) {
+    if (ps_above_restart(again == 1 ? L"--settings" : L"")) {
+      ReleaseMutex(one_run);
+      CloseHandle(one_run);
+      return 0;
+    }
+  }
+  if (ps_above_on()) {
+    ps_log_w(L"above all: on (UIAccess)");
+    autostart_follow();
   }
   tray_window_made();
   taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
@@ -1117,6 +1145,12 @@ void ps_log(moonbit_bytes_t line) {
   CloseHandle(f);
 }
 
+// A line in the run's log from the native side (UTF-16).
+void ps_log_w(const wchar_t *line) {
+  char buf[1024];
+  if (WideCharToMultiByte(CP_UTF8, 0, line, -1, buf, sizeof buf, NULL, NULL) > 0) ps_log((moonbit_bytes_t)buf);
+}
+
 // The time now as a file's name says it: "20261117-083015".
 moonbit_bytes_t ps_stamp(void) {
   SYSTEMTIME t;
@@ -1141,8 +1175,7 @@ int ps_packaged(void);
 int ps_startup_on(void);
 int ps_startup_set(int on);
 
-int32_t ps_autostart(void) {
-  if (ps_packaged()) return ps_startup_on();
+static int run_key_on(void) {
   HKEY k;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
   DWORD type = 0, size = 0;
@@ -1151,8 +1184,7 @@ int32_t ps_autostart(void) {
   return r == ERROR_SUCCESS && size > 0;
 }
 
-int32_t ps_set_autostart(int32_t on) {
-  if (ps_packaged()) return ps_startup_set(on);
+static int run_key_set(int on) {
   HKEY k;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &k) != ERROR_SUCCESS) return 0;
   LONG r;
@@ -1169,6 +1201,56 @@ int32_t ps_set_autostart(int32_t on) {
   RegCloseKey(k);
   return r == ERROR_SUCCESS;
 }
+
+// Started with Windows: the package's startup task; else HKCU's Run key, or, wanted over every window, a task of the
+// Task Scheduler with the highest privileges (elevate.cpp: elevated as it starts, no UAC asked at each sign-in).
+int32_t ps_autostart(void) {
+  if (ps_packaged()) return ps_startup_on();
+  return run_key_on() || ps_task_on();
+}
+
+int32_t ps_set_autostart(int32_t on) {
+  if (ps_packaged()) return ps_startup_set(on);
+  if (!on) {
+    int r = run_key_set(0);
+    if (ps_task_on()) r = ps_task_set(0) && r;
+    return r;
+  }
+  // (the task made by an elevated run only; else the Run key: UAC asks as the person signs in)
+  if (ps_above_wanted() && ps_task_set(1)) {
+    run_key_set(0);
+    return 1;
+  }
+  return run_key_set(1);
+}
+
+// How PinShot starts with Windows made to follow whether it is wanted over every window (an elevated run's: the task
+// is made and taken away only by one).
+static void autostart_follow(void) {
+  if (ps_packaged() || !ps_autostart()) return;
+  if (ps_above_wanted()) {
+    if (run_key_on() && ps_task_set(1)) run_key_set(0);
+  } else if (ps_task_on()) {
+    if (ps_task_set(0)) run_key_set(1);
+  }
+}
+
+// Over every window wanted (`on`) or not: 1 kept (off: in force as PinShot starts next); 2 PinShot starts again so
+// (this run is to end now); 0 not (UAC refused).
+int32_t ps_above_set(int32_t on) {
+  if (!ps_above_keep(on)) return 0;
+  if (!on) {
+    autostart_follow();
+    return 1;
+  }
+  if (ps_above_on()) return 1;
+  if (ps_above_restart(L"--settings")) return 2;
+  ps_above_keep(0);
+  return 0;
+}
+
+// Whether PinShot is wanted over every window, and whether this run is (1 wanted, 2 and is).
+int32_t ps_above(void) { return ps_above_wanted() ? (ps_above_on() ? 2 : 1) : 0; }
 
 // The run's arguments after the program's name, one a line (UTF-8).
 moonbit_bytes_t ps_args(void) {

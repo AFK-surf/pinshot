@@ -90,6 +90,10 @@ let pin_key_ok : @signals.Signal[Bool] = @signals.signal(true)
 let autostart : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
+/// Over every window: 0 not wanted, 1 wanted, 2 wanted and in force (ps_above).
+let above : @signals.Signal[Int] = @signals.signal(0)
+
+///|
 fn settings_path() -> String {
   text_of(ps_data_dir()) + "\\settings.json"
 }
@@ -139,6 +143,7 @@ fn load_settings() -> Unit {
   settings.set(s)
   apply_language(s.language)
   autostart.set(ps_autostart() == 1)
+  above.set(ps_above())
 }
 
 ///|
@@ -319,6 +324,25 @@ fn settings_page(root : @view.View) -> Unit {
           autostart.set(on)
         }
       })
+    })
+    // (Task Manager set always on top stood over the capture: elevate.cpp)
+    set_row(g, "盖过任务管理器等置顶窗口", fn(r) {
+      switch(r, fn() { above.get() > 0 }, fn(on) {
+        match ps_above_set(if on { 1 } else { 0 }) {
+          2 => ps_quit()
+          1 => {
+            above.set(ps_above())
+            autostart.set(ps_autostart() == 1)
+          }
+          _ => above.set(ps_above())
+        }
+      })
+    }, note=fn() {
+      match above.get() {
+        0 => if ps_above_on() == 1 { tr("重新打开 PinShot 后恢复") } else { tr("需要管理员权限") }
+        1 => tr("这次启动没有管理员权限，未生效")
+        _ => if autostart.get() { tr("需要管理员权限，开机启动时不再询问") } else { tr("需要管理员权限") }
+      }
     })
   })
   set_group(root, "关于", fn(g) {

@@ -7,10 +7,14 @@
 //   pinshot.exe --settings the settings opened (in the one running, or in this one as it starts)
 //   pinshot.exe --quit     the one running ended
 //   pinshot.exe --bench    the screen taken 10 times and the windows listed, timed; no window
+//   pinshot.exe --restart  (before the others) started by a run that is ending: waits for it to end
 
 ///|
 fn main {
-  let args = text_of(ps_args()).split("\n").map(fn(s) { s.to_owned() }).collect()
+  let all : Array[String] = text_of(ps_args()).split("\n").map(fn(s) { s.to_owned() }).collect()
+  // (--restart: started by a run that is ending, to be over every window: platform_win.c's ps_start)
+  let restart = all.contains("--restart")
+  let args = all.filter(fn(a) { a != "--restart" && a != "" })
   if args.length() > 0 && args[0] == "--bench" {
     bench()
     return
@@ -22,7 +26,7 @@ fn main {
   } else {
     0
   }
-  if ps_start(again) == 0 || again == 2 {
+  if ps_start(again, if restart { 1 } else { 0 }) == 0 || again == 2 {
     return
   }
   load_settings()

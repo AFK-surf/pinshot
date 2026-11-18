@@ -17,7 +17,8 @@ fn text_of(b : Bytes) -> String {
 ///|
 /// The run begun: 1 it is the one run; 0 another runs (told `again`: 0 take the screen, 1 open the settings, 2 quit):
 /// this one ends.
-extern "C" fn ps_start(again : Int) -> Int = "ps_start"
+/// `restart`: started by a run that is ending (to be over every window); the one run once it has ended.
+extern "C" fn ps_start(again : Int, restart : Int) -> Int = "ps_start"
 
 ///|
 /// A note from the icon (the system's notification); clicked, it opens the settings.
@@ -211,6 +212,19 @@ extern "C" fn ps_autostart() -> Int = "ps_autostart"
 
 ///|
 extern "C" fn ps_set_autostart(on : Int) -> Int = "ps_set_autostart"
+
+///|
+/// Over every window, Task Manager's too (elevate.cpp): wanted or not, kept; 1 kept (off: in force as PinShot starts
+/// next), 2 PinShot starts again so as an administrator (this run is to end now), 0 not (UAC refused).
+extern "C" fn ps_above_set(on : Int) -> Int = "ps_above_set"
+
+///|
+/// 0 not wanted over every window, 1 wanted, 2 wanted and this run is.
+extern "C" fn ps_above() -> Int = "ps_above"
+
+///|
+/// Whether this run's windows are over every window (its token has UIAccess).
+extern "C" fn ps_above_on() -> Int = "ps_above_on"
 
 ///|
 /// A menu at the pointer over window `wid`: "key\twords\tflags" lines (c checked, g greyed), "-" a separator. The key
