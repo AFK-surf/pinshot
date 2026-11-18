@@ -442,7 +442,7 @@ fn edge_cursor(e : Int) -> @view.Cursor {
 
 ///|
 /// Pin `p` sized by the drag `s` begun, the pointer where it is now: by an edge stretched that way alone, by a corner as
-/// it is (its proportions then kept, by the side the pointer went further along; Shift held: freely), each zoom 0.1 to
+/// it is (its proportions then kept, by how far the pointer went along its diagonal; Shift held: freely), each zoom 0.1 to
 /// 8 as the wheel's, the opposite side or corner staying where it was.
 fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let q = numbers_of(text_of(ps_pointer()))
@@ -456,7 +456,9 @@ fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let across = l || r
   let down = t || b
   let (kx, ky) = if across && down && ps_shift_down() == 0 {
-    let k = if (sx - 1.0).abs() >= (sy - 1.0).abs() { sx } else { sy }
+    // (the pointer's way taken along the pin's diagonal: one size, going on smoothly whichever side it moves more along,
+    // where taking the side moved further jumped between the two as they crossed; the user, 2026-11-18: 「这里会突然跳很多」)
+    let k = (sx * s.w * s.w + sy * s.h * s.h) / (s.w * s.w + s.h * s.h)
     let k = clamp(k, dmax(0.1 / s.zx, 0.1 / s.zy), dmin(8.0 / s.zx, 8.0 / s.zy))
     (k, k)
   } else {
