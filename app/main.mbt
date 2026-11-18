@@ -7,6 +7,7 @@
 //   pinshot.exe --settings the settings opened (in the one running, or in this one as it starts)
 //   pinshot.exe --quit     the one running ended
 //   pinshot.exe --bench    the screen taken 10 times and the windows listed, timed; no window
+//   pinshot.exe --updated  the run, started by an update in place (update.mbt): it says so
 
 ///|
 fn main {
@@ -26,9 +27,10 @@ fn main {
     return
   }
   load_settings()
-  log("started: icon \{if ps_tray_on() == 1 { "shown" } else { "not shown" }}")
-  @ui.on_message_said("ps", fn(json, _) {
-    told(json)
+  let updated = args.length() > 0 && args[0] == "--updated"
+  log("started \{app_version}: icon \{if ps_tray_on() == 1 { "shown" } else { "not shown" }}")
+  @ui.on_message_said("ps", fn(json, bytes) {
+    told(json, bytes)
     true
   })
   @ui.set_window_tree(fn(wid, what) {
@@ -50,6 +52,7 @@ fn main {
     pin_gone(wid)
   })
   apply_keys()
+  start_updates(updated)
   // (the overlay made out of sight: it shows only as a capture opens)
   @hostapi.window_hold()
   @hostapi.window_setup(100.0, 100.0, 320.0, 200.0)
@@ -65,8 +68,9 @@ fn main {
 }
 
 ///|
-/// What the native side told (a shortcut, the icon, its menu, a window's close).
-fn told(json : String) -> Unit {
+/// What the native side told (a shortcut, the icon, its menu, a window's close, an update's fetch; `bytes` what a fetch
+/// got).
+fn told(json : String, bytes : Bytes?) -> Unit {
   guard json_of(json) is Some(Json::Object(o)) else { return }
   let what = match o.get("do") {
     Some(String(s)) => s
@@ -96,6 +100,8 @@ fn told(json : String) -> Unit {
         _ => ()
       }
     "pins" => pins_toggle()
+    "fetching" | "fetched" => update_told(what, o, bytes)
+    "update-tick" => update_tick()
     "close" =>
       match o.get("wid") {
         Some(Number(w, ..)) => {
@@ -117,6 +123,10 @@ fn told(json : String) -> Unit {
         Some(String("pins")) => pins_toggle()
         Some(String("settings")) => open_settings()
         Some(String("folder")) => ps_reveal(cstr(settings.untracked().save_dir))
+        Some(String("check-update")) => {
+          open_settings()
+          check_update(true)
+        }
         Some(String("quit")) => ps_quit()
         _ => ()
       }
@@ -163,5 +173,6 @@ let app_theme : () -> @ui.Theme = fn() { theme_kept }
 let theme_kept : @ui.Theme = { ..@ui.Theme::dark(), tabular: true }
 
 ///|
-/// PinShot's version (the settings' About, the Store's package).
-let app_version : String = "1.0.0"
+/// PinShot's version: the settings' About, what updates compare with latest.json (update.mbt), and the installer's
+/// and the release's (packaging/pack-setup.ps1 and publish.ps1 read it here). Raised with each release.
+let app_version : String = "1.0.2"

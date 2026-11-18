@@ -18,6 +18,9 @@ struct Settings {
   language : Int
   /// a shutter's sound as a capture is copied, saved or pinned
   sound : Bool
+  /// updates asked for once a day and put in place once nobody uses PinShot (update.mbt); off (as it starts: the user,
+  /// 2026-11-19: 「自动更新默认关掉」), PinShot goes online only when 检查更新 is pressed
+  auto_update : Bool
 }
 
 ///|
@@ -63,6 +66,7 @@ fn default_settings() -> Settings {
     keep_copies: false,
     sound: true,
     language: 0,
+    auto_update: false,
   }
 }
 
@@ -77,6 +81,7 @@ let settings : @signals.Signal[Settings] = @signals.signal({
   keep_copies: false,
   sound: true,
   language: 0,
+  auto_update: false,
 })
 
 ///|
@@ -127,6 +132,7 @@ fn load_settings() -> Unit {
         save_dir: text("save_dir", d.save_dir),
         keep_copies: flag("keep_copies", d.keep_copies),
         sound: flag("sound", d.sound),
+        auto_update: flag("auto_update", d.auto_update),
         language: match text("language", "system") {
           "zh" => 1
           "en" => 2
@@ -153,6 +159,7 @@ fn save_settings() -> Unit {
   o["save_dir"] = Json::string(s.save_dir)
   o["keep_copies"] = Json::boolean(s.keep_copies)
   o["sound"] = Json::boolean(s.sound)
+  o["auto_update"] = Json::boolean(s.auto_update)
   o["language"] = Json::string(["system", "zh", "en"][s.language])
   ps_write_file(cstr(settings_path()), @utf8.encode(Json::object(o).stringify(indent=2))) |> ignore
 }
@@ -204,6 +211,7 @@ fn apply_keys() -> Unit {
     tr("设置…") +
     "\nfolder\t" +
     tr("打开截图文件夹") +
+    (if updates_here() { "\ncheck-update\t" + tr("检查更新…") } else { "" }) +
     "\n-\nquit\t" +
     tr("退出 PinShot") +
     "\n"
@@ -225,7 +233,7 @@ fn open_settings() -> Unit {
     return
   }
   settings_wid.val = wid
-  ps_center(wid, 560, 800)
+  ps_center(wid, 560, 880)
 }
 
 ///|
@@ -296,7 +304,7 @@ fn settings_page(root : @view.View) -> Unit {
         set_words(b, fn() { settings.get().save_dir }, 12.0, set_muted)
       })
       |> ignore
-      small_button(r, "打开", fn() { ps_reveal(cstr(settings.untracked().save_dir)) })
+      small_button(r, fn() { tr("打开") }, fn() { ps_reveal(cstr(settings.untracked().save_dir)) })
     })
   })
   set_group(root, "通用", fn(g) {
@@ -322,10 +330,43 @@ fn settings_page(root : @view.View) -> Unit {
     })
   })
   set_group(root, "关于", fn(g) {
-    set_row(g, "版本", fn(r) { set_words(r, fn() { "PinShot " + app_version }, 13.0, set_muted) })
+    set_row(g, "版本", fn(r) {
+      set_words(r, fn() { "PinShot " + app_version }, 13.0, set_muted)
+      if updates_here() {
+        small_button(r, fn() { tr("更新内容") }, fn() { ps_open_url(cstr(update_notes_url())) }, shown=fn() {
+          match update.get() {
+            Found(_, _) | Fetching(_, _) | Ready(_) => true
+            _ => false
+          }
+        })
+        small_button(r, update_button_words, update_button_pressed)
+      }
+    }, note=fn() { if updates_here() { update_note() } else { tr("通过 Microsoft Store 更新") } }, note_ink=fn() {
+      if update.get() is Failed(_) {
+        0xE5A545FFL
+      } else {
+        set_muted
+      }
+    })
+    if updates_here() {
+      set_row(g, "自动更新", fn(r) {
+        switch(r, fn() { settings.get().auto_update }, fn(on) {
+          change_settings(fn(s) { { ..s, auto_update: on } })
+          if on {
+            update_tick()
+          }
+        })
+      }, note=fn() { tr("每天检查一次，空闲时在后台下载并安装") }, note_ink=fn() { set_muted })
+    }
     g.box(fn(b) {
       b.padding(Is((0.0, 4.0, 0.0, 12.0))).gap(Is(2.0)) |> ignore
-      set_words(b, fn() { tr("免费、无广告，不联网、不收集任何数据。") }, 12.0, set_muted)
+      set_words(b, fn() {
+        if updates_here() {
+          tr("免费、无广告，不收集任何数据；只在检查更新时联网。")
+        } else {
+          tr("免费、无广告，不联网、不收集任何数据。")
+        }
+      }, 12.0, set_muted)
       set_words(b, fn() { "© 2026 pengx17" }, 12.0, set_muted)
     })
     |> ignore
@@ -355,7 +396,13 @@ fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -
 }
 
 ///|
-fn set_row(parent : @view.View, label : String, make : (@view.View) -> Unit, note? : () -> String = fn() { "" }) -> Unit {
+fn set_row(
+  parent : @view.View,
+  label : String,
+  make : (@view.View) -> Unit,
+  note? : () -> String = fn() { "" },
+  note_ink? : () -> Int64 = fn() { 0xE5A545FFL },
+) -> Unit {
   parent.box(fn(row) {
     row.row(Is(true)).min_height(Is(Some(42.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
     row.box(fn(l) {
@@ -365,7 +412,7 @@ fn set_row(parent : @view.View, label : String, make : (@view.View) -> Unit, not
         n
         .laid_nowhere(By(fn() { note() == "" }))
         .words(By(note), look={ ..@view.words_plain, size: 11.5, weight: 400, line: 16.0, wrap: false })
-        .ink(Is(0xE5A545FFL))
+        .ink(By(note_ink))
         |> ignore
       })
       |> ignore
@@ -446,9 +493,11 @@ fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
 }
 
 ///|
-fn small_button(parent : @view.View, label : String, press : () -> Unit) -> Unit {
+/// A small button saying `label` (it may change), laid out only while `shown`.
+fn small_button(parent : @view.View, label : () -> String, press : () -> Unit, shown? : () -> Bool = fn() { true }) -> Unit {
   parent.box(fn(b) {
     b
+    .laid_nowhere(By(fn() { !shown() }))
     .height(Is(Some(26.0)))
     .padding(Is((10.0, 0.0, 10.0, 0.0)))
     .radius(Is(6.0))
@@ -456,12 +505,12 @@ fn small_button(parent : @view.View, label : String, press : () -> Unit) -> Unit
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
-    .says(By(fn() { Some(@view.said(Button, label=tr(label))) }))
+    .says(By(fn() { Some(@view.said(Button, label=label())) }))
     .on_press(press)
     .ground(By(fn() { if b.pointed() { 0x45474EFFL } else { 0x3A3C42FFL } }))
     |> ignore
     b.box(fn(t) {
-      t.words(By(fn() { tr(label) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false }).ink(Is(set_ink)) |> ignore
+      t.words(By(label), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false }).ink(Is(set_ink)) |> ignore
     })
     |> ignore
   })

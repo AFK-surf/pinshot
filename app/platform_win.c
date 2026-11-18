@@ -1282,6 +1282,27 @@ moonbit_bytes_t ps_clipboard_image(void) {
   return out;
 }
 
+// This run handing over to the next (update_win.c, the portable exe swapped): its icon taken away, its shortcuts and
+// its one-run mutex let go, so the run started next is the one run, not one that asks this one to take the screen.
+void ps_run_handover(void) {
+  tray_gone();
+  tray_on = 0;
+  for (int i = 1; i < HK_MOST; i++)
+    if (hk_on[i]) {
+      UnregisterHotKey(tray_hwnd, i);
+      hk_on[i] = 0;
+    }
+  if (one_run) {
+    ReleaseMutex(one_run);
+    CloseHandle(one_run);
+    one_run = NULL;
+  }
+  if (tray_hwnd) {
+    DestroyWindow(tray_hwnd);
+    tray_hwnd = NULL;
+  }
+}
+
 // The run ended (the icon's 退出): its icon taken away first.
 void ps_quit(void) {
   tray_gone();

@@ -240,3 +240,54 @@ fn json_of(s : String) -> Json? {
     _ => None
   }
 }
+
+// ---- updates (update.mbt; on Windows update_win.c) ----
+
+///|
+/// How this copy was installed: 2 a Store package (the Store updates it), 1 by PinShot-Setup (its installer updates
+/// it), 0 the portable exe (swapped for the new one).
+extern "C" fn ps_install_kind() -> Int = "ps_install_kind"
+
+///|
+/// Where the update file `name` is downloaded to (the portable exe's beside itself, whatever the name).
+#borrow(name)
+extern "C" fn ps_update_path(name : Bytes) -> Bytes = "ps_update_path"
+
+///|
+/// What an earlier update left (the old exe moved aside, a download not finished) removed.
+extern "C" fn ps_update_cleanup() -> Unit = "ps_update_cleanup"
+
+///|
+/// `url` fetched on a thread of its own, told back on "ps" ({"do":"fetching"} as it goes, {"do":"fetched"} at its end):
+/// into memory (`path` empty, the body beside the message) or into the file `path`, checked to be of `sha256` (lowercase
+/// hex; empty: not checked). `agent` its User-Agent. 1 under way, 0 another fetch is.
+#borrow(url, path, sha256, agent)
+extern "C" fn ps_fetch(url : Bytes, path : Bytes, sha256 : Bytes, agent : Bytes) -> Int = "ps_fetch"
+
+///|
+/// The installer downloaded run silently as an update (it quits this run and starts the new one): 1 it was started.
+#borrow(path)
+extern "C" fn ps_run_setup(path : Bytes) -> Int = "ps_run_setup"
+
+///|
+/// The portable exe swapped for the one downloaded and that started (this run ends); 0 it could not be (this run goes
+/// on).
+#borrow(path)
+extern "C" fn ps_swap_exe(path : Bytes) -> Int = "ps_swap_exe"
+
+///|
+/// A web page opened in the person's browser (https only).
+#borrow(url)
+extern "C" fn ps_open_url(url : Bytes) -> Unit = "ps_open_url"
+
+///|
+/// Seconds since 1970 (UTC).
+extern "C" fn ps_epoch_s() -> Double = "ps_epoch_s"
+
+///|
+/// How long the person has not touched the keyboard or the mouse (ms).
+extern "C" fn ps_idle_ms() -> Int = "ps_idle_ms"
+
+///|
+/// {"do":"update-tick"} told after `first_ms` and then every `every_ms`.
+extern "C" fn ps_update_ticks(first_ms : Int, every_ms : Int) -> Unit = "ps_update_ticks"

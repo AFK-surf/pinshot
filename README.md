@@ -32,7 +32,14 @@ anyway. Windows 10 2004 or later, x64.
 - Pins: drag to move; wheel to zoom; `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has
   copy, save as, always on top, original size, opacity, close all
 - `Ctrl+2`: pin the image on the clipboard
-- Tray menu: capture, pin clipboard, show / hide all pins, settings, open the screenshots folder, quit
+- Tray menu: capture, pin clipboard, show / hide all pins, settings, open the screenshots folder, check for updates,
+  quit
+- Updates: Settings › About has **Check for updates** and an **Automatic updates** switch (off by default). Turned on,
+  PinShot asks [pin-shot.pages.dev](https://pin-shot.pages.dev/dl/latest.json) once a day, downloads a new version in
+  the background, checks its SHA-256 and installs it once PinShot is idle (no capture, no pins open, nothing touched for
+  two minutes), then starts again. The installed copy updates through its installer (silently, keeping your choices);
+  the portable `pinshot.exe` replaces itself. Left off, PinShot goes online only when you press Check for updates. The
+  Microsoft Store package is updated by the Store and never checks itself.
 - Command line: `pinshot.exe --settings`, `pinshot.exe --quit`, `pinshot.exe --bench` (times the capture)
 
 Settings are in `%APPDATA%\PinShot\settings.json`, the log (each capture's timings) in `%APPDATA%\PinShot\pinshot.log`.
@@ -90,7 +97,8 @@ packaging/pack-msix.ps1      # the Microsoft Store package
   - 右键先取消选区，再右键退出；`Esc` 退出
 - 贴图：拖动移动；滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、置顶、原始大小、不透明度、关闭全部
 - `Ctrl+2`：把剪贴板里的图片贴到屏幕上
-- 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、退出
+- 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、检查更新、退出
+- 更新：「设置 › 关于」里有「检查更新」按钮和「自动更新」开关（默认关）。打开后每天向 pin-shot.pages.dev 查一次新版本，后台下载、校验 SHA-256，等 PinShot 空闲（没在截图、没有贴图、两分钟没动键鼠）时安装并重新启动。安装版通过安装包静默升级（保留原来的选项），免安装版直接替换自己。关着时只有点「检查更新」时才联网。Microsoft Store 版由商店更新，自己不检查。
 
 设置在 `%APPDATA%\PinShot\settings.json`，日志在 `%APPDATA%\PinShot\pinshot.log`。
 

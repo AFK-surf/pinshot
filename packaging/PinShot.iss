@@ -2,11 +2,16 @@
 ; administrator asked for. Installed where scripts\install.ps1 puts it (%LOCALAPPDATA%\Programs\PinShot), a Start menu
 ; shortcut (what Raycast and Windows search find), an entry in Settings > Apps to remove it, started with Windows if
 ; chosen (the same Run value the app's own setting writes). The one running asked to quit first (pinshot.exe --quit).
+;
+; Run by PinShot itself to update (app/update_win.c: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /UPDATE): the
+; choices made as it was first installed are kept as they are now (start with Windows as the app's setting left it, the
+; desktop icon not made again), and PinShot is started again, told it was updated (--updated).
 ; Made by packaging\pack-setup.ps1 (Inno Setup 6: winget install JRSoftware.InnoSetup --scope user). Saved as UTF-8
 ; with a BOM (the Chinese below).
 
+; (AppVer: app/main.mbt's app_version, given by pack-setup.ps1)
 #ifndef AppVer
-  #define AppVer "1.0.1"
+  #error AppVer not given: packaging\pack-setup.ps1 gives it
 #endif
 #ifndef Repo
   #define Repo ".."
@@ -57,17 +62,33 @@ Source: "{#Repo}\out\build\pinshot.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\PinShot"; Filename: "{app}\pinshot.exe"; WorkingDir: "{app}"
-Name: "{userdesktop}\PinShot"; Filename: "{app}\pinshot.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userdesktop}\PinShot"; Filename: "{app}\pinshot.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Check: not IsUpdate
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "PinShot"; ValueData: """{app}\pinshot.exe"""; Tasks: autostart
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "PinShot"; ValueData: """{app}\pinshot.exe"""; Tasks: autostart; Check: not IsUpdate
 ; (removed as it is uninstalled, whether it was set here or by the app's own setting)
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "PinShot"; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\pinshot.exe"; Description: "{cm:Launch}"; Flags: nowait postinstall skipifsilent
+; (an update started from PinShot: started again, silently as it is)
+Filename: "{app}\pinshot.exe"; Parameters: "--updated"; Flags: nowait; Check: IsUpdate
 
 [Code]
+// Whether PinShot runs this installer to update itself (/UPDATE).
+function IsUpdate(): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/UPDATE') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
 // The one running asked to quit (it is replaced or removed), and given a moment to.
 procedure QuitRunning(const Exe: String);
 var
