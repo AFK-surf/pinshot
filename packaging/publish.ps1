@@ -1,6 +1,6 @@
 param([Parameter(Mandatory = $true)][string]$Version)
 # Puts a release's downloads in the R2 bucket `pinshot` (Cloudflare account hisenxpress@gmail.com, wrangler logged in)
-# and the download page (site/) on Cloudflare Pages: https://pinshot.pages.dev. The files: out/setup/
+# and the download page (site/) on Cloudflare Pages: https://pin-shot.pages.dev. The files: out/setup/
 # PinShot-Setup-<Version>.exe (packaging/pack-setup.ps1) and out/build/pinshot.exe, each at v<Version>/ and as the
 # latest (PinShot-Setup.exe, pinshot.exe), and latest.json (the version and sizes the page shows).
 $ErrorActionPreference = 'Stop'
@@ -24,6 +24,6 @@ Put $json "latest.json" "application/json"
 
 Push-Location "$repo\site"
 try {
-  npx wrangler pages deploy --project-name pinshot --branch main --commit-dirty=true
+  npx wrangler pages deploy --project-name pin-shot --branch main --commit-dirty=true
   if ($LASTEXITCODE) { throw "pages deploy failed" }
 } finally { Pop-Location }
