@@ -4,3 +4,4 @@
 build.raw
 deps/
 out/
+.wrangler/
