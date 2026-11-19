@@ -45,8 +45,10 @@ anyway. Windows 10 2004 or later, x64.
   - `Enter`, `Ctrl+C` or double-click in the selection: copy; `Ctrl+S`: save; `Ctrl+T`: pin; `Ctrl+Z` / `Ctrl+Y`:
     undo / redo; `C`: copy the colour under the pointer
   - Right-click: clear the selection, again to quit; `Esc`: quit
-- Pins: drag to move; wheel to zoom; `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has
-  copy, save as, always on top, original size, opacity, close all
+- Pins: drag to move; drag an edge to stretch it that way, a corner to resize it (`Shift`: freely), the wheel to zoom;
+  `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has copy, save as, always on top,
+  rotate left / right 90° (`Ctrl+Shift+R` / `Ctrl+R`), flip horizontally / vertically, actual size (`Ctrl+0`), reset,
+  opacity, close all
 - `Ctrl+2`: pin the image on the clipboard
 - Tray menu: capture, pin clipboard, show / hide all pins, settings, open the screenshots folder, check for updates,
   quit
@@ -122,7 +124,7 @@ packaging/pack-msix.ps1      # the Microsoft Store package
   - 工具条：矩形、椭圆、箭头、直线（按住 Shift 只走水平、垂直或 45°）、画笔、马赛克、序号、文字、撤销 / 重做、贴图、保存、关闭、复制
   - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存；`Ctrl+T` 贴图；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色
   - 右键先取消选区，再右键退出；`Esc` 退出
-- 贴图：拖动移动；滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、置顶、原始大小、不透明度、关闭全部
+- 贴图：拖动移动；拖边框单向拉伸、拖四角等比缩放（按住 `Shift` 自由拉伸）、滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、置顶、向左 / 向右旋转 90°（`Ctrl+Shift+R` / `Ctrl+R`）、水平 / 垂直翻转、原始大小（`Ctrl+0`）、重置、不透明度、关闭全部
 - `Ctrl+2`：把剪贴板里的图片贴到屏幕上
 - 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、检查更新、退出
 - 更新：「设置 › 关于」里有「检查更新」按钮和「自动更新」开关（默认关）。打开后每天向 pin-shot.pages.dev 查一次新版本，后台下载、校验 SHA-256，等 PinShot 空闲（没在截图、没有贴图、两分钟没动键鼠）时安装并重新启动。每个版本都有签名（ECDSA P-256，公钥内置在 PinShot 里）：签名对不上就不下载，即使下载站的文件被人改了，也没法让 PinShot 运行别的程序。更新失败时，当前版本照常运行。安装版通过安装包静默升级（保留原来的选项），免安装版直接替换自己。关着时只有点「检查更新」时才联网。Microsoft Store 版由商店更新，自己不检查。
