@@ -117,7 +117,8 @@ static Shot cap_old[4];        // pictures let go, freed at the timer
 static volatile LONG cap_busy;  // a taking under way (its thread fills cap)
 static int cap_ok;              // the last taking's outcome
 static int cap_x, cap_y, cap_w, cap_h, cap_dpi;
-static double cap_t0, cap_ms;  // when it was asked, how long the taking took
+static double cap_t0, cap_ms, cap_key_lag;  // when it was asked, how long the taking took, how long WM_HOTKEY waited
+static int keep_gpu_warm = 1;               // 1: keep driver pools warm between captures (Instant mode)
 static HWND tray_hwnd;
 static char *win_list;  // the windows on the monitor as it was taken (ps_windows)
 static size_t win_list_len;
@@ -258,17 +259,18 @@ void ps_wgc_timing(double *out);
 void ps_wgc_state(char *out, int n);
 moonbit_bytes_t ps_capture_info(void) {
   if (!cap.bits || cap_busy) return moonbit_make_bytes(0, 0);
-  char s[256];
+  char s[320], lag[48] = {0};
+  if (cap_key_lag >= 10.0) snprintf(lag, sizeof lag, "; key lag %.0f ms", cap_key_lag);
   if (cap.staging) {
     double t[5];
     ps_wgc_timing(t);
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f; hdr white %.2f%s; frame %.1f s old%s", cap_x, cap_y, cap_w,
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f; hdr white %.2f%s; frame %.1f s old%s%s", cap_x, cap_y, cap_w,
              cap_h, cap_dpi, cap_ms, t[0], t[1], t[2] > 0 ? " (copied first)" : "", t[3],
-             t[4] > 0 ? " (session made again)" : "");
+             t[4] > 0 ? " (session made again)" : "", lag);
   } else {
     char st[96];
     ps_wgc_state(st, sizeof st);
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,gdi (%s)", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms, st);
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,gdi (%s%s)", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms, st, lag);
   }
   return ps_text(s);
 }
@@ -518,6 +520,7 @@ static void capture_asked(const char *by) {
     return;
   }
   if (capture_open) return;
+  if (strcmp(by, "key") != 0) cap_key_lag = 0.0;
   if (!cap_begin()) return;
   lstrcpynA(cap_by, by, sizeof cap_by);
   char json[192];
@@ -533,7 +536,10 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   }
   switch (msg) {
     case WM_HOTKEY:
-      if (wp == HK_CAPTURE) capture_asked("key");
+      if (wp == HK_CAPTURE) {
+        cap_key_lag = (double)((DWORD)GetTickCount() - (DWORD)GetMessageTime());
+        capture_asked("key");
+      }
       else if (wp == HK_PIN_CLIP) ps_tell("{\"do\":\"pin-clipboard\"}");
       else if (wp == HK_PINS) ps_tell("{\"do\":\"pins\"}");
       return 0;
@@ -639,6 +645,19 @@ int32_t ps_start(int32_t again) {
     return 0;
   }
   tray_window_made();
+  // (mbui's compiled HLSL shaders cached in %LOCALAPPDATA%\PinShot\shaders so starting or updating PinShot loads them in
+  // ~5 ms instead of compiling for ~3.8 s on the UI thread after shortcuts are registered)
+  if (!_wgetenv(L"MBUI_SHADERS")) {
+    wchar_t local[MAX_PATH] = {0}, app_dir[MAX_PATH * 2] = {0}, sh_dir[MAX_PATH * 2] = {0};
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (n > 0 && n < MAX_PATH - 40) {
+      _snwprintf(app_dir, MAX_PATH * 2 - 1, L"%ls\\PinShot", local);
+      CreateDirectoryW(app_dir, NULL);
+      _snwprintf(sh_dir, MAX_PATH * 2 - 1, L"%ls\\shaders", app_dir);
+      CreateDirectoryW(sh_dir, NULL);
+      _wputenv_s(L"MBUI_SHADERS", sh_dir);
+    }
+  }
   taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
   ChangeWindowMessageFilterEx(tray_hwnd, taskbar_created, MSGFLT_ALLOW, NULL);
   tray_put();
@@ -655,6 +674,7 @@ int32_t ps_start(int32_t again) {
 
 void ps_wgc_set_keep(int keep);
 void ps_set_capture_keep(int32_t keep) {
+  keep_gpu_warm = keep ? 1 : 0;
   if (!wgc_off) ps_wgc_set_keep(keep);
 }
 
@@ -946,11 +966,13 @@ static void gpu_trim_now(void) {
     ID3D11DeviceContext_ClearState(ctx);
     ID3D11DeviceContext_Flush(ctx);
   }
-  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
-  IDXGIDevice3 *xd = NULL;
-  if (dev && SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice3, (void **)&xd))) {
-    IDXGIDevice3_Trim(xd);
-    IDXGIDevice3_Release(xd);
+  if (!keep_gpu_warm) {
+    ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+    IDXGIDevice3 *xd = NULL;
+    if (dev && SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice3, (void **)&xd))) {
+      IDXGIDevice3_Trim(xd);
+      IDXGIDevice3_Release(xd);
+    }
   }
 }
 

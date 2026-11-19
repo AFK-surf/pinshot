@@ -540,8 +540,10 @@ extern "C" void ps_wgc_release(void *taken) {
   t->Release();
   c->ClearState();
   c->Flush();
-  ComPtr<IDXGIDevice3> d3;
-  if (SUCCEEDED(d.As(&d3))) d3->Trim();
+  if (!keep_sessions) {
+    ComPtr<IDXGIDevice3> d3;
+    if (SUCCEEDED(d.As(&d3))) d3->Trim();
+  }
 }
 
 // How the captures stand, for the log: "sessions N; frames A B...; hr 0x..".
