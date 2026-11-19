@@ -15,7 +15,6 @@ enum Tool {
   Mosaic
   MosaicBrush
   Blur
-  Redact
   /// a part in focus: the rest of the picture dimmed round it (all of them one dimming: focus_picture)
   Focus
   Number
@@ -180,7 +179,7 @@ fn new_mark(t : Tool, pts : Array[(Double, Double)]) -> Mark {
 /// A mark that is too small to keep (a click where a drag was meant).
 fn too_small(m : Mark) -> Bool {
   match m.tool {
-    Box | Oval | Mosaic | Blur | Redact | Focus | Arrow | Line => {
+    Box | Oval | Mosaic | Blur | Focus | Arrow | Line => {
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
       (x1 - x0).abs() < 3.0 && (y1 - y0).abs() < 3.0
@@ -268,13 +267,6 @@ fn mark_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
     Mosaic => mosaic_layers(m, k, blur=false)
     Blur => mosaic_layers(m, k, blur=true)
     MosaicBrush => mosaic_brush_layers(m, k)
-    Redact => {
-      let (x0, y0) = m.pts[0]
-      let (x1, y1) = m.pts[m.pts.length() - 1]
-      let x = dmin(x0, x1)
-      let y = dmin(y0, y1)
-      [fill_layer(rect_path(x, y, (x1 - x0).abs(), (y1 - y0).abs()), m.color)]
-    }
     Move | Words | Focus => []
   }
 }
@@ -587,7 +579,7 @@ fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool
       // (how far off its edge, near enough: along the nearer radius)
       (inside && dx * dx + dy * dy <= 1.0) || ((dx * dx + dy * dy).sqrt() - 1.0).abs() * dmin(rx, ry) <= reach
     }
-    Mosaic | Blur | Redact => {
+    Mosaic | Blur => {
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
       let (l, t, r, b) = (dmin(x0, x1), dmin(y0, y1), dmax(x0, x1), dmax(y0, y1))
@@ -686,7 +678,7 @@ fn mark_handles(m : Mark) -> Array[(Int, Int, Double, Double)] {
   let (x1, y1) = m.pts[m.pts.length() - 1]
   match m.tool {
     Line | Arrow => [(0, 0, x0, y0), (1, 1, x1, y1)]
-    Box | Oval | Mosaic | Blur | Redact | Focus => [(0, 0, x0, y0), (1, 0, x1, y0), (1, 1, x1, y1), (0, 1, x0, y1)]
+    Box | Oval | Mosaic | Blur | Focus => [(0, 0, x0, y0), (1, 0, x1, y0), (1, 1, x1, y1), (0, 1, x0, y1)]
     _ => []
   }
 }

@@ -46,7 +46,6 @@ let en_words : Map[String, String] = {
   "像素马赛克（框选打码）": "Pixel mosaic (drag a rectangle)",
   "涂抹马赛克（按住涂抹打码）": "Brush mosaic (paint over text)",
   "模糊遮罩（平滑柔化打码）": "Blur (smooth frosted redaction)",
-  "色块遮盖（纯色彻底遮挡）": "Solid redact (cover completely)",
   "聚焦（框出重点，其余变暗）": "Focus (keep a part bright, dim the rest)",
   "序号": "Number",
   "文字": "Text",

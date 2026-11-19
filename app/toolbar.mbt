@@ -32,7 +32,7 @@ let bar_gap : Double = 3.0
 
 ///|
 /// The current variant remembered for the folded shape button (Box, Oval, Focus), line button (Arrow, Line) and
-/// mosaic button (Mosaic, MosaicBrush, Blur, Redact).
+/// mosaic button (Mosaic, MosaicBrush, Blur).
 let shape_tool : @signals.Signal[Tool] = @signals.signal(Box)
 
 ///|
@@ -60,7 +60,7 @@ fn is_line_tool(t : Tool) -> Bool {
 ///|
 fn is_mosaic_tool(t : Tool) -> Bool {
   match t {
-    Mosaic | MosaicBrush | Blur | Redact => true
+    Mosaic | MosaicBrush | Blur => true
     _ => false
   }
 }
@@ -78,7 +78,6 @@ fn tool_glyph(t : Tool) -> String {
     Mosaic => "mosaic"
     MosaicBrush => "mosaic-brush"
     Blur => "blur"
-    Redact => "redact"
     Number => "number"
     Words => "words"
   }
@@ -97,7 +96,6 @@ fn tool_label(t : Tool) -> String {
     Mosaic => "像素马赛克（框选打码）"
     MosaicBrush => "涂抹马赛克（按住涂抹打码）"
     Blur => "模糊遮罩（平滑柔化打码）"
-    Redact => "色块遮盖（纯色彻底遮挡）"
     Number => "序号"
     Words => "文字"
   }
@@ -114,7 +112,7 @@ let shape_variants : Array[Tool] = [Box, Oval, Focus]
 let line_variants : Array[Tool] = [Arrow, Line]
 
 ///|
-let mosaic_variants : Array[Tool] = [Mosaic, MosaicBrush, Blur, Redact]
+let mosaic_variants : Array[Tool] = [Mosaic, MosaicBrush, Blur]
 
 ///|
 /// 13 buttons on the main bar: 7 tools + rule + 1 undo + rule + 5 actions = 15 items, 14 gaps.
@@ -234,7 +232,7 @@ fn toolbar(stage : @view.View) -> Unit {
         )
         // 4. Pen
         tool_button(bar, "pen", "画笔", fn() { tool.get() == Pen }, fn() { pick_tool(Pen) })
-        // 5. Folded Mosaic/Redact group (Mosaic / MosaicBrush / Blur / Redact)
+        // 5. Folded Mosaic group (Mosaic / MosaicBrush / Blur)
         tool_group_button(
           bar,
           fn() {
@@ -253,11 +251,7 @@ fn toolbar(stage : @view.View) -> Unit {
             if is_mosaic_tool(tool.untracked()) {
               tool.set(Move)
             } else {
-              let m = mosaic_tool.untracked()
-              if m == Redact {
-                color_now.set(0x111214FFL)
-              }
-              tool.set(m)
+              tool.set(mosaic_tool.untracked())
             }
           },
         )
@@ -456,18 +450,33 @@ fn style_row(row : @view.View) -> Unit {
     })
   }
   bar_rule_node(row, shown=in_line)
-  // Mosaic variants: Mosaic, MosaicBrush, Blur, Redact
+  // Mosaic variants: Mosaic, MosaicBrush, Blur (6-key compact bar: 3 modes + 3 sizes, no colour swatches)
   let in_mosaic = fn() { is_mosaic_tool(tool.get()) }
   for which in mosaic_variants {
     sub_tool_button(row, which, in_mosaic, fn(w) {
       mosaic_tool.set(w)
-      if w == Redact {
-        color_now.set(0x111214FFL)
-      }
       tool.set(w)
     })
   }
   bar_rule_node(row, shown=in_mosaic)
+  let has_color = fn() {
+    let t = tool.get()
+    if t != Move {
+      !is_mosaic_tool(t) && t != Focus
+    } else {
+      match selected.get() {
+        Some(id) =>
+          match mark_index(id) {
+            Some(i) => {
+              let mt = marks.get()[i].tool
+              !is_mosaic_tool(mt) && mt != Focus
+            }
+            None => true
+          }
+        None => true
+      }
+    }
+  }
   for s in 0..<3 {
     row.box(fn(b) {
       b
@@ -500,10 +509,11 @@ fn style_row(row : @view.View) -> Unit {
     })
     |> ignore
   }
-  bar_rule_node(row)
+  bar_rule_node(row, shown=has_color)
   for c in colors {
     row.box(fn(b) {
       b
+      .laid_nowhere(By(fn() { !has_color() }))
       .width(Is(Some(28.0)))
       .height(Is(Some(28.0)))
       .radius(Is(style_btn_corner))
@@ -585,15 +595,6 @@ fn glyph(name : String) -> @pixels.Vector {
           fill_layer(circle_path(9.0, 9.0, 6.2), 0x00000040L),
           stroke_layer(circle_path(9.0, 9.0, 6.2), 0x000000FFL, 1.5),
           fill_layer(circle_path(9.0, 9.0, 3.0), 0x0000008CL),
-        ],
-      }
-    "redact" =>
-      {
-        w: 18.0,
-        h: 18.0,
-        layers: [
-          stroke_layer("M3.2 4h7.5M7.3 14h7.5", 0x00000099L, 1.5),
-          fill_layer("M2.5 6.4h13v5.2h-13z", 0x000000FFL),
         ],
       }
     "number" =>

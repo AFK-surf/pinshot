@@ -41,7 +41,7 @@ anyway. Windows 10 2004 or later, x64.
   - Click without moving: select the window under the pointer; drag: select an area; drag edges and corners: resize;
     arrow keys: move the selection 1 px (Shift: 10 px)
   - Toolbar: shapes (rectangle / ellipse / focus), lines (arrow / line; Shift: horizontal, vertical or 45°), pen,
-    mosaic & redaction (pixel mosaic, brush mosaic, blur, solid redact), numbered marker, text, undo, extract text
+    mosaic & redaction (pixel mosaic, brush mosaic, blur), numbered marker, text, undo, extract text
     (`Ctrl+O`), pin, save, close, copy
   - `Enter`, `Ctrl+C` or double-click in the selection: copy; `Ctrl+S`: save (PNG lossless, JPEG high or JPEG compact);
     `Ctrl+T`: pin; `Ctrl+O`: extract text; `Ctrl+Z` / `Ctrl+Y`: undo / redo; `C`: copy the colour under the pointer
@@ -125,7 +125,7 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 
 - `Ctrl+Alt+A`（或点托盘图标）：冻结鼠标所在的显示器进入截图（设置里可换快捷键）
   - 不动鼠标点一下选中窗口；拖动框选；拖边和角调整大小；方向键移动 1 像素（Shift 10 像素）
-  - 工具条：形状（矩形 / 椭圆 / 聚焦）、线条（箭头 / 直线，按住 Shift 只走水平、垂直或 45°）、画笔、打码（像素框选 / 涂抹马赛克 / 模糊遮罩 / 色块遮盖）、序号、文字、撤销、提取文字（`Ctrl+O`）、贴图、保存、关闭、复制
+  - 工具条：形状（矩形 / 椭圆 / 聚焦）、线条（箭头 / 直线，按住 Shift 只走水平、垂直或 45°）、画笔、打码（像素框选 / 涂抹马赛克 / 模糊遮罩）、序号、文字、撤销、提取文字（`Ctrl+O`）、贴图、保存、关闭、复制
   - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存（设置里可选 PNG 无损 / JPEG 高清 / JPEG 小体积）；`Ctrl+T` 贴图；`Ctrl+O` 提取文字；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色
   - 右键先取消选区，再右键退出；`Esc` 退出
 - 贴图：拖动移动；拖边框单向拉伸、拖四角等比缩放（按住 `Shift` 自由拉伸）、滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、提取文字、置顶、向左 / 向右旋转 90°（`Ctrl+Shift+R` / `Ctrl+R`）、水平 / 垂直翻转、重置（`Ctrl+0`）、不透明度、关闭全部

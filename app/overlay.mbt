@@ -903,7 +903,7 @@ fn picked_picture() -> @pixels.Vector? {
   let k = mon_scale.get()
   let layers : Array[@pixels.VectorPath] = []
   let handles = mark_handles(m)
-  if handles.is_empty() || m.tool == Mosaic || m.tool == Blur || m.tool == Redact {
+  if handles.is_empty() || m.tool == Mosaic || m.tool == Blur {
     let (x0, y0, x1, y1) = mark_box(m, k)
     let pad = 4.0 * k
     layers.push(stroke_layer(rect_path(x0 - pad, y0 - pad, x1 - x0 + pad * 2.0, y1 - y0 + pad * 2.0), accent, k))
