@@ -18,3 +18,11 @@ jobs:
         with:
           name: PinShot-mac-${{ runner.arch }}
           path: out/build/PinShot-mac.zip
+      # (a tag's build goes on its release too, once the release is there: gh release create comes first)
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 20); do gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break; sleep 30; done
+          gh release upload "$GITHUB_REF_NAME" out/build/PinShot-mac.zip --clobber

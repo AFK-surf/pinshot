@@ -233,8 +233,8 @@
       <h1>PinShot</h1>
     </div>
     <p class="subtitle">
-      <span data-l="zh">Windows 截图工具：截下来，画上去，钉在屏幕上</span>
-      <span data-l="en">Screenshots for Windows: capture, mark up, pin to the screen</span>
+      <span data-l="zh">Windows 和 macOS 截图工具：截下来，画上去，钉在屏幕上</span>
+      <span data-l="en">Screenshots for Windows and macOS: capture, mark up, pin to the screen</span>
     </p>
 
     <div class="actions">
@@ -249,10 +249,16 @@
         <span data-l="zh">免安装版</span><span data-l="en">Portable</span>
         <span class="meta">pinshot.exe · <span class="size-exe">4.8 MB</span></span>
       </a>
+      <a class="btn btn-secondary" href="/dl/PinShot-mac.zip">
+        <span>macOS</span>
+        <span class="meta"><span data-l="zh">Apple 芯片 · macOS 14+</span><span data-l="en">Apple silicon · macOS 14+</span> · <span class="size-mac">2.8 MB</span></span>
+      </a>
     </div>
 
     <p class="fine" data-l="zh">免费、开源 (MIT)。若 Windows 提示「已保护你的电脑」，点「更多信息 › 仍要运行」。</p>
     <p class="fine" data-l="en">Free &amp; open source (MIT). If Windows says it protected your PC, choose More info › Run anyway.</p>
+    <p class="fine" data-l="zh">Mac 版没有经过 Apple 公证：第一次打开被拦下时，到「系统设置 › 隐私与安全性」底部点「仍要打开」；截图前在「系统设置 › 隐私与安全性 › 录屏与系统录音」里允许 PinShot。</p>
+    <p class="fine" data-l="en">The Mac app is not notarized: if macOS blocks it the first time, go to System Settings › Privacy &amp; Security and click Open Anyway. Allow it under System Settings › Privacy &amp; Security › Screen &amp; System Audio Recording before capturing.</p>
   </header>
 
   <figure class="showcase" id="showcase-fig">
@@ -562,6 +568,7 @@
       var mb = function (n) { return (n / 1048576).toFixed(1) + " MB"; };
       document.querySelectorAll(".ver").forEach(function (e) { e.textContent = j.version; });
       if (j.setup) document.querySelectorAll(".size-setup").forEach(function (e) { e.textContent = mb(j.setup); });
+      if (j.mac) document.querySelectorAll(".size-mac").forEach(function (e) { e.textContent = mb(j.mac); });
       if (j.exe) document.querySelectorAll(".size-exe").forEach(function (e) { e.textContent = mb(j.exe); });
     }).catch(function () {});
   })();

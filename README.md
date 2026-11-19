@@ -10,7 +10,7 @@ native layer in `app/` for Windows and macOS.
 
 ## macOS
 
-Requires macOS 14 or later. Unzip `PinShot-mac.zip`, move `PinShot.app` to Applications, and open it.
+Requires macOS 14 or later on Apple silicon. Download `PinShot-mac.zip` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/motion-space/pinshot/releases/latest)), unzip it, move `PinShot.app` to Applications, and open it.
 Click the camera in the menu bar or press Control–Option–A to capture. Control–2 pins a clipboard image.
 Right-click the camera for settings and quit. In a selection, use ⌘C to copy, ⌘S to save, ⌘T to pin,
 and ⌘Z / ⇧⌘Z to undo or redo.
@@ -112,7 +112,7 @@ PinShot is free. If it helps you, you can support it on the [sponsor page](https
 
 ### macOS
 
-需要 macOS 14 或更新版本。解压 `PinShot-mac.zip`，把 `PinShot.app` 移到「应用程序」后打开。
+需要 macOS 14 或更新版本、Apple 芯片。在 [pin-shot.pages.dev](https://pin-shot.pages.dev)（或 [Releases](https://github.com/motion-space/pinshot/releases/latest)）下载 `PinShot-mac.zip`，解压，把 `PinShot.app` 移到「应用程序」后打开。
 点菜单栏的相机或按 ⌃⌥A 截图，⌃2 贴剪贴板图片，右键相机打开设置或退出。选区内支持 ⌘C 复制、⌘S 保存、⌘T 贴图、⌘Z 撤销和 ⇧⌘Z 重做。
 
 首次截图时，在「系统设置 → 隐私与安全性 → 屏幕与系统音频录制」（部分系统显示为「屏幕录制」）中允许 PinShot，然后退出并重新打开应用。列表为空时，点「＋」选择当前的 `PinShot.app`。重新构建后，系统可能需要对新版重新授权。设置与日志在 `~/Library/Application Support/PinShot/`。
