@@ -25,12 +25,11 @@ fn apply_language(choice : Int) -> Unit {
 ///|
 /// `zh` in the language in force: its English where English is (itself where none is written).
 fn tr(zh : String) -> String {
-  if !english.get() {
-    return zh
-  }
-  match en_words.get(zh) {
-    Some(en) => en
-    None => zh
+  let words = if english.get() { en_words.get(zh).unwrap_or(zh) } else { zh }
+  if @ui.keys_system() == 0 {
+    words.replace_all(old="Ctrl+Y", new="⇧⌘Z").replace_all(old="Ctrl+", new="⌘")
+  } else {
+    words
   }
 }
 
@@ -93,7 +92,8 @@ let en_words : Map[String, String] = {
   "语言": "Language",
   "跟随系统": "System",
   "复制、保存、贴图时播放快门音效": "Play a shutter sound when copying, saving or pinning",
-  "开机时启动 PinShot": "Start PinShot when Windows starts",
+  "开机时启动 PinShot": "Start PinShot at login",
+  "截图失败，请重试。": "Capture failed. Please try again.",
   "关于": "About",
   "版本": "Version",
   "免费、无广告，不联网、不收集任何数据。": "Free, no ads. Works offline and collects no data.",

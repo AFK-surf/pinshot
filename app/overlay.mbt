@@ -89,7 +89,7 @@ fn overlay_cursor() -> @view.Cursor? {
       }
       match handle_at(r, x, y) {
         Some((0, 0)) =>
-          if tool.get() == Move || mark_at(x, y, false) is Some(_) {
+          if tool.get() == Move || mark_at(x, y) is Some(_) {
             Some(Grab)
           } else {
             Some(Crosshair)
@@ -169,7 +169,7 @@ fn overlay_first_frame() -> Unit {
   }
   if started_with_settings.val {
     open_settings()
-  } else if !capturing.untracked() {
+  } else if @hostapi.platform() != 0 && !capturing.untracked() {
     // (none when the person's own is open already: a shortcut pressed as the run started, shown as its first frame)
     // (one capture taken out of sight as it starts, all of it as one is (the screen taken, the overlay at the
     // monitor's size, the picture a texture, a frame drawn) and let go: the first the person takes is as quick as
@@ -255,7 +255,7 @@ fn overlay_window(root : @view.View) -> Unit {
       |> ignore
     })
     |> ignore
-    marks_layer(stage, editing=true)
+    marks_layer(stage)
     // the veil, the frame, the handles
     stage.box(fn(c) { c.over(Is(true)).presses(Is(false)).picture(By(chrome_picture)) |> ignore }) |> ignore
     size_label(stage)
@@ -266,46 +266,38 @@ fn overlay_window(root : @view.View) -> Unit {
 }
 
 ///|
-/// The marks (those made, and the one being drawn), each its own node over all of the picture, in the monitor's
-/// pixels: one made is drawn once, not again as the next is drawn. `editing`: the words being written too.
-fn marks_layer(parent : @view.View, editing~ : Bool) -> Unit {
+fn marks_layer(parent : @view.View) -> Unit {
   parent.box(fn(layer) {
     layer.over(Is(true)) |> ignore
-    // (the focus marks' dimming under the others: an arrow drawn over the dimmed part stays bright)
-    layer.box(fn(f) { f.over(Is(true)).presses(Is(false)).picture(By(focus_picture)) |> ignore }) |> ignore
-    layer.each(fn() { marks.get() }, fn(m) { m.id }, fn(row, m) {
-      row.over(Is(true)).presses(Is(false)) |> ignore
-      mark_node(row, @signals.untracked(fn() { m.get() }))
-    }, at_once=true)
-    layer.box(fn(d) {
-      d.over(Is(true)).presses(Is(false)) |> ignore
-      d.pick(fn() { draft.get() }, fn(b, m) {
-        b.over(Is(true)) |> ignore
-        match m {
-          Some(m) => mark_node(b, m)
-          None => ()
-        }
-      }, at_once=true)
+    layer.reacts(fn() { (ordered_marks(), sel.get(), frozen_key.get()) }, fn(input) {
+      let (items, area, key) = input
+      compose_marks(items, area, key, "preview", fn(result) {
+        if result is Some(scene) { visible_marks.set(scene) }
+      })
     })
-    |> ignore
-    if editing {
-      layer.box(fn(h) { h.over(Is(true)).presses(Is(false)).picture(By(picked_picture)) |> ignore }) |> ignore
-      words_editor(layer)
-    }
-  })
-  |> ignore
+    layer.each(fn() { visible_marks.get() }, fn(item) { item.mark.id }, fn(row, item) {
+      row.over(Is(true)).presses(Is(false)) |> ignore
+      row.pick(fn() { item.get() }, fn(b, painted) {
+        b.over(Is(true)) |> ignore
+        mark_node(b, painted)
+      }, at_once=true)
+    }, at_once=true)
+    layer.box(fn(h) { h.over(Is(true)).presses(Is(false)).picture(By(picked_picture)) |> ignore }) |> ignore
+    words_editor(layer)
+  }) |> ignore
 }
 
 ///|
 /// One mark drawn in `b` (over all of the picture).
-fn mark_node(b : @view.View, m : Mark) -> Unit {
+fn mark_node(b : @view.View, painted : PaintedMark) -> Unit {
+  let m = painted.mark
   let k = @signals.untracked(fn() { mon_scale.get() })
   let w = mon.val.w.to_double()
   let h = mon.val.h.to_double()
   match m.tool {
     Words => words_mark(b, m, k)
     _ => {
-      let layers = mark_layers(m, k)
+      let layers = match painted.layers { Some(layers) => layers; None => mark_layers(m, k) }
       b.picture(Is(Some({ w, h, layers }))) |> ignore
       if m.tool == Number {
         let (cx, cy) = m.pts[0]
@@ -440,22 +432,11 @@ fn drop_held() -> Unit {
 }
 
 ///|
-/// Mark `m` dragged by (`dx`, `dy`) pixels: a mosaic by whole squares (it keeps to their grid).
-fn dragged(m : Mark, dx : Double, dy : Double) -> Mark {
-  if m.tool == Mosaic {
-    let cell = dmax(2.0, (mosaic_pt(m.size) * mon_scale.untracked()).round())
-    moved_by(m, (dx / cell).round() * cell, (dy / cell).round() * cell)
-  } else {
-    moved_by(m, dx, dy)
-  }
-}
-
-///|
 /// Where mark `m` held by (hx, hy) (-1: whole) from (x0, y0) is with the pointer at (x, y): a line's or an arrow's end
 /// kept straight with Shift held.
 fn held_to(m : Mark, hx : Int, hy : Int, x0 : Double, y0 : Double, x : Double, y : Double) -> Mark {
   if hx < 0 {
-    return dragged(m, x - x0, y - y0)
+    return moved_by(m, x - x0, y - y0)
   }
   let (x, y) = if (m.tool == Line || m.tool == Arrow) && ps_shift_down() == 1 {
     let (ox, oy) = m.pts[if hx == 0 { m.pts.length() - 1 } else { 0 }]
@@ -513,7 +494,7 @@ fn press_down(x : Double, y : Double) -> Unit {
     Some(r) =>
       match handle_at(r, x, y) {
         Some((0, 0)) =>
-          match mark_at(x, y, tool.untracked() == Move) {
+          match mark_at(x, y) {
             // (on a mark: it is picked and dragged, whatever tool is held)
             Some(i) => take_up(i, x, y, -1, -1)
             None => {
@@ -523,13 +504,7 @@ fn press_down(x : Double, y : Double) -> Unit {
             Number | Words => hand.set(Marking)
             t => {
               hand.set(Marking)
-              let start = if t == Mosaic {
-                let cell = dmax(2.0, (mosaic_pt(size_now.untracked()) * mon_scale.untracked()).round())
-                ((x / cell).floor() * cell, (y / cell).floor() * cell)
-              } else {
-                (x, y)
-              }
-              draft.set(Some(new_mark(t, [start, start])))
+              draft.set(Some(new_mark(t, [(x, y), (x, y)])))
             }
           }
             }
@@ -577,23 +552,6 @@ fn press_moved(x : Double, y : Double) -> Unit {
       match draft.untracked() {
         Some(m) => {
           let (cx, cy) = clamp_to_sel(x, y)
-          // (a mosaic's corner on its squares' grid: drawn again only as it crosses into another square)
-          let (cx, cy) = if m.tool == Mosaic {
-            let cell = dmax(2.0, (mosaic_pt(m.size) * mon_scale.untracked()).round())
-            let snap = fn(v : Double, from : Double) {
-              if v >= from {
-                (v / cell).ceil() * cell
-              } else {
-                (v / cell).floor() * cell
-              }
-            }
-            (snap(cx, m.pts[0].0), snap(cy, m.pts[0].1))
-          } else {
-            (cx, cy)
-          }
-          if m.tool == Mosaic && m.pts[m.pts.length() - 1] == (cx, cy) {
-            return
-          }
           // (a line or an arrow with Shift held: straight across, up and down, or at 45 degrees)
           let (cx, cy) = if (m.tool == Line || m.tool == Arrow) && ps_shift_down() == 1 {
             let (sx, sy) = snap45(m.pts[0].0, m.pts[0].1, cx, cy)
@@ -699,8 +657,13 @@ fn press_up(x : Double, y : Double) -> Unit {
           match draft.untracked() {
             Some(m) => {
               draft.set(None)
-              if !too_small(m) {
-                add_mark(m)
+              let finished = if m.tool == Mosaic {
+                { ..m, pts: [m.pts[0], clamp_to_sel(x, y)] }
+              } else {
+                m
+              }
+              if !too_small(finished) {
+                add_mark(finished)
               }
             }
             None => ()
@@ -740,7 +703,7 @@ fn overlay_keys() -> @view.Keymap {
     { keys: [{ code, mods }], action, when: Always }
   }
   let ch = fn(c : Char, action : String, mods : Int) { k(@ui.key_of_char(c), action, mods) }
-  let ctrl = @ui.mod_ctrl
+  let ctrl = shortcut_mod()
   let shift = @ui.mod_shift_key
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
@@ -749,6 +712,7 @@ fn overlay_keys() -> @view.Keymap {
     k(@ui.key_code_backspace, "delete", 0),
     k(@ui.key_code_enter, "copy", 0),
     ch('c', "copy", ctrl),
+    k(@ui.key_code_copy, "copy", ctrl),
     ch('s', "save", ctrl),
     ch('t', "pin", ctrl),
     ch('z', "undo", ctrl),
@@ -866,19 +830,17 @@ fn picked_picture() -> @pixels.Vector? {
   // alone showing nothing over an even ground)
   if hand.get() is Marking && draft.get() is Some(d) && d.tool == Mosaic {
     let k = mon_scale.get()
-    let (x0, y0) = d.pts[0]
-    let (x1, y1) = d.pts[d.pts.length() - 1]
-    let (x, y, w, h) = (dmin(x0, x1), dmin(y0, y1), (x1 - x0).abs(), (y1 - y0).abs())
-    if w < 1.0 || h < 1.0 {
+    let r = mark_rect(d)
+    if r.w == 0 || r.h == 0 {
       return None
     }
-    let t = dmax(1.0, k.round())
+    let path = rect_path(r.x.to_double(), r.y.to_double(), r.w.to_double(), r.h.to_double())
     return Some({
       w: mon.val.w.to_double(),
       h: mon.val.h.to_double(),
       layers: [
-        fill_layer(rect_path(x, y, w, h), 0x2F9BFF14L),
-        fill_layer(rect_path(x, y, w, h) + rect_path(x + t, y + t, w - t * 2.0, h - t * 2.0), accent, even_odd=true),
+        fill_layer(path, 0x2F9BFF14L),
+        stroke_layer(path, accent, k),
       ],
     })
   }
@@ -894,7 +856,10 @@ fn picked_picture() -> @pixels.Vector? {
   let k = mon_scale.get()
   let layers : Array[@pixels.VectorPath] = []
   let handles = mark_handles(m)
-  if handles.is_empty() || m.tool == Mosaic {
+  if m.tool == Mosaic {
+    let r = mark_rect(m)
+    layers.push(stroke_layer(rect_path(r.x.to_double(), r.y.to_double(), r.w.to_double(), r.h.to_double()), accent, k))
+  } else if handles.is_empty() {
     let (x0, y0, x1, y1) = mark_box(m, k)
     let pad = 4.0 * k
     layers.push(stroke_layer(rect_path(x0 - pad, y0 - pad, x1 - x0 + pad * 2.0, y1 - y0 + pad * 2.0), accent, k))

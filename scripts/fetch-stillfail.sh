@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMIT="$(tr -d ' \r\n' < "$ROOT/stillfail.lock")"
 DIR="$ROOT/deps/stillfail"
 REPO="${STILLFAIL_REPO:-https://github.com/AFK-surf/still.fail.git}"
-farview() { [ ! -f "$DIR/apps/mbui/scripts/farview.sh" ] || sh "$DIR/apps/mbui/scripts/farview.sh"; }
+farview() { [ "${1:-}" = library ] || [ ! -f "$DIR/apps/mbui/scripts/farview.sh" ] || sh "$DIR/apps/mbui/scripts/farview.sh"; }
 # PinShot's patches to it (patches/*.patch, each saying why at its head), applied once over that commit
 patched() {
   for p in "$ROOT"/patches/*.patch; do
@@ -22,7 +22,10 @@ patched() {
   done
 }
 if [ -d "$DIR/.git" ] && [ "$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" = "$COMMIT" ]; then
-  farview
+  if [ "${1:-}" != library ] && [ ! -f "$DIR/apps/mbui/moon.mod" ]; then
+    git -C "$DIR" sparse-checkout add apps/mbui/
+  fi
+  farview "$@"
   patched
   exit 0
 fi
@@ -31,10 +34,12 @@ if [ ! -d "$DIR/.git" ]; then
   git -C "$DIR" init -q
   git -C "$DIR" remote add origin "$REPO"
 fi
-git -C "$DIR" sparse-checkout set --no-cone apps/mbui/ libs/mbui/
+parts=(libs/mbui/)
+[ "${1:-}" = library ] || parts+=(apps/mbui/)
+git -C "$DIR" sparse-checkout set --no-cone "${parts[@]}"
 git -C "$DIR" remote set-url origin "$REPO"
 git -C "$DIR" fetch -q --depth 1 --filter=blob:none origin "$COMMIT"
 git -C "$DIR" -c advice.detachedHead=false checkout -q --force FETCH_HEAD
-farview
+farview "$@"
 patched
 echo "fetch-stillfail.sh: still.fail $COMMIT"

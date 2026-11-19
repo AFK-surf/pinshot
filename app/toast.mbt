@@ -8,8 +8,8 @@ let toast_wid : Ref[Int] = Ref(0)
 let toast_text : @signals.Signal[String] = @signals.signal("")
 
 ///|
-/// When it goes (the tree's clock): a word said again while one is up keeps it up longer.
-let toast_until : Ref[Double] = Ref(0.0)
+/// A repeated message extends the lifetime of the existing window.
+let toast_generation : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 let toast_w : Double = 200.0
@@ -21,7 +21,7 @@ let toast_h : Double = 36.0
 /// `text` said by the pointer for a moment.
 fn toast(text : String) -> Unit {
   toast_text.set(text)
-  toast_until.val = now() + 1600.0
+  toast_generation.set(toast_generation.untracked() + 1)
   if toast_wid.val == 0 {
     let wid = @ui.window_open_here("toast")
     if wid <= 0 {
@@ -34,28 +34,19 @@ fn toast(text : String) -> Unit {
   }
   ps_toast_place(toast_wid.val, toast_w.to_int(), toast_h.to_int())
   log("toast \{toast_wid.val}: \{text}")
-  toast_check(1700.0)
-}
-
-///|
-/// The word let go once its moment is over.
-fn toast_check(after : Double) -> Unit {
-  match overlay_root.val {
-    Some(r) =>
-      r.at_moment(now() + after, fn() {
-        if toast_wid.val != 0 && now() >= toast_until.val {
-          let wid = toast_wid.val
-          toast_wid.val = 0
-          close_window(wid)
-        }
-      }, later=true)
-      |> ignore
-    None => ()
-  }
 }
 
 ///|
 fn toast_window(root : @view.View) -> Unit {
+  root.reacts(fn() { toast_generation.get() }, fn(generation) {
+    root.at_moment(root.cause_at() + 1600.0, fn() {
+      if toast_wid.val != 0 && generation == toast_generation.untracked() {
+        let wid = toast_wid.val
+        toast_wid.val = 0
+        close_window(wid)
+      }
+    }, later=true) |> ignore
+  })
   root.presses(Is(false)) |> ignore
   // (the window's own ground is not drawn: a layer over all of it, the words in its middle)
   root.box(fn(g) {

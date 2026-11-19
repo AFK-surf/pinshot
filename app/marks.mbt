@@ -302,15 +302,17 @@ fn arrow_path(a : (Double, Double), b : (Double, Double), w : Double) -> String 
 }
 
 ///|
-/// A mosaic over the rectangle between its two points: squares `mosaic_pt` points across, each the mean colour of the
-/// picture under it; a square's run of one colour along a row drawn as one.
-fn mosaic_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
+fn mark_rect(m : Mark) -> Rect {
   let (x0, y0) = m.pts[0]
   let (x1, y1) = m.pts[m.pts.length() - 1]
-  let r = rect_between(x0.round().to_int(), y0.round().to_int(), x1.round().to_int(), y1.round().to_int()).within(
-    mon.val.w,
-    mon.val.h,
-  )
+  rect_between(x0.round().to_int(), y0.round().to_int(), x1.round().to_int(), y1.round().to_int())
+}
+
+///|
+/// A mosaic over the rectangle between its two points: squares `mosaic_pt` points across, each the mean colour of the
+/// picture under it; a square's run of one colour along a row drawn as one.
+fn mosaic_layers(m : Mark, k : Double, sample? : (Int, Int, Int) -> Int = mean_color) -> Array[@pixels.VectorPath] {
+  let r = mark_rect(m).within(mon.val.w, mon.val.h)
   guard r is Some(r) else { return [] }
   let cell = dmax(2.0, (mosaic_pt(m.size) * k).round()).to_int()
   // (squares on the monitor's grid of them, so one dragged further keeps the squares it had)
@@ -324,7 +326,6 @@ fn mosaic_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
     let mut run_x = 0
     let mut run_n = 0
     let cy = gy * cell
-    let ch = clampi(r.bottom(), 0, mon.val.h) - cy
     let top = clampi(cy, r.y, r.bottom())
     let bottom = clampi(cy + cell, r.y, r.bottom())
     let flush = fn(c : Int, x : Int, n : Int) {
@@ -342,9 +343,8 @@ fn mosaic_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
         sb.write_string(rect_path(left.to_double(), top.to_double(), (right - left).to_double(), (bottom - top).to_double()))
       }
     }
-    ignore(ch)
     for gx in gx0..<gx1 {
-      let c = mean_color(gx * cell, cy, cell)
+      let c = sample(gx * cell, cy, cell)
       if c == run_color {
         run_n += 1
       } else {
@@ -515,13 +515,22 @@ fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool
 }
 
 ///|
-/// Which of the marks is under the point (pixels), the one drawn last first; None none. (Read as a signal: what is
-/// under the pointer changes as marks are.)
-fn mark_at(x : Double, y : Double, inside : Bool) -> Int? {
+/// A selected area can be dragged from inside while its drawing tool is active.
+/// Otherwise hit-test marks in paint order, front to back.
+fn mark_at(x : Double, y : Double) -> Int? {
   let k = mon_scale.untracked()
   let ms = marks.get()
+  let active = tool.get()
+  match active {
+    Box | Oval | Mosaic | Focus =>
+      if selected.get() is Some(id) && mark_index(id) is Some(i) &&
+        ms[i].tool == active && mark_hit(ms[i], x, y, k, true) {
+        return Some(i)
+      }
+    _ => ()
+  }
   for i = ms.length() - 1; i >= 0; i = i - 1 {
-    if mark_hit(ms[i], x, y, k, inside) {
+    if mark_hit(ms[i], x, y, k, active == Move) {
       return Some(i)
     }
   }
@@ -541,7 +550,8 @@ test "mark hit" {
   assert_false(mark_hit(line, 50.0, 30.0, 1.0, false))
   let box = { ..line, tool: Box, pts: [(0.0, 0.0), (100.0, 100.0)] }
   assert_true(mark_hit(box, 100.0, 50.0, 1.0, false))
-  assert_false(mark_hit(box, 50.0, 50.0, 1.0, true))
+  assert_false(mark_hit(box, 50.0, 50.0, 1.0, false))
+  assert_true(mark_hit(box, 50.0, 50.0, 1.0, true))
   let oval = { ..line, tool: Oval, pts: [(0.0, 0.0), (100.0, 50.0)] }
   assert_true(mark_hit(oval, 50.0, 1.0, 1.0, false))
   assert_false(mark_hit(oval, 50.0, 25.0, 1.0, false))
@@ -692,32 +702,44 @@ fn mark_box(m : Mark, k : Double) -> (Double, Double, Double, Double) {
 }
 
 ///|
-/// The dimming of the focus marks (the made ones and the one being drawn): the part picked (else the whole monitor)
-/// darkened but where each is, in the monitor's pixels; None where there are none.
-fn focus_picture() -> @pixels.Vector? {
-  let parts : Array[Mark] = marks.get().filter(fn(m) { m.tool == Focus })
-  match draft.get() {
-    Some(d) if d.tool == Focus => parts.push(d)
-    _ => ()
-  }
-  if parts.is_empty() {
-    return None
-  }
-  let w = mon.val.w.to_double()
-  let h = mon.val.h.to_double()
-  let (ox, oy, ow, oh) = match sel.get() {
-    Some(r) => (r.x.to_double(), r.y.to_double(), r.w.to_double(), r.h.to_double())
-    None => (0.0, 0.0, w, h)
-  }
-  // (the part picked one way round, each focus the other: what is in a focus not dimmed, nonzero)
-  let sb = StringBuilder()
-  sb.write_string(rect_path(ox, oy, ow, oh))
+/// Shade the selection outside the union of all focus rectangles. Disjoint strips keep
+/// overlapping focus areas clear and apply the translucent fill exactly once.
+fn focus_layers(parts : Array[Mark], area : Rect?) -> Array[@pixels.VectorPath] {
+  let r = area.unwrap_or({ x: 0, y: 0, w: mon.val.w, h: mon.val.h })
+  let rects : Array[Rect] = []
+  let edges = [r.x, r.right()]
   for m in parts {
-    let (x0, y0) = m.pts[0]
-    let (x1, y1) = m.pts[m.pts.length() - 1]
-    let (x, y) = (dmin(x0, x1), dmin(y0, y1))
-    let (fw, fh) = ((x1 - x0).abs(), (y1 - y0).abs())
-    sb.write_string("M\{num(x)} \{num(y)}v\{num(fh)}h\{num(fw)}v\{num(-fh)}z")
+    let box = mark_rect(m)
+    let left = clampi(box.x, r.x, r.right())
+    let right = clampi(box.right(), r.x, r.right())
+    let top = clampi(box.y, r.y, r.bottom())
+    let bottom = clampi(box.bottom(), r.y, r.bottom())
+    if right > left && bottom > top {
+      rects.push({ x: left, y: top, w: right - left, h: bottom - top })
+      edges.push(left)
+      edges.push(right)
+    }
   }
-  Some({ w, h, layers: [fill_layer(sb.to_string(), 0x0000008CL)] })
+  edges.sort()
+  rects.sort_by_key(fn(box) { box.y })
+  let path = StringBuilder()
+  for i in 1..<edges.length() {
+    let left = edges[i - 1]
+    let right = edges[i]
+    if left == right { continue }
+    let shade = fn(top : Int, bottom : Int) {
+      if top < bottom {
+        path.write_string(rect_path(left.to_double(), top.to_double(), (right - left).to_double(), (bottom - top).to_double()))
+      }
+    }
+    let mut y = r.y
+    for box in rects {
+      if box.x <= left && box.right() >= right {
+        shade(y, box.y)
+        if box.bottom() > y { y = box.bottom() }
+      }
+    }
+    shade(y, r.bottom())
+  }
+  [fill_layer(path.to_string(), 0x0000008CL)]
 }
