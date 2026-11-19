@@ -213,16 +213,20 @@ fn close_capture() -> Unit {
   // buffers and all, let go of while nothing is captured)
   ps_cloak(0, 1)
   ps_place(0, mon.val.x, mon.val.y, 16, 16, 0, 0)
-  match overlay_root.val {
-    Some(r) =>
-      r.at_moment(r.cause_at() + 120.0, fn() {
-        if !capturing.untracked() {
-          ps_hide(0)
-          ps_gpu_flush()
-        }
-      }, later=true)
-      |> ignore
-    None => ps_hide(0)
+  if @hostapi.platform() == 0 {
+    ps_hide(0)
+  } else {
+    match overlay_root.val {
+      Some(r) =>
+        r.at_moment(r.cause_at() + 120.0, fn() {
+          if !capturing.untracked() {
+            ps_hide(0)
+            ps_gpu_flush()
+          }
+        }, later=true)
+        |> ignore
+      None => ps_hide(0)
+    }
   }
   let key = frozen_key.untracked()
   @signals.start_batch()
@@ -244,6 +248,7 @@ fn close_capture() -> Unit {
 ///|
 /// The memory the capture held given back to the system a moment after it closed (its decode let go by then).
 fn trim_soon() -> Unit {
+  if @hostapi.platform() == 0 { return }
   match overlay_root.val {
     Some(r) => r.at_moment(now() + 300.0, fn() { ps_gpu_flush() }, later=true) |> ignore
     None => ps_gpu_flush()

@@ -93,6 +93,7 @@ fn told(json : String, bytes : Bytes?) -> Unit {
       prepare_capture(n("x").to_int(), n("y").to_int(), n("w").to_int(), n("h").to_int(), n("dpi"))
     }
     "capture" => if capturing.untracked() { capture_taken() }
+    "capture-failed" => toast(tr("截图失败，请重试。"))
     "pin-clipboard" => pin_clipboard()
     "tick" =>
       match o.get("wid") {
@@ -152,13 +153,13 @@ fn bench() -> Unit {
     ignore(b)
     ps_capture_release()
   }
+  ps_capture_now() |> ignore
   let t1 = ps_now_ms()
   let mut n = 0
   for _ in 0..<10 {
     n = parse_windows(text_of(ps_windows())).length()
   }
   let wins = (ps_now_ms() - t1) / 10.0
-  ps_capture_now() |> ignore
   println("bench: screen \{text_of(ps_capture_info())}")
   println("bench: take+hand over (ms): " + times.map(num).join(", ").to_string())
   println("bench: windows listed: \{n} in \{num(wins)} ms")

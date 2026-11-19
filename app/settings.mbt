@@ -27,17 +27,16 @@ struct Settings {
 /// The shortcuts offered: their words, and Windows' modifiers (Alt 1, Ctrl 2, Shift 4) and key. The first of each is
 /// what PixPin is set to on the person's machine (the user, 2026-11-17: 「快捷键对齐一下」): Ctrl+Alt+A takes the
 /// screen, Ctrl+2 pins the clipboard's picture; the others are PixPin's and Snipaste's defaults.
-let key_choices : Array[(String, Int, Int)] = [
-  ("Ctrl+Alt+A", 3, 0x41),
-  ("Ctrl+1", 2, 0x31),
-  ("F1", 0, 0x70),
-  ("Ctrl+Shift+A", 6, 0x41),
-  ("PrtSc", 0, 0x2C),
-]
+let key_choices : Array[(String, Int, Int)] = if @hostapi.platform() == 0 {
+  [("⌃⌥A", 3, 0x41), ("⌃1", 2, 0x31), ("F1", 0, 0x70), ("⌃⇧A", 6, 0x41)]
+} else {
+  [("Ctrl+Alt+A", 3, 0x41), ("Ctrl+1", 2, 0x31), ("F1", 0, 0x70),
+   ("Ctrl+Shift+A", 6, 0x41), ("PrtSc", 0, 0x2C)]
+}
 
 ///|
 let pin_choices : Array[(String, Int, Int)] = [
-  ("Ctrl+2", 2, 0x32),
+  (if @hostapi.platform() == 0 { "⌃2" } else { "Ctrl+2" }, 2, 0x32),
   ("F3", 0, 0x72),
   ("F2", 0, 0x71),
   ("不用快捷键", 0, 0),
@@ -96,7 +95,7 @@ let autostart : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
 fn settings_path() -> String {
-  text_of(ps_data_dir()) + "\\settings.json"
+  file_in(text_of(ps_data_dir()), "settings.json")
 }
 
 ///|
@@ -251,9 +250,11 @@ let set_card : Int64 = 0x232428FFL
 ///|
 fn settings_window(root : @view.View) -> Unit {
   root.tree.hand_over_presses(false)
-  root.box(fn(page) {
-    page.over(Is(true)).ground(Is(set_ground)).padding(Is((24.0, 18.0, 24.0, 20.0))).gap(Is(14.0)) |> ignore
-    settings_page(page)
+  root.box(fn(viewport) {
+    viewport.over(Is(true)).ground(Is(set_ground)).scrolls(@view.Scroll::new(), fn(page) {
+      page.padding(Is((24.0, 18.0, 24.0, 20.0))).gap(Is(14.0)) |> ignore
+      settings_page(page)
+    }) |> ignore
   })
   |> ignore
 }
@@ -330,34 +331,7 @@ fn settings_page(root : @view.View) -> Unit {
     })
   })
   set_group(root, "关于", fn(g) {
-    set_row(g, "版本", fn(r) {
-      set_words(r, fn() { "PinShot " + app_version }, 13.0, set_muted)
-      if updates_here() {
-        small_button(r, fn() { tr("更新内容") }, fn() { ps_open_url(cstr(update_notes_url())) }, shown=fn() {
-          match update.get() {
-            Found(_, _) | Fetching(_, _) | Ready(_) => true
-            _ => false
-          }
-        })
-        small_button(r, update_button_words, update_button_pressed)
-      }
-    }, note=fn() { if updates_here() { update_note() } else { tr("通过 Microsoft Store 更新") } }, note_ink=fn() {
-      if update.get() is Failed(_) {
-        0xE5A545FFL
-      } else {
-        set_muted
-      }
-    })
-    if updates_here() {
-      set_row(g, "自动更新", fn(r) {
-        switch(r, fn() { settings.get().auto_update }, fn(on) {
-          change_settings(fn(s) { { ..s, auto_update: on } })
-          if on {
-            update_tick()
-          }
-        })
-      }, note=fn() { tr("每天检查一次，空闲时在后台下载并安装") }, note_ink=fn() { set_muted })
-    }
+    update_settings(g)
     g.box(fn(b) {
       b.padding(Is((0.0, 4.0, 0.0, 12.0))).gap(Is(2.0)) |> ignore
       set_words(b, fn() {

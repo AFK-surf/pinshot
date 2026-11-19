@@ -116,6 +116,7 @@ fn close_pin(wid : Int) -> Unit {
 fn pin_gone(wid : Int) -> Unit {
   guard pin_of_wid(wid) is Some((what, p)) else { return }
   pins.remove(what)
+  pin_roots.remove(wid)
   @ui.forget_image(p.key)
   trim_soon()
 }
@@ -219,7 +220,7 @@ fn pin_menu(p : Pin) -> Unit {
   let z = p.zoom.untracked()
   let o = tr("不透明度")
   let lines = [
-    "copy\t" + tr("复制") + "\tCtrl+C", "save\t" + tr("另存为…") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
+    "copy\t" + tr("复制") + (if @ui.keys_system() == 0 { "\t⌘C" } else { "\tCtrl+C" }), "save\t" + tr("另存为…") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
     "front\t" + tr("移到最前") + "\t", "-", "zoom1\t" + tr("原始大小 (100%)") + "\t" + (if z == 1.0 { "c" } else { "" }),
     "a100\t\{o} 100%\t" + (if a >= 255 { "c" } else { "" }), "a80\t\{o} 80%\t" + (if a == 204 { "c" } else { "" }),
     "a60\t\{o} 60%\t" + (if a == 153 { "c" } else { "" }), "a40\t\{o} 40%\t" + (if a == 102 { "c" } else { "" }), "-",
@@ -395,10 +396,11 @@ fn pin_keys() -> @view.Keymap {
   let ch = fn(c : Char, action : String, mods : Int) { k(@ui.key_of_char(c), action, mods) }
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
-    ch('c', "copy", @ui.mod_ctrl),
-    ch('s', "save", @ui.mod_ctrl),
-    ch('t', "top", @ui.mod_ctrl),
-    ch('0', "zoom1", @ui.mod_ctrl),
+    ch('c', "copy", shortcut_mod()),
+    k(@ui.key_code_copy, "copy", shortcut_mod()),
+    ch('s', "save", shortcut_mod()),
+    ch('t', "top", shortcut_mod()),
+    ch('0', "zoom1", shortcut_mod()),
   ])
 }
 
@@ -448,6 +450,16 @@ fn pin_active(wid : Int, on : Bool) -> Unit {
   }
   p.active_at.set(ps_now_ms())
   p.flash.set(1.0)
+  if @hostapi.platform() == 0 && pin_roots.get(wid) is Some(root) {
+    let since = p.active_at.untracked()
+    fn advance() {
+      if p.active_at.untracked() == since && p.flash.untracked() > 0.0 {
+        pin_tick(wid)
+        root.at_moment(root.cause_at() + 16.0, advance, later=true) |> ignore
+      }
+    }
+    advance()
+  }
 }
 
 ///|

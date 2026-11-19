@@ -14,26 +14,13 @@ fn picture_of_part(done : (Bytes?) -> Unit) -> Unit {
   if words_open.untracked() is Some(_) {
     commit_words()
   }
-  let k = mon_scale.untracked()
   let key = frozen_key.untracked()
-  let px = dmax(mon.val.w.to_double(), mon.val.h.to_double()).to_int()
-  let w = r.w.to_double() / k
-  let h = r.h.to_double() / k
-  let (mw, mh) = (mon.val.w.to_double() / k, mon.val.h.to_double() / k)
-  @ui.take_picture("part", w, fn(b) {
-    b.height(Is(Some(h))).clips(Is(true)).lines_up(Is(Some(Start))) |> ignore
-    b.box(fn(s) {
-      s
-      .width(Is(Some(mw)))
-      .height(Is(Some(mh)))
-      .shrink(Is(0.0))
-      .offset(Is((-r.x.to_double() / k, -r.y.to_double() / k)))
-      |> ignore
-      s.box(fn(p) { p.over(Is(true)).image(Is(Some((key, "", px)))) |> ignore }) |> ignore
-      marks_layer(s, editing=false)
-    })
-    |> ignore
-  }, done, scale=k)
+  compose_marks(ordered_marks(), Some(r), key, "export", fn(result) {
+    match result {
+      Some(scene) => picture_of_layers("part", key, r, scene, done)
+      None => done(None)
+    }
+  })
 }
 
 ///|
@@ -68,7 +55,7 @@ fn copy_out() -> Unit {
         log("copy \{r_w.val}x\{r_h.val}: \{png.length()} bytes in \{num(ps_now_ms() - t0)} ms")
         if settings.untracked().keep_copies {
           let dir = settings.untracked().save_dir
-          ps_write_file(cstr(dir + "\\" + file_name()), png) |> ignore
+          ps_write_file(cstr(file_in(dir, file_name())), png) |> ignore
         }
       }
       None => ()
@@ -100,7 +87,7 @@ fn save_out() -> Unit {
           ps_hide(0)
           text_of(ps_save_dialog(-1, cstr(s.save_dir), cstr(file_name())))
         } else {
-          s.save_dir + "\\" + file_name()
+          file_in(s.save_dir, file_name())
         }
         if path != "" {
           ps_write_file(cstr(path), png) |> ignore
