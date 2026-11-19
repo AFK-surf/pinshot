@@ -18,6 +18,8 @@ struct Settings {
   language : Int
   /// a shutter's sound as a capture is copied, saved or pinned
   sound : Bool
+  /// the language words are read in (extracting text): which of `ocr_langs`, 0 the one that reads best
+  ocr_lang : Int
 }
 
 ///|
@@ -63,6 +65,7 @@ fn default_settings() -> Settings {
     keep_copies: false,
     sound: true,
     language: 0,
+    ocr_lang: 0,
   }
 }
 
@@ -77,6 +80,7 @@ let settings : @signals.Signal[Settings] = @signals.signal({
   keep_copies: false,
   sound: true,
   language: 0,
+  ocr_lang: 0,
 })
 
 ///|
@@ -132,6 +136,7 @@ fn load_settings() -> Unit {
           "en" => 2
           _ => 0
         },
+        ocr_lang: ocr_lang_named(text("ocr_language", "auto")),
       }
     }
     _ => d
@@ -154,6 +159,7 @@ fn save_settings() -> Unit {
   o["keep_copies"] = Json::boolean(s.keep_copies)
   o["sound"] = Json::boolean(s.sound)
   o["language"] = Json::string(["system", "zh", "en"][s.language])
+  o["ocr_language"] = Json::string(if s.ocr_lang == 0 { "auto" } else { ocr_langs[s.ocr_lang].0 })
   ps_write_file(cstr(settings_path()), @utf8.encode(Json::object(o).stringify(indent=2))) |> ignore
 }
 

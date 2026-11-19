@@ -1,6 +1,39 @@
 // The words in a part taken or in a pin, read by Windows' own OCR (ocr_win.cpp: offline, on a thread of its own) and
 // shown in a small window of this run, over the pins: the words in a field to correct, a button to copy them. One
 // window, the last picture asked for in it (a reading come back for an older one is let go).
+//
+// The language: the user (2026-11-19: 「我有可能同一台设备要中文要英文要日文要韩文」). By itself it is read with each of
+// Chinese, English, Japanese and Korean that Windows has, and the reading that looks most like one kept (ocr_win.cpp);
+// a language picked in the window reads it again in that one alone, and is kept for the next (the settings).
+
+///|
+/// The languages words are read in: Windows' tag, the name shown (each in its own language). The first: by itself.
+let ocr_langs : Array[(String, String)] = [("", "自动"), ("zh", "中文"), ("en", "English"), ("ja", "日本語"), ("ko", "한국어")]
+
+///|
+fn ocr_lang_named(tag : String) -> Int {
+  for i, l in ocr_langs {
+    if i > 0 && l.0 == tag {
+      return i
+    }
+  }
+  0
+}
+
+///|
+/// The name of the language a reading was in ("zh-Hans-CN" 中文).
+fn ocr_lang_shown(tag : String) -> String {
+  for i, l in ocr_langs {
+    if i > 0 && (tag == l.0 || tag.has_prefix(l.0 + "-")) {
+      return l.1
+    }
+  }
+  tag
+}
+
+///|
+/// The picture in the window (read again in another language).
+let ocr_png : Ref[Bytes] = Ref(Bytes::make(0, b'\x00'))
 
 ///|
 let ocr_wid : Ref[Int] = Ref(0)
@@ -27,6 +60,7 @@ let ocr_field : @ui.Field = @ui.Field::new()
 ///|
 /// The words in `png` read, the window opened (or brought in front) to show them as they come.
 fn read_words(png : Bytes) -> Unit {
+  ocr_png.val = png
   ocr_id.val += 1
   ocr_field.set("")
   ocr_state.set(Reading)
@@ -41,8 +75,29 @@ fn read_words(png : Bytes) -> Unit {
   }
   // (over the pins, which are over the others)
   ps_topmost(ocr_wid.val, 1, 1)
-  if ps_ocr(ocr_id.val, png) == 0 {
+  read_again()
+}
+
+///|
+/// The picture in the window read (again) in the language picked.
+fn read_again() -> Unit {
+  let want = ocr_langs[settings.untracked().ocr_lang].0
+  if ps_ocr(ocr_id.val, ocr_png.val, @utf8.encode(want)) == 0 {
     ocr_state.set(Failed("failed"))
+  }
+}
+
+///|
+fn ocr_pick(i : Int) -> Unit {
+  if i == settings.untracked().ocr_lang {
+    return
+  }
+  change_settings(fn(s) { { ..s, ocr_lang: i } })
+  if ocr_png.val.length() > 0 {
+    ocr_id.val += 1
+    ocr_field.set("")
+    ocr_state.set(Reading)
+    read_again()
   }
 }
 
@@ -117,6 +172,7 @@ fn ocr_copy() -> Unit {
 fn ocr_failed_words(why : String) -> String {
   match why {
     "none" => tr("没有识别到文字")
+    "missing" => tr("这台电脑没装这种语言的文字识别。到 设置 › 时间和语言 › 语言和区域 添加这种语言后再试。")
     "no-language" | "no-ocr" =>
       tr("Windows 里没有可用的文字识别语言。到 设置 › 时间和语言 › 语言和区域 添加中文或英文后再试。")
     _ => tr("识别失败")
@@ -142,12 +198,7 @@ fn ocr_window(root : @view.View) -> Unit {
         set_words(t, fn() { tr("提取的文字") }, 15.0, set_ink, weight=600)
       })
       |> ignore
-      set_words(head, fn() {
-        match ocr_state.get() {
-          Read(lang) => lang
-          _ => ""
-        }
-      }, 11.5, set_muted)
+      choice(head, ocr_langs.map(fn(l) { l.1 }), fn() { settings.get().ocr_lang }, ocr_pick)
     })
     |> ignore
     page.box(fn(card) {
@@ -202,7 +253,16 @@ fn ocr_window(root : @view.View) -> Unit {
     |> ignore
     page.box(fn(foot) {
       foot.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
-      foot.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      foot.box(fn(s) {
+        s.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        set_words(s, fn() {
+          match ocr_state.get() {
+            Read(lang) => tr("识别为") + " " + ocr_lang_shown(lang)
+            _ => ""
+          }
+        }, 11.5, set_muted)
+      })
+      |> ignore
       small_button(foot, "关闭", ocr_close)
       small_button(foot, "复制", ocr_copy)
     })

@@ -31,12 +31,13 @@ anyway. Windows 10 2004 or later, x64.
   - Right-click: clear the selection, again to quit; `Esc`: quit
 - Pins: drag to move; wheel to zoom; `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has
   copy, save as, extract text, always on top, original size, opacity, close all
-- Extract text: the words in the selection or the pin, read by Windows' own OCR (offline; Chinese first where its OCR is
-  installed, it reads the English and digits among it too), shown in a window to correct and copy
+- Extract text: the words in the selection or the pin, read by Windows' own OCR (offline), shown in a window to correct
+  and copy. Chinese, English, Japanese and Korean are told apart by themselves (each one whose OCR Windows has: it comes
+  with the language in Settings › Time & language); one picked in the window is read in alone and kept
 - `Ctrl+2`: pin the image on the clipboard
 - Tray menu: capture, pin clipboard, show / hide all pins, settings, open the screenshots folder, quit
 - Command line: `pinshot.exe --settings`, `pinshot.exe --quit`, `pinshot.exe --bench` (times the capture),
-  `pinshot.exe --ocr <picture>` (prints the text in a picture)
+  `pinshot.exe --ocr <picture> [zh|en|ja|ko|*]` (prints the text in a picture; `*` every language's reading)
 
 Settings are in `%APPDATA%\PinShot\settings.json`, the log (each capture's timings) in `%APPDATA%\PinShot\pinshot.log`.
 
@@ -92,7 +93,7 @@ packaging/pack-msix.ps1      # the Microsoft Store package
   - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存；`Ctrl+T` 贴图；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色
   - 右键先取消选区，再右键退出；`Esc` 退出
 - 贴图：拖动移动；滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、提取文字、置顶、原始大小、不透明度、关闭全部
-- 提取文字：用 Windows 自带的 OCR 识别选区或贴图里的文字（不联网；装了中文 OCR 就优先用中文，里面的英文和数字也能认），在弹出的窗口里改、复制
+- 提取文字：用 Windows 自带的 OCR 识别选区或贴图里的文字（不联网），在弹出的窗口里改、复制。中文、英文、日文、韩文自动判断（前提是 Windows 装了这种语言：设置 › 时间和语言里添加语言就会带上它的 OCR）；也可以在窗口里手动选语言，选了会记住
 - `Ctrl+2`：把剪贴板里的图片贴到屏幕上
 - 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、退出
 

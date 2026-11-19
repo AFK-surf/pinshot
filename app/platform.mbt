@@ -224,14 +224,16 @@ extern "C" fn ps_clipboard_image() -> Bytes = "ps_clipboard_image"
 
 ///|
 /// The words in `png` read on a thread of their own (Windows' OCR), told back on "ps" as {"do":"ocr","id":id,...}
-/// with them beside: 1 it is begun.
-#borrow(png)
-extern "C" fn ps_ocr(id : Int, png : Bytes) -> Int = "ps_ocr"
+/// with them beside, in language `want` (UTF-8: "zh", "en", "ja", "ko"...; empty: the one that reads it best): 1 it is
+/// begun.
+#borrow(png, want)
+extern "C" fn ps_ocr(id : Int, png : Bytes, want : Bytes) -> Int = "ps_ocr"
 
 ///|
-/// The words in `png` read now: "why\tlang\tms\n" ("" why: read), then them.
-#borrow(png)
-extern "C" fn ps_ocr_now(png : Bytes) -> Bytes = "ps_ocr_now"
+/// The words in `png` read now: "why\tlang\tms\thave\n" ("" why: read), then them; `want` as ps_ocr's, "*": every
+/// engine's reading before.
+#borrow(png, want)
+extern "C" fn ps_ocr_now(png : Bytes, want : Bytes) -> Bytes = "ps_ocr_now"
 
 ///|
 /// A comma-separated line's numbers.

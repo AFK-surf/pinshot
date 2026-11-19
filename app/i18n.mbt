@@ -75,6 +75,9 @@ let en_words : Map[String, String] = {
   "识别失败": "Couldn't read the text",
   "Windows 里没有可用的文字识别语言。到 设置 › 时间和语言 › 语言和区域 添加中文或英文后再试。": "Windows has no text recognition language installed. Add Chinese or English in Settings › Time & language › Language & region, then try again.",
   "已复制": "Copied",
+  "自动": "Auto",
+  "识别为": "Read as",
+  "这台电脑没装这种语言的文字识别。到 设置 › 时间和语言 › 语言和区域 添加这种语言后再试。": "This PC has no text recognition for this language. Add the language in Settings › Time & language › Language & region, then try again.",
   // the icon's menu and its note
   "截图": "Screenshot",
   "贴图剪贴板中的图片": "Pin clipboard image",

@@ -7,7 +7,8 @@
 //   pinshot.exe --settings the settings opened (in the one running, or in this one as it starts)
 //   pinshot.exe --quit     the one running ended
 //   pinshot.exe --bench    the screen taken 10 times and the windows listed, timed; no window
-//   pinshot.exe --ocr <f>  the words in picture file f read and printed; no window
+//   pinshot.exe --ocr <f> [lang]  the words in picture file f read (in lang: zh, en, ja, ko...; * every language's
+//                          reading, scored) and printed; no window
 
 ///|
 fn main {
@@ -17,7 +18,8 @@ fn main {
     return
   }
   if args.length() > 1 && args[0] == "--ocr" {
-    println(text_of(ps_ocr_now(ps_read_file(cstr(args[1])))))
+    let want = if args.length() > 2 { args[2] } else { "" }
+    println(text_of(ps_ocr_now(ps_read_file(cstr(args[1])), @utf8.encode(want))))
     return
   }
   let again = if args.length() > 0 && args[0] == "--settings" {
