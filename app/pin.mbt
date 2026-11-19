@@ -123,7 +123,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
 fn pin_clipboard() -> Unit {
   // (a test run: the clipboard as if it held none, the person's left alone)
   let b = if @ui.env("PINSHOT_TEST_NO_CLIP") != "" {
-    Bytes::make(0, b'0')
+    Bytes::make(0, b'\x00')
   } else if @ui.env("PINSHOT_TEST_PIN_FILE") != "" {
     ps_read_file(cstr(@ui.env("PINSHOT_TEST_PIN_FILE")))
   } else {
@@ -254,6 +254,7 @@ fn repicture_pin(p : Pin, png : Bytes, w : Int, h : Int, turn : Int, flip : Bool
   p.flip = flip
   p.key.set(key)
   @ui.forget_image(old)
+  trim_soon()
   let (cx, cy) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
   let nw = dmax(16.0, (w.to_double() * zx).round())
   let nh = dmax(16.0, (h.to_double() * zy).round())
@@ -507,7 +508,7 @@ fn save_pin(p : Pin) -> Unit {
   let s = settings.untracked()
   let path = text_of(ps_save_dialog(p.wid.val, cstr(s.save_dir), cstr(file_name())))
   if path != "" {
-    ps_write_file(cstr(path), p.png) |> ignore
+    write_picture_file(path, p.png)
   }
 }
 
@@ -518,7 +519,7 @@ fn pin_menu(p : Pin) -> Unit {
   let a = p.alpha.untracked()
   let o = tr("不透明度")
   let lines = [
-    "copy\t" + tr("复制") + "\tCtrl+C", "save\t" + tr("另存为…") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
+    "copy\t" + tr("复制") + "\tCtrl+C", "save\t" + tr("另存为…") + "\t", "ocr\t" + tr("提取文字") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
     "front\t" + tr("移到最前") + "\t", "-", "turn-ccw\t" + tr("向左旋转 90°") + "\tCtrl+Shift+R",
     "turn-cw\t" + tr("向右旋转 90°") + "\tCtrl+R",
     "flip-x\t" + tr("水平翻转") + "\t", "flip-y\t" + tr("垂直翻转") + "\t", "reset\t" + tr("重置") + "\t" + (if pin_as_pinned(p) { "g" } else { "Ctrl+0" }), "-",
@@ -530,6 +531,7 @@ fn pin_menu(p : Pin) -> Unit {
   match chose {
     "copy" => copy_pin(p)
     "save" => save_pin(p)
+    "ocr" => read_words(p.png)
     "top" => {
       p.top.set(!top)
       ps_topmost(p.wid.val, if top { 0 } else { 1 }, 0)

@@ -24,15 +24,18 @@ anyway. Windows 10 2004 or later, x64.
   in the settings)
   - Click without moving: select the window under the pointer; drag: select an area; drag edges and corners: resize;
     arrow keys: move the selection 1 px (Shift: 10 px)
-  - Toolbar: rectangle, ellipse, arrow, line (Shift: horizontal, vertical or 45°), pen, mosaic, numbered marker, text,
-    undo / redo, pin, save, close, copy
-  - `Enter`, `Ctrl+C` or double-click in the selection: copy; `Ctrl+S`: save; `Ctrl+T`: pin; `Ctrl+Z` / `Ctrl+Y`:
-    undo / redo; `C`: copy the colour under the pointer
+  - Toolbar: shapes (rectangle / ellipse / focus), lines (arrow / line; Shift: horizontal, vertical or 45°), pen,
+    mosaic & redaction (pixel mosaic, brush mosaic, blur, solid redact), numbered marker, text, undo, extract text
+    (`Ctrl+O`), pin, save, close, copy
+  - `Enter`, `Ctrl+C` or double-click in the selection: copy; `Ctrl+S`: save (PNG lossless, JPEG high or JPEG compact);
+    `Ctrl+T`: pin; `Ctrl+O`: extract text; `Ctrl+Z` / `Ctrl+Y`: undo / redo; `C`: copy the colour under the pointer
   - Right-click: clear the selection, again to quit; `Esc`: quit
 - Pins: drag to move; drag an edge to stretch it that way, a corner to resize it (`Shift`: freely), the wheel to zoom;
-  `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has copy, save as, always on top,
+  `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has copy, save as, extract text, always on top,
   rotate left / right 90° (`Ctrl+Shift+R` / `Ctrl+R`), flip horizontally / vertically, reset (`Ctrl+0`), opacity,
   close all
+- Extract text: the words in the selection or the pin, read by Windows' own OCR (offline; Chinese first where its OCR is
+  installed, it reads the English and digits among it too), shown in a window to correct and copy
 - `Ctrl+2`: pin the image on the clipboard
 - Tray menu: capture, pin clipboard, show / hide all pins, settings, open the screenshots folder, check for updates,
   quit
@@ -44,7 +47,8 @@ anyway. Windows 10 2004 or later, x64.
   cannot get PinShot to run anything. An update that fails leaves the current version running. The installed copy updates through its installer (silently, keeping your choices);
   the portable `pinshot.exe` replaces itself. Left off, PinShot goes online only when you press Check for updates. The
   Microsoft Store package is updated by the Store and never checks itself.
-- Command line: `pinshot.exe --settings`, `pinshot.exe --quit`, `pinshot.exe --bench` (times the capture)
+- Command line: `pinshot.exe --settings`, `pinshot.exe --quit`, `pinshot.exe --bench` (times the capture),
+  `pinshot.exe --ocr <picture>` (prints the text in a picture)
 
 Settings are in `%APPDATA%\PinShot\settings.json`, the log (each capture's timings) in `%APPDATA%\PinShot\pinshot.log`.
 
@@ -96,10 +100,11 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 
 - `Ctrl+Alt+A`（或点托盘图标）：冻结鼠标所在的显示器进入截图（设置里可换快捷键）
   - 不动鼠标点一下选中窗口；拖动框选；拖边和角调整大小；方向键移动 1 像素（Shift 10 像素）
-  - 工具条：矩形、椭圆、箭头、直线（按住 Shift 只走水平、垂直或 45°）、画笔、马赛克、序号、文字、撤销 / 重做、贴图、保存、关闭、复制
-  - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存；`Ctrl+T` 贴图；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色
+  - 工具条：形状（矩形 / 椭圆 / 聚焦）、线条（箭头 / 直线，按住 Shift 只走水平、垂直或 45°）、画笔、打码（像素框选 / 涂抹马赛克 / 模糊遮罩 / 色块遮盖）、序号、文字、撤销、提取文字（`Ctrl+O`）、贴图、保存、关闭、复制
+  - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存（设置里可选 PNG 无损 / JPEG 高清 / JPEG 小体积）；`Ctrl+T` 贴图；`Ctrl+O` 提取文字；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色
   - 右键先取消选区，再右键退出；`Esc` 退出
-- 贴图：拖动移动；拖边框单向拉伸、拖四角等比缩放（按住 `Shift` 自由拉伸）、滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、置顶、向左 / 向右旋转 90°（`Ctrl+Shift+R` / `Ctrl+R`）、水平 / 垂直翻转、重置（`Ctrl+0`）、不透明度、关闭全部
+- 贴图：拖动移动；拖边框单向拉伸、拖四角等比缩放（按住 `Shift` 自由拉伸）、滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、提取文字、置顶、向左 / 向右旋转 90°（`Ctrl+Shift+R` / `Ctrl+R`）、水平 / 垂直翻转、重置（`Ctrl+0`）、不透明度、关闭全部
+- 提取文字：用 Windows 自带的 OCR 识别选区或贴图里的文字（不联网；装了中文 OCR 就优先用中文，里面的英文和数字也能认），在弹出的窗口里改、复制
 - `Ctrl+2`：把剪贴板里的图片贴到屏幕上
 - 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、检查更新、退出
 - 更新：「设置 › 关于」里有「检查更新」按钮和「自动更新」开关（默认关）。打开后每天向 pin-shot.pages.dev 查一次新版本，后台下载、校验 SHA-256，等 PinShot 空闲（没在截图、没有贴图、两分钟没动键鼠）时安装并重新启动。每个版本都有签名（ECDSA P-256，公钥内置在 PinShot 里）：签名对不上就不下载，即使下载站的文件被人改了，也没法让 PinShot 运行别的程序。更新失败时，当前版本照常运行。安装版通过安装包静默升级（保留原来的选项），免安装版直接替换自己。关着时只有点「检查更新」时才联网。Microsoft Store 版由商店更新，自己不检查。

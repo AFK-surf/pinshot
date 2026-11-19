@@ -68,7 +68,7 @@ fn copy_out() -> Unit {
         log("copy \{r_w.val}x\{r_h.val}: \{png.length()} bytes in \{num(ps_now_ms() - t0)} ms")
         if settings.untracked().keep_copies {
           let dir = settings.untracked().save_dir
-          ps_write_file(cstr(dir + "\\" + file_name()), png) |> ignore
+          write_picture_file(dir + "\\" + file_name(), png)
         }
       }
       None => ()
@@ -79,7 +79,27 @@ fn copy_out() -> Unit {
 
 ///|
 fn file_name() -> String {
-  "PinShot_" + text_of(ps_stamp()) + ".png"
+  let ext = if settings.untracked().save_format == 0 { ".png" } else { ".jpg" }
+  "PinShot_" + text_of(ps_stamp()) + ext
+}
+
+///|
+/// A picture (`png`) written to `path`: as JPEG (quality 92 or 80 per settings) when `path` ends in `.jpg`/`.jpeg`,
+/// else lossless PNG.
+fn write_picture_file(path : String, png : Bytes) -> Unit {
+  let lower = path.to_lower()
+  if lower.has_suffix(".jpg") || lower.has_suffix(".jpeg") {
+    match picture_rgba(png) {
+      Some((w, h, px)) => {
+        let q = if settings.untracked().save_format == 2 { 80 } else { 92 }
+        ps_write_file(cstr(path), @pixels.jpeg(w, h, px, quality=q)) |> ignore
+        trim_soon()
+        return
+      }
+      None => ()
+    }
+  }
+  ps_write_file(cstr(path), png) |> ignore
 }
 
 ///|
@@ -103,7 +123,7 @@ fn save_out() -> Unit {
           s.save_dir + "\\" + file_name()
         }
         if path != "" {
-          ps_write_file(cstr(path), png) |> ignore
+          write_picture_file(path, png)
           shutter()
           log("saved \{path}")
           close_capture()

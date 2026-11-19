@@ -78,6 +78,9 @@ static double take_white;  // the SDR white the last one taken was brought down 
 
 static double take_age;  // how old the frame taken was, in seconds
 static int take_fresh;  // its session was made again as it was taken (its last frame too old to trust)
+// 1: keep each monitor's WGC session open in the background (default); 0: open a session on demand for one frame and
+// close it right after (saving ~245 MB of idle video memory on 4K HDR while still capturing 16-bit HDR frames).
+static int keep_sessions = 1;
 
 extern "C" void ps_wgc_timing(double *out) {
   out[0] = take_ms, out[1] = take_white, out[2] = said_half, out[3] = take_age, out[4] = take_fresh;
@@ -318,10 +321,28 @@ static int borderless_allowed(void) {
 extern "C" int ps_wgc_restart(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
+  if (!keep_sessions) return 0;
   if (!ps_wgc_ready()) return 0;
   if (!borderless_allowed()) return 0;
   EnumDisplayMonitors(NULL, NULL, mon_found, 0);
   return nmons;
+}
+
+extern "C" void ps_wgc_set_keep(int keep) {
+  keep = keep ? 1 : 0;
+  keep_sessions = keep;
+  if (keep) {
+    if (nmons == 0) ps_wgc_restart();
+  } else {
+    for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
+    nmons = 0;
+    if (ready > 0 && dev && ctx) {
+      ctx->ClearState();
+      ctx->Flush();
+      ComPtr<IDXGIDevice3> d3;
+      if (SUCCEEDED(dev.As(&d3))) d3->Trim();
+    }
+  }
 }
 
 // The device gone (the driver reset or updated, the GPU lost: its sessions give no frame again and their last stays
@@ -351,17 +372,24 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
     device_lost();
     return NULL;
   }
+  if (!ps_wgc_ready() || !borderless_allowed()) return NULL;
+  if (keep_sessions && nmons == 0) ps_wgc_restart();
   Mon *m = NULL;
   for (int i = 0; i < nmons; i++)
     if (mons[i].mon == mon) m = &mons[i];
+  if (!m && !keep_sessions) {
+    for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
+    nmons = 1;
+    m = &mons[0];
+    m->mon = mon, m->w = w, m->h = h;
+  }
   if (!m || m->w != w || m->h != h) return NULL;
-  // (HDR turned on or off since its session was made: made again in the other format, GDI's this time)
+  // (HDR turned on or off since its session was made: made again in the other format)
   float white = 1.0f;
   int hdr = to_srgb && to_srgb_k && mon_hdr(mon, &white);
-  if (hdr != m->hdr) {
+  if (m->pool && hdr != m->hdr) {
     mon_stop(m);
-    mon_start(m, mon, w, h);
-    return NULL;
+    m->mon = mon, m->w = w, m->h = h;
   }
   ComPtr<WGC::IDirect3D11CaptureFrame> fr;
   EnterCriticalSection(&frame_lock);
@@ -392,7 +420,13 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
       LARGE_INTEGER now;
       QueryPerformanceCounter(&now);
       double left = FIRST_FRAME_MS - (now.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
-      if (left <= 0) return NULL;
+      if (left <= 0) {
+        if (!keep_sessions) {
+          mon_stop(m);
+          nmons = 0;
+        }
+        return NULL;
+      }
       WaitForSingleObject(frame_came, (DWORD)left + 1);
     }
     LARGE_INTEGER now;
@@ -466,13 +500,27 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
   td.MipLevels = td.ArraySize = 1;
   ComPtr<ID3D11Texture2D> staging;
   D3D11_MAPPED_SUBRESOURCE mp;
-  if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) return NULL;
+  if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) {
+    if (!keep_sessions) {
+      mon_stop(m);
+      nmons = 0;
+    }
+    return NULL;
+  }
   ctx->CopyResource(staging.Get(), tex.Get());
+  take_white = m->hdr ? white : 0.0;
+  if (!keep_sessions) {
+    tex.Reset();
+    surface.Reset();
+    access.Reset();
+    fr.Reset();
+    mon_stop(m);
+    nmons = 0;
+  }
   if (FAILED(ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mp))) return NULL;
   *bits = (uint8_t *)mp.pData;
   *pitch = (int)mp.RowPitch;
   QueryPerformanceCounter(&t1);
-  take_white = m->hdr ? white : 0.0;
   take_ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
   return staging.Detach();
 }

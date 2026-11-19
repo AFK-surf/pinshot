@@ -1,13 +1,27 @@
 // The tool bar of a part picked: under it at its right edge (over it where the screen has no room under it, inside it
-// where it has none over it either), dark whatever the theme, as it lies on a picture of anything. The tools that
-// draw marks, undo and redo, then what is done with the part: pin it, save it, close, copy it. A tool chosen shows a
-// second row under the first: how thick, and the colours.
+// where it has none over it either), dark whatever the theme, as it lies on a picture of anything. Concentric mbui
+// superellipse corners (main bar 40pt high, corner 15pt, 4pt padding, 32pt buttons corner 11pt; style row 36pt high,
+// corner 13pt, 28pt buttons corner 9pt, every corner at smoothness 1.0) with 13 buttons on the main row: select,
+// shapes (box / oval / focus), lines (arrow / line), pen, mosaic, number, words | undo | extract text (OCR), pin,
+// save, close, copy. Choosing shapes or lines shows their variants on the left of the second row beside thickness and colour.
 
 ///|
 let bar_button : Double = 32.0
 
 ///|
 let bar_pad : Double = 4.0
+
+///|
+let bar_corner : Double = 15.0
+
+///|
+let bar_btn_corner : Double = 11.0
+
+///|
+let style_corner : Double = 13.0
+
+///|
+let style_btn_corner : Double = 9.0
 
 ///|
 let bar_rule : Double = 7.0
@@ -17,24 +31,95 @@ let bar_rule : Double = 7.0
 let bar_gap : Double = 3.0
 
 ///|
-/// The tools on the bar, in order: what each is, its glyph, its name and key.
-let bar_tools : Array[(Tool, String, String)] = [
-  // (no mark drawn: a press picks a mark, anywhere in it, and moves it; the user, 2026-11-17: 「好像没有选择模式，用来稳定选择中图案」)
-  (Move, "select", "选择（V）"),
-  (Box, "box", "矩形"),
-  (Oval, "oval", "椭圆"),
-  (Arrow, "arrow", "箭头（按住 Shift 水平、垂直或 45°）"),
-  (Line, "line", "直线（按住 Shift 水平、垂直或 45°）"),
-  (Pen, "pen", "画笔"),
-  (Mosaic, "mosaic", "马赛克"),
-  (Focus, "focus", "聚焦（框出重点，其余变暗）"),
-  (Number, "number", "序号"),
-  (Words, "words", "文字"),
-]
+/// The current variant remembered for the folded shape button (Box, Oval, Focus), line button (Arrow, Line) and
+/// mosaic button (Mosaic, MosaicBrush, Blur, Redact).
+let shape_tool : @signals.Signal[Tool] = @signals.signal(Box)
 
 ///|
+let line_tool : @signals.Signal[Tool] = @signals.signal(Arrow)
+
+///|
+let mosaic_tool : @signals.Signal[Tool] = @signals.signal(Mosaic)
+
+///|
+fn is_shape_tool(t : Tool) -> Bool {
+  match t {
+    Box | Oval | Focus => true
+    _ => false
+  }
+}
+
+///|
+fn is_line_tool(t : Tool) -> Bool {
+  match t {
+    Arrow | Line => true
+    _ => false
+  }
+}
+
+///|
+fn is_mosaic_tool(t : Tool) -> Bool {
+  match t {
+    Mosaic | MosaicBrush | Blur | Redact => true
+    _ => false
+  }
+}
+
+///|
+fn tool_glyph(t : Tool) -> String {
+  match t {
+    Move => "select"
+    Box => "box"
+    Oval => "oval"
+    Focus => "focus"
+    Arrow => "arrow"
+    Line => "line"
+    Pen => "pen"
+    Mosaic => "mosaic"
+    MosaicBrush => "mosaic-brush"
+    Blur => "blur"
+    Redact => "redact"
+    Number => "number"
+    Words => "words"
+  }
+}
+
+///|
+fn tool_label(t : Tool) -> String {
+  match t {
+    Move => "选择（V）"
+    Box => "矩形"
+    Oval => "椭圆"
+    Focus => "聚焦（框出重点，其余变暗）"
+    Arrow => "箭头（按住 Shift 水平、垂直或 45°）"
+    Line => "直线（按住 Shift 水平、垂直或 45°）"
+    Pen => "画笔"
+    Mosaic => "像素马赛克（框选打码）"
+    MosaicBrush => "涂抹马赛克（按住涂抹打码）"
+    Blur => "模糊遮罩（平滑柔化打码）"
+    Redact => "色块遮盖（纯色彻底遮挡）"
+    Number => "序号"
+    Words => "文字"
+  }
+}
+
+///|
+/// The standalone drawing tools after the folded shape, line and mosaic buttons.
+let bar_rest_tools : Array[Tool] = [Number, Words]
+
+///|
+let shape_variants : Array[Tool] = [Box, Oval, Focus]
+
+///|
+let line_variants : Array[Tool] = [Arrow, Line]
+
+///|
+let mosaic_variants : Array[Tool] = [Mosaic, MosaicBrush, Blur, Redact]
+
+///|
+/// 13 buttons on the main bar: 7 tools + rule + 1 undo + rule + 5 actions = 15 items, 14 gaps.
 fn bar_width() -> Double {
-  bar_pad * 2.0 + bar_button * 16.0 + bar_rule * 2.0 + bar_gap * 17.0
+  bar_pad * 2.0 + bar_button * 13.0 + bar_rule * 2.0 + bar_gap * 14.0
 }
 
 ///|
@@ -70,6 +155,14 @@ fn bar_place() -> (Double, Double) {
 }
 
 ///|
+fn pick_tool(which : Tool) -> Unit {
+  if words_open.untracked() is Some(_) {
+    commit_words()
+  }
+  tool.set(if tool.untracked() == which { Move } else { which })
+}
+
+///|
 fn toolbar(stage : @view.View) -> Unit {
   stage.box(fn(o) {
     o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
@@ -89,27 +182,100 @@ fn toolbar(stage : @view.View) -> Unit {
       }))
       |> ignore
       col.box(fn(bar) {
-        bar_panel(bar)
+        bar_panel(bar, bar_corner)
         bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(bar_width()))) |> ignore
-        for t in bar_tools {
-          let (which, glyph_name, label) = t
-          tool_button(bar, glyph_name, label, fn() { tool.get() == which }, fn() {
+        // 1. Select (Move)
+        tool_button(bar, "select", "选择（V）", fn() { tool.get() == Move }, fn() { pick_tool(Move) })
+        // 2. Folded Shape group (Box / Oval / Focus)
+        tool_group_button(
+          bar,
+          fn() {
+            let t = tool.get()
+            tool_glyph(if is_shape_tool(t) { t } else { shape_tool.get() })
+          },
+          fn() {
+            let t = tool.get()
+            tool_label(if is_shape_tool(t) { t } else { shape_tool.get() })
+          },
+          fn() { is_shape_tool(tool.get()) },
+          fn() {
             if words_open.untracked() is Some(_) {
               commit_words()
             }
-            tool.set(if tool.untracked() == which { Move } else { which })
+            if is_shape_tool(tool.untracked()) {
+              tool.set(Move)
+            } else {
+              tool.set(shape_tool.untracked())
+            }
+          },
+        )
+        // 3. Folded Line/Arrow group (Arrow / Line)
+        tool_group_button(
+          bar,
+          fn() {
+            let t = tool.get()
+            tool_glyph(if is_line_tool(t) { t } else { line_tool.get() })
+          },
+          fn() {
+            let t = tool.get()
+            tool_label(if is_line_tool(t) { t } else { line_tool.get() })
+          },
+          fn() { is_line_tool(tool.get()) },
+          fn() {
+            if words_open.untracked() is Some(_) {
+              commit_words()
+            }
+            if is_line_tool(tool.untracked()) {
+              tool.set(Move)
+            } else {
+              tool.set(line_tool.untracked())
+            }
+          },
+        )
+        // 4. Pen
+        tool_button(bar, "pen", "画笔", fn() { tool.get() == Pen }, fn() { pick_tool(Pen) })
+        // 5. Folded Mosaic/Redact group (Mosaic / MosaicBrush / Blur / Redact)
+        tool_group_button(
+          bar,
+          fn() {
+            let t = tool.get()
+            tool_glyph(if is_mosaic_tool(t) { t } else { mosaic_tool.get() })
+          },
+          fn() {
+            let t = tool.get()
+            tool_label(if is_mosaic_tool(t) { t } else { mosaic_tool.get() })
+          },
+          fn() { is_mosaic_tool(tool.get()) },
+          fn() {
+            if words_open.untracked() is Some(_) {
+              commit_words()
+            }
+            if is_mosaic_tool(tool.untracked()) {
+              tool.set(Move)
+            } else {
+              let m = mosaic_tool.untracked()
+              if m == Redact {
+                color_now.set(0x111214FFL)
+              }
+              tool.set(m)
+            }
+          },
+        )
+        // 6..7. Number, Words
+        for which in bar_rest_tools {
+          tool_button(bar, tool_glyph(which), tool_label(which), fn() { tool.get() == which }, fn() {
+            pick_tool(which)
           })
         }
         bar_rule_node(bar)
+        // 8. Undo (Redo stays on Ctrl+Y / Ctrl+Shift+Z)
         tool_button(bar, "undo", "撤销 Ctrl+Z", fn() { false }, fn() { undo() |> ignore }, dim=fn() {
           marks.get() |> ignore
           done_before.val.is_empty()
         })
-        tool_button(bar, "redo", "重做 Ctrl+Y", fn() { false }, fn() { redo() |> ignore }, dim=fn() {
-          marks.get() |> ignore
-          undone.val.is_empty()
-        })
         bar_rule_node(bar)
+        // 9..13. OCR, Pin, Save, Close, Copy
+        tool_button(bar, "ocr", "提取文字 Ctrl+O", fn() { false }, ocr_out)
         tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, pin_out)
         tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, save_out)
         tool_button(bar, "close", "关闭 Esc", fn() { false }, close_capture)
@@ -124,10 +290,10 @@ fn toolbar(stage : @view.View) -> Unit {
 }
 
 ///|
-fn bar_panel(b : @view.View) -> Unit {
+fn bar_panel(b : @view.View, rad : Double) -> Unit {
   b
-  .padding(Is((bar_pad, bar_pad, bar_pad, bar_pad)))
-  .radius(Is(9.0))
+  .pad(Is(bar_pad))
+  .radius(Is(rad))
   .ground(Is(0x1E1F23F7L))
   .edge(Is((1.0, 0xFFFFFF1FL)))
   .shadow(Is((18.0, 4.0, 0x00000073L)))
@@ -138,10 +304,16 @@ fn bar_panel(b : @view.View) -> Unit {
 }
 
 ///|
-fn bar_rule_node(bar : @view.View) -> Unit {
+fn bar_rule_node(bar : @view.View, shown? : () -> Bool = fn() { true }) -> Unit {
   bar.box(fn(r) {
-    r.width(Is(Some(bar_rule))).height(Is(Some(20.0))).lies_along(Is(Middle)).lines_up(Is(Some(Middle))) |> ignore
-    r.box(fn(l) { l.width(Is(Some(1.0))).height(Is(Some(18.0))).ground(Is(0xFFFFFF24L)) |> ignore }) |> ignore
+    r
+    .laid_nowhere(By(fn() { !shown() }))
+    .width(Is(Some(bar_rule)))
+    .height(Is(Some(20.0)))
+    .lies_along(Is(Middle))
+    .lines_up(Is(Some(Middle)))
+    |> ignore
+    r.box(fn(l) { l.width(Is(Some(1.0))).height(Is(Some(16.0))).ground(Is(0xFFFFFF24L)) |> ignore }) |> ignore
   })
   |> ignore
 }
@@ -157,15 +329,29 @@ fn tool_button(
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
 ) -> Unit {
+  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~)
+}
+
+///|
+/// A button of the bar whose glyph and label may follow the active sub-tool in a folded group.
+fn tool_group_button(
+  bar : @view.View,
+  glyph_fn : () -> String,
+  label_fn : () -> String,
+  on : () -> Bool,
+  press : () -> Unit,
+  dim? : () -> Bool = fn() { false },
+  strong? : Bool = false,
+) -> Unit {
   bar.box(fn(b) {
     b
     .width(Is(Some(bar_button)))
     .height(Is(Some(bar_button)))
-    .radius(Is(6.0))
+    .radius(Is(bar_btn_corner))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
-    .says(By(fn() { Some(@view.said(Button, label=tr(label))) }))
+    .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
     .on_press(fn() { if !dim() { press() } })
     .ground(By(fn() {
       if on() {
@@ -183,7 +369,7 @@ fn tool_button(
       g
       .width(Is(Some(18.0)))
       .height(Is(Some(18.0)))
-      .picture(Is(Some(glyph(glyph_name))))
+      .picture(By(fn() { Some(glyph(glyph_fn())) }))
       .tint(By(fn() {
         if dim() {
           0xFFFFFF4DL
@@ -209,16 +395,85 @@ fn styling() -> Bool {
 }
 
 ///|
-/// The second row: three thicknesses, then the colours.
+/// A sub-tool button inside the second row (`28x28`, concentric superellipse `r=9`).
+fn sub_tool_button(row : @view.View, which : Tool, shown : () -> Bool, pick : (Tool) -> Unit) -> Unit {
+  row.box(fn(b) {
+    b
+    .laid_nowhere(By(fn() { !shown() }))
+    .width(Is(Some(28.0)))
+    .height(Is(Some(28.0)))
+    .radius(Is(style_btn_corner))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .presses(Is(true))
+    .says(By(fn() { Some(@view.said(Button, label=tr(tool_label(which)))) }))
+    .on_press(fn() { pick(which) })
+    .ground(By(fn() {
+      if tool.get() == which {
+        0xFFFFFF2EL
+      } else if b.pressed() {
+        0xFFFFFF24L
+      } else if b.pointed() {
+        0xFFFFFF17L
+      } else {
+        0L
+      }
+    }))
+    |> ignore
+    b.box(fn(g) {
+      g
+      .width(Is(Some(17.0)))
+      .height(Is(Some(17.0)))
+      .picture(Is(Some(glyph(tool_glyph(which)))))
+      .tint(By(fn() { if tool.get() == which { 0xFFFFFFFFL } else { 0xD9DBE0FFL } }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The second row: shape/line sub-tool variants (when a shape or line tool is active), three thicknesses, then the colours.
 fn style_row(row : @view.View) -> Unit {
-  bar_panel(row)
+  bar_panel(row, style_corner)
   row.row(Is(true)).height(Is(Some(style_height))).gap(Is(bar_gap)) |> ignore
+  // Shape variants: Box, Oval, Focus
+  let in_shape = fn() { is_shape_tool(tool.get()) }
+  for which in shape_variants {
+    sub_tool_button(row, which, in_shape, fn(w) {
+      shape_tool.set(w)
+      tool.set(w)
+    })
+  }
+  bar_rule_node(row, shown=in_shape)
+  // Line variants: Arrow, Line
+  let in_line = fn() { is_line_tool(tool.get()) }
+  for which in line_variants {
+    sub_tool_button(row, which, in_line, fn(w) {
+      line_tool.set(w)
+      tool.set(w)
+    })
+  }
+  bar_rule_node(row, shown=in_line)
+  // Mosaic variants: Mosaic, MosaicBrush, Blur, Redact
+  let in_mosaic = fn() { is_mosaic_tool(tool.get()) }
+  for which in mosaic_variants {
+    sub_tool_button(row, which, in_mosaic, fn(w) {
+      mosaic_tool.set(w)
+      if w == Redact {
+        color_now.set(0x111214FFL)
+      }
+      tool.set(w)
+    })
+  }
+  bar_rule_node(row, shown=in_mosaic)
   for s in 0..<3 {
     row.box(fn(b) {
       b
       .width(Is(Some(28.0)))
       .height(Is(Some(28.0)))
-      .radius(Is(6.0))
+      .radius(Is(style_btn_corner))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       .presses(Is(true))
@@ -251,7 +506,7 @@ fn style_row(row : @view.View) -> Unit {
       b
       .width(Is(Some(28.0)))
       .height(Is(Some(28.0)))
-      .radius(Is(6.0))
+      .radius(Is(style_btn_corner))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       .presses(Is(true))
@@ -266,7 +521,7 @@ fn style_row(row : @view.View) -> Unit {
         sw
         .width(Is(Some(16.0)))
         .height(Is(Some(16.0)))
-        .radius(Is(4.0))
+        .radius(Is(5.0))
         .ground(Is(c))
         .edge(By(fn() { if color_now.get() == c { (2.0, 0xFFFFFFFFL) } else { (1.0, 0xFFFFFF33L) } }))
         |> ignore
@@ -313,6 +568,34 @@ fn glyph(name : String) -> @pixels.Vector {
           fill_layer("M3.5 3.5h3.7v3.7h-3.7zM10.8 3.5h3.7v3.7h-3.7zM7.2 7.2h3.6v3.6h-3.6zM3.5 10.8h3.7v3.7h-3.7zM10.8 10.8h3.7v3.7h-3.7z", 0x000000FFL),
         ],
       }
+    "mosaic-brush" =>
+      {
+        w: 18.0,
+        h: 18.0,
+        layers: [
+          fill_layer("M2.5 12.8h2.6v2.6H2.5zM5.6 12.8h2.6v2.6H5.6zM2.5 9.7h2.6v2.6H2.5z", 0x000000FFL),
+          stroke_layer("M7.5 11.8l.9-3.1 5.6-5.6 2.2 2.2-5.6 5.6z", 0x000000FFL, 1.5),
+        ],
+      }
+    "blur" =>
+      {
+        w: 18.0,
+        h: 18.0,
+        layers: [
+          fill_layer(circle_path(9.0, 9.0, 6.2), 0x00000040L),
+          stroke_layer(circle_path(9.0, 9.0, 6.2), 0x000000FFL, 1.5),
+          fill_layer(circle_path(9.0, 9.0, 3.0), 0x0000008CL),
+        ],
+      }
+    "redact" =>
+      {
+        w: 18.0,
+        h: 18.0,
+        layers: [
+          stroke_layer("M3.2 4h7.5M7.3 14h7.5", 0x00000099L, 1.5),
+          fill_layer("M2.5 6.4h13v5.2h-13z", 0x000000FFL),
+        ],
+      }
     "number" =>
       {
         w: 18.0,
@@ -323,6 +606,7 @@ fn glyph(name : String) -> @pixels.Vector {
         ],
       }
     "words" => lines(["M4 5V3.8h10V5", "M9 3.8v10.7", "M7 14.5h4"])
+    "ocr" => lines(["M2.8 6V2.8H6", "M12 2.8h3.2V6", "M15.2 12v3.2H12", "M6 15.2H2.8V12", "M6 6.5h6", "M9 6.5v5.5"])
     "undo" => lines(["M6.5 4 3 7.5 6.5 11", "M3.5 7.5h7a4 4 0 0 1 0 8H8"])
     "redo" => lines(["M11.5 4 15 7.5 11.5 11", "M14.5 7.5h-7a4 4 0 0 0 0 8H10"])
     "pin" => lines(["M7 2.8h4l-.6 4.6 2.6 2.4v1.4H5v-1.4l2.6-2.4z", "M9 11.2v4.3"])

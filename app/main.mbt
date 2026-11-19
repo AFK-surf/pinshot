@@ -10,12 +10,19 @@
 //   pinshot.exe --updated  the run, started by an update in place (update.mbt): it says so
 //   pinshot.exe --start    the run, started again by an update that did not go through (packaging/PinShot.iss);
 //                          with --updated, nothing where one is running already
+//   pinshot.exe --ocr <f>  the words in picture file f read and printed; no window
 
 ///|
 fn main {
   let args = text_of(ps_args()).split("\n").map(fn(s) { s.to_owned() }).collect()
   if args.length() > 0 && args[0] == "--bench" {
     bench()
+    ps_quit()
+    return
+  }
+  if args.length() > 1 && args[0] == "--ocr" {
+    println(text_of(ps_ocr_now(ps_read_file(cstr(args[1])))))
+    ps_quit()
     return
   }
   let again = if args.length() > 0 && args[0] == "--settings" {
@@ -43,6 +50,8 @@ fn main {
       settings_window
     } else if what == "toast" {
       toast_window
+    } else if what == "ocr" {
+      ocr_window
     } else {
       pin_window(wid, what)
     }
@@ -50,9 +59,15 @@ fn main {
   @ui.when_window_closed(fn(wid) {
     if wid == settings_wid.val {
       settings_wid.val = 0
+      trim_soon()
     }
     if wid == toast_wid.val {
       toast_wid.val = 0
+    }
+    if wid == ocr_wid.val {
+      ocr_wid.val = 0
+      ocr_field.set("")
+      trim_soon()
     }
     pin_gone(wid)
   })
@@ -73,8 +88,8 @@ fn main {
 }
 
 ///|
-/// What the native side told (a shortcut, the icon, its menu, a window's close, an update's fetch; `bytes` what a fetch
-/// got).
+/// What the native side told (a shortcut, the icon, its menu, a window's close, an update's fetch, an OCR reading;
+/// `bytes` what a fetch or reading got).
 fn told(json : String, bytes : Bytes?) -> Unit {
   guard json_of(json) is Some(Json::Object(o)) else { return }
   let what = match o.get("do") {
@@ -94,6 +109,7 @@ fn told(json : String, bytes : Bytes?) -> Unit {
     }
     "capture" => if capturing.untracked() { capture_taken() }
     "pin-clipboard" => pin_clipboard()
+    "ocr" => ocr_told(o, bytes)
     "tick" =>
       match o.get("wid") {
         Some(Number(w, ..)) => pin_tick(w.to_int())
@@ -113,7 +129,7 @@ fn told(json : String, bytes : Bytes?) -> Unit {
           let wid = w.to_int()
           if wid == 0 {
             close_capture()
-          } else if wid == settings_wid.val {
+          } else if wid == settings_wid.val || wid == ocr_wid.val {
             close_window(wid)
           } else {
             close_pin(wid)

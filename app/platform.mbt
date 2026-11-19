@@ -79,6 +79,11 @@ extern "C" fn ps_capture_ask() -> Unit = "ps_capture_ask"
 extern "C" fn ps_capture_open(on : Int) -> Unit = "ps_capture_open"
 
 ///|
+/// Whether WGC capture sessions stay open in the background (1: instant capture; 0: opened on demand for one frame and
+/// closed right after to save ~245 MB of idle video memory).
+extern "C" fn ps_set_capture_keep(keep : Int) -> Unit = "ps_set_capture_keep"
+
+///|
 /// A line in the run's log (pinshot.log in the settings' folder), its time before it.
 #borrow(line)
 extern "C" fn ps_log(line : Bytes) -> Unit = "ps_log"
@@ -221,6 +226,17 @@ extern "C" fn ps_popup_menu(wid : Int, lines : Bytes) -> Bytes = "ps_popup_menu"
 ///|
 /// The clipboard's picture as a file's bytes (PNG, or a BMP of its bitmap); empty: none.
 extern "C" fn ps_clipboard_image() -> Bytes = "ps_clipboard_image"
+
+///|
+/// The words in `png` read on a thread of their own (Windows' OCR), told back on "ps" as {"do":"ocr","id":id,...}
+/// with them beside: 1 it is begun.
+#borrow(png)
+extern "C" fn ps_ocr(id : Int, png : Bytes) -> Int = "ps_ocr"
+
+///|
+/// The words in `png` read now: "why\tlang\tms\n" ("" why: read), then them.
+#borrow(png)
+extern "C" fn ps_ocr_now(png : Bytes) -> Bytes = "ps_ocr_now"
 
 ///|
 /// A comma-separated line's numbers.

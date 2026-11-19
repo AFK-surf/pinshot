@@ -13,6 +13,9 @@ enum Tool {
   Line
   Pen
   Mosaic
+  MosaicBrush
+  Blur
+  Redact
   /// a part in focus: the rest of the picture dimmed round it (all of them one dimming: focus_picture)
   Focus
   Number
@@ -78,6 +81,15 @@ fn mosaic_pt(size : Int) -> Double {
     0 => 6.0
     1 => 10.0
     _ => 16.0
+  }
+}
+
+///|
+fn mosaic_brush_pt(size : Int) -> Double {
+  match size {
+    0 => 14.0
+    1 => 22.0
+    _ => 34.0
   }
 }
 
@@ -168,12 +180,12 @@ fn new_mark(t : Tool, pts : Array[(Double, Double)]) -> Mark {
 /// A mark that is too small to keep (a click where a drag was meant).
 fn too_small(m : Mark) -> Bool {
   match m.tool {
-    Box | Oval | Mosaic | Focus | Arrow | Line => {
+    Box | Oval | Mosaic | Blur | Redact | Focus | Arrow | Line => {
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
       (x1 - x0).abs() < 3.0 && (y1 - y0).abs() < 3.0
     }
-    Pen => m.pts.length() < 2
+    Pen | MosaicBrush => m.pts.length() < 2
     _ => false
   }
 }
@@ -253,7 +265,16 @@ fn mark_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
         fill_layer(circle_path(cx, cy, r), m.color),
       ]
     }
-    Mosaic => mosaic_layers(m, k)
+    Mosaic => mosaic_layers(m, k, blur=false)
+    Blur => mosaic_layers(m, k, blur=true)
+    MosaicBrush => mosaic_brush_layers(m, k)
+    Redact => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      let x = dmin(x0, x1)
+      let y = dmin(y0, y1)
+      [fill_layer(rect_path(x, y, (x1 - x0).abs(), (y1 - y0).abs()), m.color)]
+    }
     Move | Words | Focus => []
   }
 }
@@ -302,9 +323,9 @@ fn arrow_path(a : (Double, Double), b : (Double, Double), w : Double) -> String 
 }
 
 ///|
-/// A mosaic over the rectangle between its two points: squares `mosaic_pt` points across, each the mean colour of the
-/// picture under it; a square's run of one colour along a row drawn as one.
-fn mosaic_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
+/// A mosaic (or smooth box-blur when `blur` is true) over the rectangle between its two points: squares `cell` pixels
+/// across, each the mean colour of `sample` pixels under it; a run of one colour along a row drawn as one.
+fn mosaic_layers(m : Mark, k : Double, blur~ : Bool) -> Array[@pixels.VectorPath] {
   let (x0, y0) = m.pts[0]
   let (x1, y1) = m.pts[m.pts.length() - 1]
   let r = rect_between(x0.round().to_int(), y0.round().to_int(), x1.round().to_int(), y1.round().to_int()).within(
@@ -312,7 +333,17 @@ fn mosaic_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
     mon.val.h,
   )
   guard r is Some(r) else { return [] }
-  let cell = dmax(2.0, (mosaic_pt(m.size) * k).round()).to_int()
+  let cell = if blur {
+    dmax(2.0, (3.0 * k).round()).to_int()
+  } else {
+    dmax(2.0, (mosaic_pt(m.size) * k).round()).to_int()
+  }
+  let sample = if blur {
+    dmax(6.0, (mosaic_pt(m.size) * 2.2 * k).round()).to_int()
+  } else {
+    cell
+  }
+  let off = (sample - cell) / 2
   // (squares on the monitor's grid of them, so one dragged further keeps the squares it had)
   let gx0 = r.x / cell
   let gy0 = r.y / cell
@@ -344,7 +375,7 @@ fn mosaic_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
     }
     ignore(ch)
     for gx in gx0..<gx1 {
-      let c = mean_color(gx * cell, cy, cell)
+      let c = mean_color(gx * cell - off, cy - off, sample)
       if c == run_color {
         run_n += 1
       } else {
@@ -352,6 +383,86 @@ fn mosaic_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
         run_color = c
         run_x = gx * cell
         run_n = 1
+      }
+    }
+    flush(run_color, run_x, run_n)
+  }
+  let out : Array[@pixels.VectorPath] = []
+  for c, sb in by_color {
+    out.push(fill_layer(sb.to_string(), (c.to_int64() << 8) | 0xFFL))
+  }
+  out
+}
+
+///|
+/// A brushed mosaic along `m.pts`: grid squares whose centers fall within `mosaic_brush_pt(m.size) / 2` of the stroke.
+fn mosaic_brush_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
+  if m.pts.is_empty() {
+    return []
+  }
+  let cell = dmax(2.0, (mosaic_pt(m.size) * k).round()).to_int()
+  let rad = mosaic_brush_pt(m.size) * k / 2.0
+  let (bx0, by0, bx1, by1) = mark_box(m, k)
+  let max_gx = (mon.val.w + cell - 1) / cell
+  let max_gy = (mon.val.h + cell - 1) / cell
+  let gx0 = clampi((bx0 / cell.to_double()).floor().to_int(), 0, max_gx)
+  let gy0 = clampi((by0 / cell.to_double()).floor().to_int(), 0, max_gy)
+  let gx1 = clampi(((bx1 + cell.to_double() - 1.0) / cell.to_double()).ceil().to_int(), 0, max_gx)
+  let gy1 = clampi(((by1 + cell.to_double() - 1.0) / cell.to_double()).ceil().to_int(), 0, max_gy)
+  let by_color : Map[Int, StringBuilder] = Map([])
+  let half = cell.to_double() / 2.0
+  let hits_cell = fn(cx : Double, cy : Double) -> Bool {
+    if m.pts.length() == 1 {
+      return to_segment(cx, cy, m.pts[0], m.pts[0]) <= rad
+    }
+    for i in 1..<m.pts.length() {
+      if to_segment(cx, cy, m.pts[i - 1], m.pts[i]) <= rad {
+        return true
+      }
+    }
+    false
+  }
+  for gy in gy0..<gy1 {
+    let mut run_color = -1
+    let mut run_x = 0
+    let mut run_n = 0
+    let cy = gy * cell
+    let top = clampi(cy, 0, mon.val.h)
+    let bottom = clampi(cy + cell, 0, mon.val.h)
+    let flush = fn(c : Int, x : Int, n : Int) {
+      if c >= 0 && n > 0 && bottom > top {
+        let sb = match by_color.get(c) {
+          Some(sb) => sb
+          None => {
+            let sb = StringBuilder()
+            by_color[c] = sb
+            sb
+          }
+        }
+        let left = clampi(x, 0, mon.val.w)
+        let right = clampi(x + n * cell, 0, mon.val.w)
+        if right > left {
+          sb.write_string(rect_path(left.to_double(), top.to_double(), (right - left).to_double(), (bottom - top).to_double()))
+        }
+      }
+    }
+    let py = cy.to_double() + half
+    for gx in gx0..<gx1 {
+      let px = (gx * cell).to_double() + half
+      if hits_cell(px, py) {
+        let c = mean_color(gx * cell, cy, cell)
+        if c == run_color {
+          run_n += 1
+        } else {
+          flush(run_color, run_x, run_n)
+          run_color = c
+          run_x = gx * cell
+          run_n = 1
+        }
+      } else {
+        flush(run_color, run_x, run_n)
+        run_color = -1
+        run_n = 0
       }
     }
     flush(run_color, run_x, run_n)
@@ -441,10 +552,10 @@ fn to_segment(px : Double, py : Double, a : (Double, Double), b : (Double, Doubl
 /// a box's or an oval's edge (within a few points of it: inside a box another mark is drawn), on a number or words;
 /// in a mosaic only where `inside` (the move tool held: no mark is drawn then).
 fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool {
-  let reach = line_pt(m.size) * k / 2.0 + 5.0 * k
+  let reach = (if m.tool == MosaicBrush { mosaic_brush_pt(m.size) } else { line_pt(m.size) }) * k / 2.0 + 5.0 * k
   match m.tool {
     Line | Arrow => to_segment(x, y, m.pts[0], m.pts[m.pts.length() - 1]) <= reach
-    Pen => {
+    Pen | MosaicBrush => {
       if m.pts.length() == 1 {
         return to_segment(x, y, m.pts[0], m.pts[0]) <= reach
       }
@@ -476,7 +587,7 @@ fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool
       // (how far off its edge, near enough: along the nearer radius)
       (inside && dx * dx + dy * dy <= 1.0) || ((dx * dx + dy * dy).sqrt() - 1.0).abs() * dmin(rx, ry) <= reach
     }
-    Mosaic => {
+    Mosaic | Blur | Redact => {
       let (x0, y0) = m.pts[0]
       let (x1, y1) = m.pts[m.pts.length() - 1]
       let (l, t, r, b) = (dmin(x0, x1), dmin(y0, y1), dmax(x0, x1), dmax(y0, y1))
@@ -575,7 +686,7 @@ fn mark_handles(m : Mark) -> Array[(Int, Int, Double, Double)] {
   let (x1, y1) = m.pts[m.pts.length() - 1]
   match m.tool {
     Line | Arrow => [(0, 0, x0, y0), (1, 1, x1, y1)]
-    Box | Oval | Mosaic | Focus => [(0, 0, x0, y0), (1, 0, x1, y0), (1, 1, x1, y1), (0, 1, x0, y1)]
+    Box | Oval | Mosaic | Blur | Redact | Focus => [(0, 0, x0, y0), (1, 0, x1, y0), (1, 1, x1, y1), (0, 1, x0, y1)]
     _ => []
   }
 }
@@ -675,7 +786,7 @@ fn mark_box(m : Mark, k : Double) -> (Double, Double, Double, Double) {
       (wx, wy, wx + wide + 3.0 * k, wy + size * 1.3)
     }
     _ => {
-      let half = line_pt(m.size) * k / 2.0
+      let half = (if m.tool == MosaicBrush { mosaic_brush_pt(m.size) } else { line_pt(m.size) }) * k / 2.0
       let mut x0 = m.pts[0].0
       let mut y0 = m.pts[0].1
       let mut x1 = x0

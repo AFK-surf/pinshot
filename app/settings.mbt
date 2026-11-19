@@ -10,10 +10,15 @@ struct Settings {
   /// a pin over the other windows as it opens, and how clear (255 not seen through)
   pin_top : Bool
   pin_alpha : Int
-  /// saving: the system's dialog each time (else straight into the folder), the folder, and a copy kept there too
+  /// saving: format (0 PNG lossless, 1 JPEG 92%, 2 JPEG 80%), the system's dialog each time (else straight into the
+  /// folder), the folder, and a copy kept there too
+  save_format : Int
   ask_where : Bool
   save_dir : String
   keep_copies : Bool
+  /// whether WGC capture sessions stay open in the background (true: instant capture; false: opened on demand to save
+  /// ~245 MB of idle video memory)
+  capture_keep : Bool
   /// the language: 0 the system's, 1 Chinese, 2 English (i18n.mbt)
   language : Int
   /// a shutter's sound as a capture is copied, saved or pinned
@@ -61,9 +66,11 @@ fn default_settings() -> Settings {
     pin_key: 0,
     pin_top: true,
     pin_alpha: 255,
+    save_format: 0,
     ask_where: true,
     save_dir: text_of(ps_pictures_dir()),
     keep_copies: false,
+    capture_keep: true,
     sound: true,
     language: 0,
     auto_update: false,
@@ -76,9 +83,11 @@ let settings : @signals.Signal[Settings] = @signals.signal({
   pin_key: 0,
   pin_top: true,
   pin_alpha: 255,
+  save_format: 0,
   ask_where: true,
   save_dir: "",
   keep_copies: false,
+  capture_keep: true,
   sound: true,
   language: 0,
   auto_update: false,
@@ -128,9 +137,15 @@ fn load_settings() -> Unit {
         pin_key: choice_named(pin_choices, text("pin_keys", pin_choices[0].0)),
         pin_top: flag("pin_top", d.pin_top),
         pin_alpha: clampi(num("pin_alpha", d.pin_alpha), 25, 255),
+        save_format: match text("save_format", "png") {
+          "jpg-92" => 1
+          "jpg-80" => 2
+          _ => 0
+        },
         ask_where: flag("ask_where", d.ask_where),
         save_dir: text("save_dir", d.save_dir),
         keep_copies: flag("keep_copies", d.keep_copies),
+        capture_keep: flag("capture_keep", d.capture_keep),
         sound: flag("sound", d.sound),
         auto_update: flag("auto_update", d.auto_update),
         language: match text("language", "system") {
@@ -144,6 +159,7 @@ fn load_settings() -> Unit {
   }
   settings.set(s)
   apply_language(s.language)
+  ps_set_capture_keep(if s.capture_keep { 1 } else { 0 })
   autostart.set(ps_autostart() == 1)
 }
 
@@ -155,9 +171,11 @@ fn save_settings() -> Unit {
   o["pin_keys"] = Json::string(pin_choices[s.pin_key].0)
   o["pin_top"] = Json::boolean(s.pin_top)
   o["pin_alpha"] = Json::number(s.pin_alpha.to_double())
+  o["save_format"] = Json::string(["png", "jpg-92", "jpg-80"][s.save_format])
   o["ask_where"] = Json::boolean(s.ask_where)
   o["save_dir"] = Json::string(s.save_dir)
   o["keep_copies"] = Json::boolean(s.keep_copies)
+  o["capture_keep"] = Json::boolean(s.capture_keep)
   o["sound"] = Json::boolean(s.sound)
   o["auto_update"] = Json::boolean(s.auto_update)
   o["language"] = Json::string(["system", "zh", "en"][s.language])
@@ -174,6 +192,9 @@ fn change_settings(f : (Settings) -> Settings) -> Unit {
   }
   settings.set(s)
   save_settings()
+  if s.capture_keep != was.capture_keep {
+    ps_set_capture_keep(if s.capture_keep { 1 } else { 0 })
+  }
   if s.language != was.language {
     apply_language(s.language)
   }
@@ -233,7 +254,7 @@ fn open_settings() -> Unit {
     return
   }
   settings_wid.val = wid
-  ps_center(wid, 560, 880)
+  ps_center(wid, 560, 920)
 }
 
 ///|
@@ -252,7 +273,7 @@ let set_card : Int64 = 0x232428FFL
 fn settings_window(root : @view.View) -> Unit {
   root.tree.hand_over_presses(false)
   root.box(fn(page) {
-    page.over(Is(true)).ground(Is(set_ground)).padding(Is((24.0, 18.0, 24.0, 20.0))).gap(Is(14.0)) |> ignore
+    page.over(Is(true)).ground(Is(set_ground)).padding(Is((24.0, 16.0, 24.0, 18.0))).gap(Is(11.0)) |> ignore
     settings_page(page)
   })
   |> ignore
@@ -292,6 +313,11 @@ fn settings_page(root : @view.View) -> Unit {
     })
   })
   set_group(root, "保存", fn(g) {
+    set_row(g, "图片格式", fn(r) {
+      choice(r, ["PNG 无损", "JPEG 高清", "JPEG 小体积"], fn() { settings.get().save_format }, fn(i) {
+        change_settings(fn(s) { { ..s, save_format: i } })
+      })
+    })
     set_row(g, "每次询问保存位置", fn(r) {
       switch(r, fn() { settings.get().ask_where }, fn(on) { change_settings(fn(s) { { ..s, ask_where: on } }) })
     })
@@ -308,6 +334,23 @@ fn settings_page(root : @view.View) -> Unit {
     })
   })
   set_group(root, "通用", fn(g) {
+    set_row(
+      g,
+      "截屏模式",
+      fn(r) {
+        choice(r, ["极速常驻", "按需省显存"], fn() { if settings.get().capture_keep { 0 } else { 1 } }, fn(i) {
+          change_settings(fn(s) { { ..s, capture_keep: i == 0 } })
+        })
+      },
+      note=fn() {
+        if settings.get().capture_keep {
+          tr("后台保持截屏会话，按键秒开（HDR 自动 16 位色彩还原）")
+        } else {
+          tr("平时不占截屏显存（省约 240 MB），按键时拉起（HDR 同样 16 位还原）")
+        }
+      },
+      note_ink=fn() { set_muted },
+    )
     set_row(g, "语言", fn(r) {
       choice(r, language_names, fn() { settings.get().language }, fn(i) {
         change_settings(fn(s) { { ..s, language: i } })
@@ -387,7 +430,7 @@ fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -
     g.gap(Is(6.0)) |> ignore
     set_words(g, fn() { tr(title) }, 12.0, set_muted, weight=500)
     g.box(fn(card) {
-      card.ground(Is(set_card)).radius(Is(10.0)).edge(Is((1.0, 0xFFFFFF14L))).padding(Is((14.0, 4.0, 14.0, 4.0))) |> ignore
+      card.ground(Is(set_card)).radius(Is(12.0)).edge(Is((1.0, 0xFFFFFF14L))).padding(Is((14.0, 4.0, 14.0, 4.0))) |> ignore
       make(card)
     })
     |> ignore
@@ -404,7 +447,7 @@ fn set_row(
   note_ink? : () -> Int64 = fn() { 0xE5A545FFL },
 ) -> Unit {
   parent.box(fn(row) {
-    row.row(Is(true)).min_height(Is(Some(42.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+    row.row(Is(true)).min_height(Is(Some(38.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
     row.box(fn(l) {
       l.grow(Is(1.0)).gap(Is(2.0)) |> ignore
       set_words(l, fn() { tr(label) }, 13.0, set_ink)
@@ -427,13 +470,13 @@ fn set_row(
 /// A row of choices, the one in force lit.
 fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (Int) -> Unit) -> Unit {
   parent.box(fn(seg) {
-    seg.row(Is(true)).pad(Is(2.0)).radius(Is(7.0)).ground(Is(0x17181BFFL)).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
+    seg.row(Is(true)).pad(Is(2.0)).radius(Is(8.0)).ground(Is(0x17181BFFL)).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
     for i, name in names {
       seg.box(fn(b) {
         b
         .height(Is(Some(26.0)))
         .padding(Is((9.0, 0.0, 9.0, 0.0)))
-        .radius(Is(5.0))
+        .radius(Is(6.0))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         .presses(Is(true))
@@ -500,7 +543,7 @@ fn small_button(parent : @view.View, label : () -> String, press : () -> Unit, s
     .laid_nowhere(By(fn() { !shown() }))
     .height(Is(Some(26.0)))
     .padding(Is((10.0, 0.0, 10.0, 0.0)))
-    .radius(Is(6.0))
+    .radius(Is(8.0))
     .shrink(Is(0.0))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))

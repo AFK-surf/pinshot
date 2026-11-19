@@ -169,7 +169,7 @@ fn overlay_first_frame() -> Unit {
   }
   if started_with_settings.val {
     open_settings()
-  } else if !capturing.untracked() {
+  } else if !capturing.untracked() && settings.untracked().capture_keep {
     // (none when the person's own is open already: a shortcut pressed as the run started, shown as its first frame)
     // (one capture taken out of sight as it starts, all of it as one is (the screen taken, the overlay at the
     // monitor's size, the picture a texture, a frame drawn) and let go: the first the person takes is as quick as
@@ -601,9 +601,15 @@ fn press_moved(x : Double, y : Double) -> Unit {
           } else {
             (cx, cy)
           }
-          let pts = if m.tool == Pen {
+          let pts = if m.tool == Pen || m.tool == MosaicBrush {
             let p = m.pts.copy()
-            p.push((cx, cy))
+            let (lx, ly) = p[p.length() - 1]
+            let dx = cx - lx
+            let dy = cy - ly
+            let min_step = if m.tool == MosaicBrush { 2.0 * mon_scale.untracked() } else { 0.5 }
+            if dx * dx + dy * dy >= min_step * min_step {
+              p.push((cx, cy))
+            }
             p
           } else {
             [m.pts[0], (cx, cy)]
@@ -751,6 +757,7 @@ fn overlay_keys() -> @view.Keymap {
     ch('c', "copy", ctrl),
     ch('s', "save", ctrl),
     ch('t', "pin", ctrl),
+    ch('o', "ocr", ctrl),
     ch('z', "undo", ctrl),
     ch('y', "redo", ctrl),
     ch('z', "redo", ctrl | shift),
@@ -796,6 +803,7 @@ fn overlay_actions(root : @view.View) -> Unit {
   on("copy", copy_out)
   on("save", save_out)
   on("pin", pin_out)
+  on("ocr", ocr_out)
   on("undo", fn() { undo() |> ignore })
   on("redo", fn() { redo() |> ignore })
   on("copy-color", copy_color)
@@ -864,7 +872,7 @@ fn said_shown() -> Unit {
 fn picked_picture() -> @pixels.Vector? {
   // (a mosaic being dragged out: where it reaches, a thin frame of the accent round a faint tint of it, its squares
   // alone showing nothing over an even ground)
-  if hand.get() is Marking && draft.get() is Some(d) && d.tool == Mosaic {
+  if hand.get() is Marking && draft.get() is Some(d) && (d.tool == Mosaic || d.tool == Blur) {
     let k = mon_scale.get()
     let (x0, y0) = d.pts[0]
     let (x1, y1) = d.pts[d.pts.length() - 1]
@@ -894,7 +902,7 @@ fn picked_picture() -> @pixels.Vector? {
   let k = mon_scale.get()
   let layers : Array[@pixels.VectorPath] = []
   let handles = mark_handles(m)
-  if handles.is_empty() || m.tool == Mosaic {
+  if handles.is_empty() || m.tool == Mosaic || m.tool == Blur || m.tool == Redact {
     let (x0, y0, x1, y1) = mark_box(m, k)
     let pad = 4.0 * k
     layers.push(stroke_layer(rect_path(x0 - pad, y0 - pad, x1 - x0 + pad * 2.0, y1 - y0 + pad * 2.0), accent, k))

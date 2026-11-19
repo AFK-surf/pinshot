@@ -319,7 +319,7 @@ int32_t ps_mean(int32_t x, int32_t y, int32_t cell) {
   int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
   int x1 = x + cell > cap.w ? cap.w : x + cell, y1 = y + cell > cap.h ? cap.h : y + cell;
   if (x1 <= x0 || y1 <= y0) return 0x808080;
-  int step = cell >= 8 ? 2 : 1;
+  int step = cell >= 24 ? 4 : (cell >= 8 ? 2 : 1);
   unsigned r = 0, g = 0, b = 0, n = 0;
   for (int yy = y0; yy < y1; yy += step) {
     const uint8_t *p = cap.bits + (size_t)yy * cap.pitch + (size_t)x0 * 4;
@@ -647,11 +647,15 @@ int32_t ps_start(int32_t again) {
   const char *how = getenv("PINSHOT_CAPTURE");
   wgc_off = how && !strcmp(how, "gdi");
   if (!wgc_off) {
-    ps_wgc_restart();
     RegisterPowerSettingNotification(tray_hwnd, &display_state_guid, DEVICE_NOTIFY_WINDOW_HANDLE);
     WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION);
   }
   return 1;
+}
+
+void ps_wgc_set_keep(int keep);
+void ps_set_capture_keep(int32_t keep) {
+  if (!wgc_off) ps_wgc_set_keep(keep);
 }
 
 // A note from the icon (the system's balloon, a notification): `title` and `text` (UTF-8, ending in a NUL); clicked,
@@ -862,6 +866,7 @@ void ps_center(int32_t wid, int32_t w, int32_t h) {
   AdjustWindowRectExForDpi(&r, (DWORD)GetWindowLongPtrW(hw, GWL_STYLE), FALSE, (DWORD)GetWindowLongPtrW(hw, GWL_EXSTYLE), dx);
   int ww = r.right - r.left, wh = r.bottom - r.top;
   RECT a = mi.rcWork;
+  if (wh > a.bottom - a.top - 24) wh = a.bottom - a.top - 24;
   int x = a.left + ((a.right - a.left) - ww) / 2, y = a.top + ((a.bottom - a.top) - wh) / 2;
   SetWindowPos(hw, NULL, x, y, ww, wh, SWP_NOZORDER | SWP_SHOWWINDOW);
   SetForegroundWindow(hw);
@@ -1046,9 +1051,13 @@ moonbit_bytes_t ps_save_dialog(int32_t wid, moonbit_bytes_t dir, moonbit_bytes_t
   moonbit_bytes_t out = moonbit_make_bytes(0, 0);
   if (FAILED(CoCreateInstance(&CLSID_FileSaveDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileSaveDialog, (void **)&d)))
     return out;
-  COMDLG_FILTERSPEC types[] = {{L"PNG", L"*.png"}};
-  IFileSaveDialog_SetFileTypes(d, 1, types);
-  IFileSaveDialog_SetDefaultExtension(d, L"png");
+  COMDLG_FILTERSPEC types[] = {{L"PNG (*.png)", L"*.png"}, {L"JPEG (*.jpg)", L"*.jpg;*.jpeg"}};
+  IFileSaveDialog_SetFileTypes(d, 2, types);
+  const char *ns = (const char *)name;
+  size_t nl = strlen(ns);
+  int is_jpg = nl >= 4 && _stricmp(ns + nl - 4, ".jpg") == 0;
+  IFileSaveDialog_SetFileTypeIndex(d, is_jpg ? 2 : 1);
+  IFileSaveDialog_SetDefaultExtension(d, is_jpg ? L"jpg" : L"png");
   wchar_t *wn = ps_wide((const char *)name);
   IFileSaveDialog_SetFileName(d, wn);
   free(wn);
@@ -1307,6 +1316,8 @@ void ps_run_handover(void) {
 // The run ended (the icon's 退出): its icon taken away first.
 void ps_quit(void) {
   tray_gone();
+  fflush(stdout);
+  TerminateProcess(GetCurrentProcess(), 0);
   ExitProcess(0);
 }
 
