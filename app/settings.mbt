@@ -377,6 +377,12 @@ fn settings_page(root : @view.View) -> Unit {
   })
   set_group(root, "关于", fn(g) {
     update_settings(g)
+    // (the sponsor's page: the user, 2026-11-19 「给 PinShot 也加一个赞助链接」)
+    set_row(g, "赞助作者", fn(r) {
+      small_button(r, fn() { tr("赞助") }, fn() {
+        ps_open_url(cstr(site_url + "/support?lang=" + (if english.get() { "en" } else { "zh" })))
+      })
+    }, note=fn() { tr("PinShot 免费使用，觉得好用可以请我喝杯咖啡") }, note_ink=fn() { set_muted })
     g.box(fn(b) {
       b.padding(Is((0.0, 4.0, 0.0, 12.0))).gap(Is(2.0)) |> ignore
       set_words(b, fn() {

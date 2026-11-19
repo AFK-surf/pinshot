@@ -96,6 +96,10 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 `scripts/fetch-stillfail.sh` (run by the build) fetches still.fail's `apps/mbui` and `libs/mbui` at the commit in
 `stillfail.lock` into `deps/stillfail` and applies `patches/`.
 
+## Sponsor
+
+PinShot is free. If it helps you, you can support it on the [sponsor page](https://pin-shot.pages.dev/support) (WeChat Reward, Ko-fi), also under Settings › About.
+
 ## License
 
 [MIT](LICENSE). The shutter sound (`assets/shutter.wav`) was generated with ElevenLabs.
@@ -139,6 +143,10 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 ### Windows 构建
 
 需要 Visual Studio 2022（C++）、Git for Windows、MoonBit（`moon` 在 PATH 上），命令见上面的 Build 一节。
+
+### 赞助
+
+PinShot 免费使用。觉得好用的话，可以在[赞助页](https://pin-shot.pages.dev/support?lang=zh)请作者喝杯咖啡（微信赞赏），「设置 › 关于」里也有入口。
 
 ### 许可证
 
