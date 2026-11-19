@@ -2,6 +2,15 @@
 fn updates_here() -> Bool { false }
 
 ///|
+/// The download page (and the sponsor page under it, settings.mbt).
+let site_url : String = "https://pin-shot.pages.dev"
+
+///|
+/// A web page opened in the person's browser (https only; platform_mac.m).
+#borrow(url)
+extern "C" fn ps_open_url(url : Bytes) -> Unit = "ps_open_url"
+
+///|
 fn start_updates(_updated : Bool) -> Unit { () }
 
 ///|

@@ -364,6 +364,13 @@ moonbit_bytes_t ps_save_dialog(int wid, moonbit_bytes_t dir, moonbit_bytes_t nam
   panel.nameFieldStringValue = str(name);
   return ps_string([panel runModal] == NSModalResponseOK ? panel.URL.path : nil);
 }
+// A web page opened in the person's browser (https only).
+void ps_open_url(moonbit_bytes_t url) {
+  NSString *s = str(url);
+  if (![s hasPrefix:@"https://"]) return;
+  NSURL *u = [NSURL URLWithString:s];
+  if (u) [NSWorkspace.sharedWorkspace openURL:u];
+}
 void ps_reveal(moonbit_bytes_t path) {
   NSURL *url = [NSURL fileURLWithPath:str(path)];
   BOOL folder;
