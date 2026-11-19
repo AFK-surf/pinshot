@@ -490,14 +490,21 @@ fn update_button_pressed() -> Unit {
 }
 
 ///|
-/// What the settings say under 版本: what was found ("" nothing to say).
+/// What the settings say under 版本: always begins with the version (so the row stays two lines tall and nothing
+/// shifts up or down, or left and right beside the button, as updates are checked).
 fn update_note() -> String {
+  let ver = "PinShot " + app_version
+  if !updates_here() {
+    return ver + " · " + tr("通过 Microsoft Store 更新")
+  }
   match update.get() {
-    Unasked | Checking | Installing => ""
-    Latest => tr("已是最新版本")
-    Found(v, _) | Fetching(v, _) => tr("发现新版本 ") + v
-    Ready(v) => tr("新版本 ") + v + tr(" 已下载")
-    Failed(why) => tr(why)
+    Unasked => ver
+    Checking => ver + " · " + tr("正在检查…")
+    Latest => ver + " · " + tr("已是最新版本")
+    Found(v, _) | Fetching(v, _) => ver + " · " + tr("发现新版本 ") + v
+    Ready(v) => ver + " · " + tr("新版本 ") + v + tr(" 已下载")
+    Installing => ver + " · " + tr("正在更新…")
+    Failed(why) => ver + " · " + tr(why)
   }
 }
 
@@ -513,7 +520,6 @@ fn update_notes_url() -> String {
 ///|
 fn update_settings(g : @view.View) -> Unit {
   set_row(g, "版本", fn(r) {
-    set_words(r, fn() { "PinShot " + app_version }, 13.0, set_muted)
     if updates_here() {
       small_button(r, fn() { tr("更新内容") }, fn() { ps_open_url(cstr(update_notes_url())) }, shown=fn() {
         match update.get() {
@@ -521,9 +527,11 @@ fn update_settings(g : @view.View) -> Unit {
           _ => false
         }
       })
-      small_button(r, update_button_words, update_button_pressed)
+      small_button(r, update_button_words, update_button_pressed, min_width=fn() {
+        Some(if english.get() { 128.0 } else { 88.0 })
+      })
     }
-  }, note=fn() { if updates_here() { update_note() } else { tr("通过 Microsoft Store 更新") } }, note_ink=fn() {
+  }, note=update_note, note_ink=fn() {
     if update.get() is Failed(_) {
       0xE5A545FFL
     } else {

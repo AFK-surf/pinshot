@@ -309,7 +309,7 @@ static DWORD WINAPI fetch_work(void *arg) {
   WinHttpSetTimeouts(s, 15000, 15000, 15000, 30000);
   c = WinHttpConnect(s, host, u.nPort, 0);
   r = c ? WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                             u.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                             WINHTTP_FLAG_REFRESH | (u.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0))
         : NULL;
   if (!r || !WinHttpSendRequest(r, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
       !WinHttpReceiveResponse(r, NULL)) {

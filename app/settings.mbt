@@ -525,10 +525,17 @@ fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
 
 ///|
 /// A small button saying `label` (it may change), laid out only while `shown`.
-fn small_button(parent : @view.View, label : () -> String, press : () -> Unit, shown? : () -> Bool = fn() { true }) -> Unit {
+fn small_button(
+  parent : @view.View,
+  label : () -> String,
+  press : () -> Unit,
+  shown? : () -> Bool = fn() { true },
+  min_width? : () -> Double? = fn() { None },
+) -> Unit {
   parent.box(fn(b) {
     b
     .laid_nowhere(By(fn() { !shown() }))
+    .min_width(By(min_width))
     .height(Is(Some(26.0)))
     .padding(Is((10.0, 0.0, 10.0, 0.0)))
     .radius(Is(8.0))
