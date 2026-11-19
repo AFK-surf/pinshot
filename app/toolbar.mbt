@@ -164,6 +164,7 @@ fn pick_tool(which : Tool) -> Unit {
 fn toolbar(stage : @view.View) -> Unit {
   stage.box(fn(o) {
     o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
+    bar_tip_node(o)
     o.box(fn(col) {
       col
       .gap(Is(4.0))
@@ -346,7 +347,12 @@ fn tool_group_button(
     .lies_along(Is(Middle))
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
-    .on_press(fn() { if !dim() { press() } })
+    .on_press(fn() {
+      tip_off()
+      if !dim() {
+        press()
+      }
+    })
     .ground(By(fn() {
       if on() {
         0xFFFFFF2EL
@@ -359,6 +365,7 @@ fn tool_group_button(
       }
     }))
     |> ignore
+    tip_follows(b, label_fn, @view.Top)
     b.box(fn(g) {
       g
       .width(Is(Some(18.0)))
@@ -401,7 +408,10 @@ fn sub_tool_button(row : @view.View, which : Tool, shown : () -> Bool, pick : (T
     .lies_along(Is(Middle))
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Button, label=tr(tool_label(which)))) }))
-    .on_press(fn() { pick(which) })
+    .on_press(fn() {
+      tip_off()
+      pick(which)
+    })
     .ground(By(fn() {
       if tool.get() == which {
         0xFFFFFF2EL
@@ -414,6 +424,7 @@ fn sub_tool_button(row : @view.View, which : Tool, shown : () -> Bool, pick : (T
       }
     }))
     |> ignore
+    tip_follows(b, fn() { tool_label(which) }, @view.Bottom)
     b.box(fn(g) {
       g
       .width(Is(Some(17.0)))
@@ -488,6 +499,7 @@ fn style_row(row : @view.View) -> Unit {
       .presses(Is(true))
       .says(By(fn() { Some(@view.said(Button, label=tr(["细", "中", "粗"][s]))) }))
       .on_press(fn() {
+        tip_off()
         size_now.set(s)
         restyle_selected(s~)
       })
@@ -501,6 +513,7 @@ fn style_row(row : @view.View) -> Unit {
         }
       }))
       |> ignore
+      tip_follows(b, fn() { ["细", "中", "粗"][s] }, @view.Bottom)
       let d = [4.0, 7.0, 11.0][s]
       b.box(fn(dot) {
         dot.width(Is(Some(d))).height(Is(Some(d))).radius(Is(d / 2.0)).ground(Is(0xE6E8ECFFL)) |> ignore
@@ -618,4 +631,95 @@ fn glyph(name : String) -> @pixels.Vector {
     "top" => lines(["M9 15V5", "M5 9l4-4 4 4", "M4 2.8h10"])
     _ => lines([])
   }
+}
+
+// The bar's tips (the user, 2026-11-20: 「给那些按钮加一个 hover tips，不然我都不知道是什么功能」): what a button does,
+// in a small dark label beside it once the pointer has rested on it a moment; from one button to the next while one
+// shows, at once. Gone as the pointer leaves or presses.
+
+///|
+/// The button pointed at.
+let tip_on : @signals.Signal[@view.NodeId?] = @signals.signal(None)
+
+///|
+/// What the button pointed at does and the side its tip goes on (set with `tip_on`).
+let tip_of : Ref[(() -> String, @view.Side)] = Ref((fn() { "" }, @view.Top))
+
+///|
+/// Whether tips show now (the pointer has rested on a button long enough, and not moved off the bar since).
+let tip_ready : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+let tip_wait : Double = 450.0
+
+///|
+/// How long after leaving a button the next one's tip still shows at once.
+let tip_linger : Double = 300.0
+
+///|
+fn tip_off() -> Unit {
+  tip_on.set(None)
+  tip_ready.set(false)
+}
+
+///|
+/// Button `b` tells what it does (`label`, said through `tr`) by a tip on `side` while it is pointed at.
+fn tip_follows(b : @view.View, label : () -> String, side : @view.Side) -> Unit {
+  let id = b.id()
+  b.reacts(fn() { b.pointed() }, fn(pointed) {
+    if pointed {
+      tip_of.val = (label, side)
+      tip_on.set(Some(id))
+      if !tip_ready.untracked() {
+        b.at_moment(b.cause_at() + tip_wait, fn() {
+          if tip_on.untracked() == Some(id) {
+            tip_ready.set(true)
+          }
+        })
+        |> ignore
+      }
+    } else if tip_on.untracked() == Some(id) {
+      tip_on.set(None)
+      b.at_moment(b.cause_at() + tip_linger, fn() { if tip_on.untracked() is None { tip_ready.set(false) } }, later=true)
+      |> ignore
+    }
+  })
+}
+
+///|
+fn bar_tip_node(o : @view.View) -> Unit {
+  o.pick(
+    fn() {
+      if tip_ready.get() {
+        tip_on.get()
+      } else {
+        None
+      }
+    },
+    fn(layer, key) {
+      guard key is Some(id) else { return }
+      let (label, side) = tip_of.val
+      layer.box(fn(t) {
+        t
+        .beside(id, side~, along=Middle, offset=6.0, padding=4.0)
+        .presses(Is(false))
+        .points(Is(false))
+        .padding(Is((8.0, 4.0, 8.0, 4.0)))
+        .radius(Is(7.0))
+        .ground(Is(0x1E1F23F7L))
+        .edge(Is((1.0, 0xFFFFFF1FL)))
+        .shadow(Is((10.0, 2.0, 0x00000059L)))
+        |> ignore
+        t.box(fn(w) {
+          w
+          .words(By(fn() { tr(label()) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+          .ink(Is(0xECEEF2FFL))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    at_once=true,
+  )
 }
