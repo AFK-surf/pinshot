@@ -89,26 +89,61 @@ begin
     end;
 end;
 
-// The one running asked to quit (it is replaced or removed), and given a moment to.
-procedure QuitRunning(const Exe: String);
+// Whether the install went through (a run ended before that, by an error or the one running not quitting, did not).
+var
+  Installed: Boolean;
+
+// The one running asked to quit (it is replaced or removed), and given a moment to: True once it is gone. A running
+// exe cannot be deleted, so that is what is tried, on the exe with a copy of it kept beside it and put back at once:
+// should the install then not go through, PinShot is still there as it was. At most 5 s.
+function QuitRunning(const Exe: String): Boolean;
 var
   Code: Integer;
   I: Integer;
 begin
+  Result := True;
   if not FileExists(Exe) then Exit;
   Exec(Exe, '--quit', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  // (until it is gone: a running exe cannot be deleted, and it is about to be replaced or removed anyway; at most 5 s)
   for I := 1 to 25 do
   begin
-    if DeleteFile(Exe) then Exit;
+    if FileCopy(Exe, Exe + '.probe', False) then
+    begin
+      if DeleteFile(Exe) then
+      begin
+        RenameFile(Exe + '.probe', Exe);
+        Exit;
+      end;
+      DeleteFile(Exe + '.probe');
+    end;
     Sleep(200);
   end;
+  Result := False;
 end;
 
+// The one running quit before anything is changed; where it would not, nothing is installed and setup ends with an
+// error (code 7): an update run silently never leaves PinShot half replaced, and the run that started it, still there,
+// says the update was not put in place (app/update_win.c).
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  QuitRunning(ExpandConstant('{app}\pinshot.exe'));
-  Result := '';
+  if QuitRunning(ExpandConstant('{app}\pinshot.exe')) then
+    Result := ''
+  else
+    Result := 'PinShot is still running: quit it from its icon and run the installer again.';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssDone then Installed := True;
+end;
+
+// An update that did not go through: PinShot started again as it was (--start: where it is still running, nothing),
+// so it never disappears because an update failed.
+procedure DeinitializeSetup();
+var
+  Code: Integer;
+begin
+  if IsUpdate() and not Installed and FileExists(ExpandConstant('{app}\pinshot.exe')) then
+    Exec(ExpandConstant('{app}\pinshot.exe'), '--start', '', SW_SHOWNORMAL, ewNoWait, Code);
 end;
 
 function InitializeUninstall(): Boolean;

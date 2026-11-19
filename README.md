@@ -37,7 +37,9 @@ anyway. Windows 10 2004 or later, x64.
 - Updates: Settings › About has **Check for updates** and an **Automatic updates** switch (off by default). Turned on,
   PinShot asks [pin-shot.pages.dev](https://pin-shot.pages.dev/dl/latest.json) once a day, downloads a new version in
   the background, checks its SHA-256 and installs it once PinShot is idle (no capture, no pins open, nothing touched for
-  two minutes), then starts again. The installed copy updates through its installer (silently, keeping your choices);
+  two minutes), then starts again. Each release is signed (ECDSA P-256; the public key is built into PinShot): a release
+  whose signature does not check out is never downloaded, so whoever could change the files on the download site still
+  cannot get PinShot to run anything. An update that fails leaves the current version running. The installed copy updates through its installer (silently, keeping your choices);
   the portable `pinshot.exe` replaces itself. Left off, PinShot goes online only when you press Check for updates. The
   Microsoft Store package is updated by the Store and never checks itself.
 - Command line: `pinshot.exe --settings`, `pinshot.exe --quit`, `pinshot.exe --bench` (times the capture)
@@ -98,7 +100,7 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 - 贴图：拖动移动；滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、置顶、原始大小、不透明度、关闭全部
 - `Ctrl+2`：把剪贴板里的图片贴到屏幕上
 - 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、检查更新、退出
-- 更新：「设置 › 关于」里有「检查更新」按钮和「自动更新」开关（默认关）。打开后每天向 pin-shot.pages.dev 查一次新版本，后台下载、校验 SHA-256，等 PinShot 空闲（没在截图、没有贴图、两分钟没动键鼠）时安装并重新启动。安装版通过安装包静默升级（保留原来的选项），免安装版直接替换自己。关着时只有点「检查更新」时才联网。Microsoft Store 版由商店更新，自己不检查。
+- 更新：「设置 › 关于」里有「检查更新」按钮和「自动更新」开关（默认关）。打开后每天向 pin-shot.pages.dev 查一次新版本，后台下载、校验 SHA-256，等 PinShot 空闲（没在截图、没有贴图、两分钟没动键鼠）时安装并重新启动。每个版本都有签名（ECDSA P-256，公钥内置在 PinShot 里）：签名对不上就不下载，即使下载站的文件被人改了，也没法让 PinShot 运行别的程序。更新失败时，当前版本照常运行。安装版通过安装包静默升级（保留原来的选项），免安装版直接替换自己。关着时只有点「检查更新」时才联网。Microsoft Store 版由商店更新，自己不检查。
 
 设置在 `%APPDATA%\PinShot\settings.json`，日志在 `%APPDATA%\PinShot\pinshot.log`。
 

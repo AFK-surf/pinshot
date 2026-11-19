@@ -265,15 +265,22 @@ extern "C" fn ps_update_cleanup() -> Unit = "ps_update_cleanup"
 extern "C" fn ps_fetch(url : Bytes, path : Bytes, sha256 : Bytes, agent : Bytes) -> Int = "ps_fetch"
 
 ///|
-/// The installer downloaded run silently as an update (it quits this run and starts the new one): 1 it was started.
-#borrow(path)
-extern "C" fn ps_run_setup(path : Bytes) -> Int = "ps_run_setup"
+/// Whether `sig` (hex) is the release key's signature of the release named (update_win.c says what is signed): 1 it is.
+#borrow(version, setup_sha, exe_sha, sig)
+extern "C" fn ps_release_signed(version : Bytes, setup_sha : Bytes, exe_sha : Bytes, sig : Bytes) -> Int = "ps_release_signed"
 
 ///|
-/// The portable exe swapped for the one downloaded and that started (this run ends); 0 it could not be (this run goes
-/// on).
-#borrow(path)
-extern "C" fn ps_swap_exe(path : Bytes) -> Int = "ps_swap_exe"
+/// The installer downloaded, checked once more to be of `sha256`, run silently as an update (it quits this run and
+/// starts the new one; where it ends and this run is still here, {"do":"setup-ended","code":N} is told): 1 it was
+/// started, -1 it is not that file, 0 it could not be started.
+#borrow(path, sha256)
+extern "C" fn ps_run_setup(path : Bytes, sha256 : Bytes) -> Int = "ps_run_setup"
+
+///|
+/// The portable exe swapped for the one downloaded (checked once more to be of `sha256`) and that started (this run
+/// ends); 0 it could not be (this run goes on), -1 it is not that file.
+#borrow(path, sha256)
+extern "C" fn ps_swap_exe(path : Bytes, sha256 : Bytes) -> Int = "ps_swap_exe"
 
 ///|
 /// A web page opened in the person's browser (https only).
