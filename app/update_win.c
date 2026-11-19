@@ -73,7 +73,12 @@ static void exe_dir(wchar_t *out, DWORD n) {
 int32_t ps_install_kind(void) {
   if (ps_packaged()) return 2;
   HKEY k;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, UNINSTALL_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
+  // (a test run (PINSHOT_TEST) is never the person's installed copy: it goes by a test installer's entry, AppId
+  // PinShot-Test, so trying updates out never installs over theirs)
+  const char *test = getenv("PINSHOT_TEST");
+  const wchar_t *key = test && test[0] ? L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PinShot-Test_is1"
+                                       : UNINSTALL_KEY;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
   wchar_t at[MAX_PATH * 2] = {0};
   DWORD size = sizeof at - sizeof(wchar_t), type = 0;
   LONG r = RegQueryValueExW(k, L"InstallLocation", NULL, &type, (BYTE *)at, &size);
@@ -89,8 +94,10 @@ int32_t ps_install_kind(void) {
 
 // Where an update is downloaded to: the installer in %TEMP%\PinShot-update (made); the portable exe beside itself
 // (pinshot.exe.download: the same folder, so it can be moved over it, and a folder it cannot write is found before
-// anything is fetched).
+// anything is fetched). A name that is not a plain file name (a separator, "..") gets "" (nothing downloaded).
 moonbit_bytes_t ps_update_path(moonbit_bytes_t name) {
+  const char *n = (const char *)name;
+  if (!n[0] || strpbrk(n, "\\/:*?\"<>|") || strstr(n, "..")) return moonbit_make_bytes(0, 0);
   wchar_t p[MAX_PATH * 2] = {0};
   if (ps_install_kind() == 0) {
     GetModuleFileNameW(NULL, p, MAX_PATH * 2);
@@ -135,7 +142,115 @@ void ps_update_cleanup(void) {
   }
 }
 
+// ---- what a release is: signed ----
+
+// The key releases are signed with (ECDSA P-256; its private half is in the owner's still.fail vault, 「PinShot 更新签名私
+// 钥」, and packaging/publish.ps1 signs latest.json with it). What latest.json says is taken only signed by it: the
+// SHA-256 a download is checked against comes from there, so whoever could change the files on the download site
+// could otherwise have every copy that updates itself run a program of theirs.
+static const uint8_t release_key_x[32] = {
+    0x5d, 0x53, 0x16, 0xca, 0x6a, 0xab, 0xf5, 0xd9, 0x01, 0x26, 0x5a, 0x15, 0xbe, 0x52, 0xf4, 0x80,
+    0xa7, 0x64, 0x54, 0xc0, 0x52, 0x0f, 0xad, 0x96, 0xb1, 0x75, 0x01, 0x82, 0xb7, 0x72, 0xd3, 0x5e};
+static const uint8_t release_key_y[32] = {
+    0xcd, 0x71, 0xe3, 0xc7, 0xfe, 0x26, 0xb5, 0xf7, 0xa6, 0x11, 0xbe, 0xd0, 0xb7, 0xbb, 0xa7, 0x48,
+    0xf3, 0x09, 0x8d, 0x3c, 0xae, 0x9d, 0xd0, 0xb8, 0x29, 0xe2, 0x5c, 0x18, 0x58, 0x86, 0x6b, 0xbc};
+
+static int hex_digit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// `hex` (exactly 2 * n hex digits) into `out`: 1 it was.
+static int from_hex(const char *hex, uint8_t *out, size_t n) {
+  if (strlen(hex) != n * 2) return 0;
+  for (size_t i = 0; i < n; i++) {
+    int a = hex_digit(hex[i * 2]), b = hex_digit(hex[i * 2 + 1]);
+    if (a < 0 || b < 0) return 0;
+    out[i] = (uint8_t)(a * 16 + b);
+  }
+  return 1;
+}
+
+static int sha256_of(const uint8_t *data, size_t n, uint8_t digest[32]) {
+  BCRYPT_ALG_HANDLE alg = NULL;
+  BCRYPT_HASH_HANDLE h = NULL;
+  int ok = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == 0 &&
+           BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0) == 0 && BCryptHashData(h, (PUCHAR)data, (ULONG)n, 0) == 0 &&
+           BCryptFinishHash(h, digest, 32, 0) == 0;
+  if (h) BCryptDestroyHash(h);
+  if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+  return ok;
+}
+
+// Whether `sig` (hex, r then s, 64 bytes) is the release key's signature of the release named: the bytes
+// "pinshot-update\n<version>\n<setup_sha256>\n<exe_sha256>\n" (what packaging/publish.ps1 signs). 1 it is.
+int32_t ps_release_signed(moonbit_bytes_t version, moonbit_bytes_t setup_sha, moonbit_bytes_t exe_sha,
+                          moonbit_bytes_t sig) {
+  uint8_t s[64], digest[32];
+  if (!from_hex((const char *)sig, s, 64)) return 0;
+  char msg[512];
+  int n = snprintf(msg, sizeof msg, "pinshot-update\n%s\n%s\n%s\n", (const char *)version, (const char *)setup_sha,
+                   (const char *)exe_sha);
+  if (n <= 0 || n >= (int)sizeof msg || !sha256_of((const uint8_t *)msg, (size_t)n, digest)) return 0;
+  struct {
+    BCRYPT_ECCKEY_BLOB head;
+    uint8_t xy[64];
+  } blob;
+  blob.head.dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+  blob.head.cbKey = 32;
+  memcpy(blob.xy, release_key_x, 32);
+  memcpy(blob.xy + 32, release_key_y, 32);
+  BCRYPT_ALG_HANDLE alg = NULL;
+  BCRYPT_KEY_HANDLE key = NULL;
+  int ok = BCryptOpenAlgorithmProvider(&alg, BCRYPT_ECDSA_P256_ALGORITHM, NULL, 0) == 0 &&
+           BCryptImportKeyPair(alg, NULL, BCRYPT_ECCPUBLIC_BLOB, &key, (PUCHAR)&blob, sizeof blob, 0) == 0 &&
+           BCryptVerifySignature(key, NULL, digest, 32, s, 64, 0) == 0;
+  if (key) BCryptDestroyKey(key);
+  if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+  return ok ? 1 : 0;
+}
+
+// The file `f` (open) read through and its SHA-256 compared with `sha` (lowercase hex): 1 it is that.
+static int file_is(HANDLE f, const char *sha) {
+  uint8_t want[32];
+  if (!from_hex(sha, want, 32)) return 0;
+  BCRYPT_ALG_HANDLE alg = NULL;
+  BCRYPT_HASH_HANDLE h = NULL;
+  int ok = 0;
+  static uint8_t buf[64 * 1024];
+  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == 0 &&
+      BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0) == 0) {
+    LARGE_INTEGER zero = {0};
+    SetFilePointerEx(f, zero, NULL, FILE_BEGIN);
+    DWORD n = 0;
+    ok = 1;
+    while (ReadFile(f, buf, sizeof buf, &n, NULL) && n > 0)
+      if (BCryptHashData(h, buf, n, 0) != 0) ok = 0;
+    uint8_t got[32];
+    ok = ok && BCryptFinishHash(h, got, 32, 0) == 0 && memcmp(got, want, 32) == 0;
+  }
+  if (h) BCryptDestroyHash(h);
+  if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+  return ok;
+}
+
+// The file at `path` opened so that nothing can write it while it is open (it may be read, and moved), or
+// INVALID_HANDLE_VALUE.
+static HANDLE open_sealed(const wchar_t *path) {
+  return CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+}
+
 // ---- a fetch ----
+
+// Whether `url` may be fetched: https only; a test run (PINSHOT_TEST) may also fetch http from this machine
+// (127.0.0.1), where updates are tried out against a release served here (PINSHOT_UPDATE_URL).
+static int url_allowed(const URL_COMPONENTS *u) {
+  if (u->nScheme == INTERNET_SCHEME_HTTPS) return 1;
+  const char *t = getenv("PINSHOT_TEST");
+  return t && t[0] && u->nScheme == INTERNET_SCHEME_HTTP && wcscmp(u->lpszHostName, L"127.0.0.1") == 0;
+}
 
 typedef struct {
   wchar_t *url;
@@ -179,7 +294,7 @@ static DWORD WINAPI fetch_work(void *arg) {
   u.dwHostNameLength = 255;
   u.lpszUrlPath = path;
   u.dwUrlPathLength = 2047;
-  if (!WinHttpCrackUrl(f->url, 0, 0, &u) || u.nScheme != INTERNET_SCHEME_HTTPS) {
+  if (!WinHttpCrackUrl(f->url, 0, 0, &u) || !url_allowed(&u)) {
     why = "bad url";
     goto done;
   }
@@ -193,7 +308,8 @@ static DWORD WINAPI fetch_work(void *arg) {
   // (resolve, connect, send 15 s each; 30 s with nothing received)
   WinHttpSetTimeouts(s, 15000, 15000, 15000, 30000);
   c = WinHttpConnect(s, host, u.nPort, 0);
-  r = c ? WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
+  r = c ? WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                             u.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
         : NULL;
   if (!r || !WinHttpSendRequest(r, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
       !WinHttpReceiveResponse(r, NULL)) {
@@ -272,7 +388,7 @@ static DWORD WINAPI fetch_work(void *arg) {
     BCryptFinishHash(hash, digest, 32, 0);
     char hex[65];
     for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02x", digest[i]);
-    if (f->sha[0] && _stricmp(hex, f->sha) != 0) {
+    if (_stricmp(hex, f->sha) != 0) {
       why = "checksum";
       goto done;
     }
@@ -303,9 +419,11 @@ done:
 }
 
 // `url` (https only) fetched on a thread of its own: into memory (`path` empty) or into the file `path` (written beside
-// it and moved over it once whole and, where `sha256` is not empty, of that SHA-256). `agent` is its User-Agent. 1 it
-// is under way (told back on "ps"), 0 another fetch is.
+// it and moved over it once whole and of the SHA-256 `sha256`: a file is never fetched unchecked). `agent` is its
+// User-Agent. 1 it is under way (told back on "ps"), 0 not (another fetch is, or a file with no SHA-256 to check).
 int32_t ps_fetch(moonbit_bytes_t url, moonbit_bytes_t path, moonbit_bytes_t sha256, moonbit_bytes_t agent) {
+  uint8_t sha_bytes[32];
+  if (((const char *)path)[0] && !from_hex((const char *)sha256, sha_bytes, 32)) return 0;
   if (InterlockedCompareExchange(&fetch_busy, 1, 0) != 0) return 0;
   Fetch *f = (Fetch *)calloc(1, sizeof(Fetch));
   f->url = up_wide((const char *)url);
@@ -326,38 +444,88 @@ int32_t ps_fetch(moonbit_bytes_t url, moonbit_bytes_t path, moonbit_bytes_t sha2
 
 // The installer downloaded (`path`) run silently, as an update: it quits this run (pinshot.exe --quit), replaces the
 // exe, keeps the choices made as it was installed (start with Windows, the desktop icon) and starts PinShot again
-// (packaging/PinShot.iss: /UPDATE). 1 it was started.
-int32_t ps_run_setup(moonbit_bytes_t path) {
+// (packaging/PinShot.iss: /UPDATE). It is checked once more to be of `sha256` as it is started, and kept from being
+// written until it ends. Where it ends and this run is still here (it failed, or could not quit this run), that is
+// told: {"do":"setup-ended","code":N}. 1 it was started, -1 it is not that file, 0 it could not be started.
+typedef struct {
+  HANDLE process, file, wait;
+} SetupRun;
+
+static void CALLBACK setup_ended(void *arg, BOOLEAN timed_out) {
+  (void)timed_out;
+  SetupRun *s = (SetupRun *)arg;
+  DWORD code = 1;
+  GetExitCodeProcess(s->process, &code);
+  char json[64];
+  snprintf(json, sizeof json, "{\"do\":\"setup-ended\",\"code\":%lu}", (unsigned long)code);
+  up_tell(json, NULL, 0);
+  // (let go of from its own callback: without waiting, as that requires)
+  UnregisterWaitEx(s->wait, NULL);
+  CloseHandle(s->process);
+  CloseHandle(s->file);
+  free(s);
+}
+
+int32_t ps_run_setup(moonbit_bytes_t path, moonbit_bytes_t sha256) {
   wchar_t *w = up_wide((const char *)path);
+  HANDLE file = open_sealed(w);
+  if (file == INVALID_HANDLE_VALUE || !file_is(file, (const char *)sha256)) {
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    free(w);
+    return -1;
+  }
   SHELLEXECUTEINFOW e;
   memset(&e, 0, sizeof e);
   e.cbSize = sizeof e;
-  e.fMask = SEE_MASK_NOASYNC;
+  e.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
   e.lpVerb = L"open";
   e.lpFile = w;
   e.lpParameters = L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /UPDATE";
   e.nShow = SW_HIDE;
-  BOOL ok = ShellExecuteExW(&e);
+  BOOL ok = ShellExecuteExW(&e) && e.hProcess;
   free(w);
-  return ok ? 1 : 0;
+  if (!ok) {
+    CloseHandle(file);
+    return 0;
+  }
+  SetupRun *s = (SetupRun *)calloc(1, sizeof(SetupRun));
+  s->process = e.hProcess;
+  s->file = file;
+  if (!RegisterWaitForSingleObject(&s->wait, e.hProcess, setup_ended, s, INFINITE, WT_EXECUTEONLYONCE)) {
+    // (not watched: the file let go of; the installer goes on all the same)
+    CloseHandle(e.hProcess);
+    CloseHandle(file);
+    free(s);
+  }
+  return 1;
 }
 
 // The portable exe swapped for the one downloaded (`path`, beside it) and started in its place: the running exe moved
 // aside to pinshot.exe.old (Windows lets a running exe be renamed, not written; the new run deletes it), the new one
 // moved in, this run's mutex and icon let go and the new one started with --updated, this one ended. Where any of that
-// fails, what was moved is put back and 0 is answered (this run goes on).
-int32_t ps_swap_exe(moonbit_bytes_t path) {
+// fails, what was moved is put back and 0 is answered (this run goes on). The new exe is checked once more to be of
+// `sha256` before anything is moved, and kept from being written until it is started; -1 it is not that file.
+int32_t ps_swap_exe(moonbit_bytes_t path, moonbit_bytes_t sha256) {
   wchar_t exe[MAX_PATH * 2], old[MAX_PATH * 2 + 8];
   GetModuleFileNameW(NULL, exe, MAX_PATH * 2);
   _snwprintf(old, MAX_PATH * 2 + 7, L"%ls.old", exe);
   wchar_t *fresh = up_wide((const char *)path);
+  HANDLE sealed = open_sealed(fresh);
+  if (sealed == INVALID_HANDLE_VALUE || !file_is(sealed, (const char *)sha256)) {
+    if (sealed != INVALID_HANDLE_VALUE) CloseHandle(sealed);
+    DeleteFileW(fresh);
+    free(fresh);
+    return -1;
+  }
   DeleteFileW(old);
   if (!MoveFileExW(exe, old, MOVEFILE_REPLACE_EXISTING)) {
+    CloseHandle(sealed);
     free(fresh);
     return 0;
   }
   if (!MoveFileExW(fresh, exe, MOVEFILE_REPLACE_EXISTING)) {
     MoveFileExW(old, exe, MOVEFILE_REPLACE_EXISTING);
+    CloseHandle(sealed);
     free(fresh);
     return 0;
   }
@@ -372,11 +540,14 @@ int32_t ps_swap_exe(moonbit_bytes_t path) {
   si.cb = sizeof si;
   if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) {
     // (the new exe would not start: the old one put back and started, so PinShot is still there)
+    CloseHandle(sealed);
+    sealed = INVALID_HANDLE_VALUE;
     DeleteFileW(exe);
     MoveFileExW(old, exe, MOVEFILE_REPLACE_EXISTING);
     _snwprintf(cmd, MAX_PATH * 2 + 31, L"\"%ls\"", exe);
     if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) ExitProcess(1);
   }
+  if (sealed != INVALID_HANDLE_VALUE) CloseHandle(sealed);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
   ExitProcess(0);

@@ -107,6 +107,7 @@ let en_words : Map[String, String] = {
   "下载中 ": "Downloading ",
   "下载中…": "Downloading…",
   "重启并更新": "Restart to update",
+  "关闭贴图并更新": "Close pins and update",
   "正在更新…": "Updating…",
   "更新内容": "What's new",
   "已是最新版本": "You're up to date",

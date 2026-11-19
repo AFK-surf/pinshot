@@ -8,6 +8,8 @@
 //   pinshot.exe --quit     the one running ended
 //   pinshot.exe --bench    the screen taken 10 times and the windows listed, timed; no window
 //   pinshot.exe --updated  the run, started by an update in place (update.mbt): it says so
+//   pinshot.exe --start    the run, started again by an update that did not go through (packaging/PinShot.iss);
+//                          with --updated, nothing where one is running already
 
 ///|
 fn main {
@@ -20,6 +22,9 @@ fn main {
     1
   } else if args.length() > 0 && args[0] == "--quit" {
     2
+  } else if args.length() > 0 && (args[0] == "--updated" || args[0] == "--start") {
+    // (the one running, if it is still here, takes nothing from it: no capture)
+    3
   } else {
     0
   }
@@ -100,7 +105,7 @@ fn told(json : String, bytes : Bytes?) -> Unit {
         _ => ()
       }
     "pins" => pins_toggle()
-    "fetching" | "fetched" => update_told(what, o, bytes)
+    "fetching" | "fetched" | "setup-ended" => update_told(what, o, bytes)
     "update-tick" => update_tick()
     "close" =>
       match o.get("wid") {
@@ -175,4 +180,4 @@ let theme_kept : @ui.Theme = { ..@ui.Theme::dark(), tabular: true }
 ///|
 /// PinShot's version: the settings' About, what updates compare with latest.json (update.mbt), and the installer's
 /// and the release's (packaging/pack-setup.ps1 and publish.ps1 read it here). Raised with each release.
-let app_version : String = "1.0.2"
+let app_version : String = "1.0.3"

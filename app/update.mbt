@@ -1,8 +1,13 @@
 // Updates, as desktop apps do them (the user, 2026-11-19: 「加一个检查更新的按钮和自动更新的开关，按照业内标准去做」):
 //
 // - What the latest release is: https://pin-shot.pages.dev/dl/latest.json (packaging/publish.ps1 puts it there with
-//   each release): {"version":"1.0.3","setup":<bytes>,"exe":<bytes>,"setup_sha256":"…","exe_sha256":"…"}. The files
-//   are those of that version's own folder (/dl/v<version>/…, never changed once put there).
+//   each release): {"version":"1.0.3","setup":<bytes>,"exe":<bytes>,"setup_sha256":"…","exe_sha256":"…",
+//   "signature":"…"}. The files are those of that version's own folder (/dl/v<version>/…, never changed once put there).
+// - Taken only signed: the version and both SHA-256 signed with the release key (ECDSA P-256, its private half in the
+//   owner's vault; update_win.c holds the public half and says what is signed). The download site alone can change
+//   nothing that is run here: a release not signed, or of a version that is not plain numbers, is never downloaded
+//   (the download page is offered instead), and a download is checked against the signed SHA-256 as it comes and once
+//   more as it is started.
 // - 设置 › 关于: 检查更新 asks now and says what it found; a newer version is installed by 立即更新 (downloaded, its
 //   SHA-256 checked, put in place, PinShot started again).
 // - 自动更新 (off unless turned on: the user, 2026-11-19, 「自动更新默认关掉」): asked a minute after PinShot starts and then once a day; a newer version is
@@ -15,10 +20,29 @@
 // - The new run says it was updated (a note from the icon).
 
 ///|
-let latest_url : String = "https://pin-shot.pages.dev/dl/latest.json"
+/// Where releases are got from: the download site; a test run (PINSHOT_TEST) may name another with PINSHOT_UPDATE_URL
+/// (a release served on this machine, http://127.0.0.1:<port>/, to try updates out on).
+fn download_base() -> String {
+  let here = @ui.env("PINSHOT_UPDATE_URL")
+  if test_run() && here != "" {
+    here
+  } else {
+    "https://pin-shot.pages.dev/dl/"
+  }
+}
 
 ///|
-let download_base : String = "https://pin-shot.pages.dev/dl/"
+fn test_run() -> Bool {
+  @ui.env("PINSHOT_TEST") != ""
+}
+
+///|
+/// A test run told to update at once (PINSHOT_TEST_UPDATE_NOW, with PINSHOT_UPDATE_URL): asked two seconds after it
+/// starts, as if 自动更新 were on, and put in place as soon as it is downloaded, not once nobody has touched the
+/// machine for two minutes (the person using it while updates are tried out).
+fn update_now_test() -> Bool {
+  test_run() && @ui.env("PINSHOT_TEST_UPDATE_NOW") != ""
+}
 
 ///|
 /// The download page (where a version that cannot be put in place here is got by hand).
@@ -48,12 +72,47 @@ enum Update {
 let update : @signals.Signal[Update] = @signals.signal(Unasked)
 
 ///|
-/// The latest release as latest.json said it.
+/// The latest release as latest.json said it (signed: `latest_read`).
 #derive(Eq)
 struct Release {
   version : String
   setup_sha : String
   exe_sha : String
+}
+
+///|
+/// Whether `v` is a version as releases are named: two to four numbers with dots between (1.0.3). Nothing else is
+/// taken from latest.json, as it names a file and a folder.
+fn plain_version(v : String) -> Bool {
+  let parts : Array[StringView] = v.split(".").collect()
+  if parts.length() < 2 || parts.length() > 4 {
+    return false
+  }
+  for p in parts {
+    if p.length() == 0 || p.length() > 9 {
+      return false
+    }
+    for c in p {
+      if c < '0' || c > '9' {
+        return false
+      }
+    }
+  }
+  true
+}
+
+///|
+/// Whether `h` is a SHA-256 as latest.json gives it (64 lowercase hex digits).
+fn plain_sha(h : String) -> Bool {
+  if h.length() != 64 {
+    return false
+  }
+  for c in h {
+    if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+      return false
+    }
+  }
+  true
 }
 
 ///|
@@ -73,6 +132,11 @@ let ready_at : Ref[Double] = Ref(0.0)
 
 ///|
 let ready_noted : Ref[Bool] = Ref(false)
+
+///|
+/// When latest.json was last asked for this run, whether or not it was got (seconds since 1970; 0 not yet): one that
+/// failed is asked again an hour after, not at each tick.
+let last_tried : Ref[Double] = Ref(0.0)
 
 ///|
 /// How this copy was installed (ps_install_kind: 2 the Store's, 1 PinShot-Setup's, 0 the portable exe).
@@ -160,7 +224,8 @@ fn update_busy() -> Bool {
 /// minutes: each asks again where a day has gone by since the last time, and puts a downloaded release in place once
 /// nobody uses PinShot), and the person told where this run is the update.
 fn start_updates(updated : Bool) -> Unit {
-  if !updates_here() {
+  // (a test run updates only from a release served here: PINSHOT_UPDATE_URL)
+  if !updates_here() || (test_run() && @ui.env("PINSHOT_UPDATE_URL") == "") {
     return
   }
   ps_update_cleanup()
@@ -168,23 +233,26 @@ fn start_updates(updated : Bool) -> Unit {
     log("update: now \{app_version}")
     ps_tray_note(cstr(tr("PinShot 已更新到 ") + app_version), cstr(tr("点这里打开设置。")))
   }
-  ps_update_ticks(60 * 1000, 10 * 60 * 1000)
+  ps_update_ticks(if update_now_test() { 2000 } else { 60 * 1000 }, if update_now_test() { 3000 } else { 10 * 60 * 1000 })
 }
 
 ///|
 /// The tick: asked again where it is due, a release downloaded put in place where nobody uses PinShot.
 fn update_tick() -> Unit {
-  if !settings.untracked().auto_update || update_busy() {
+  if !(settings.untracked().auto_update || update_now_test()) || update_busy() {
     return
   }
   match update.untracked() {
     Ready(_) => install_when_idle()
+    // (found as the person asked, with 自动更新 on: downloaded now, not a day later)
+    Found(_, false) => download_update()
     _ => {
       let now = ps_epoch_s()
       let last = last_checked()
-      // (a day after the last time; an hour after one that failed; a clock set back counts as due too)
-      let wait = if update.untracked() is Failed(_) { 3600.0 } else { day_s }
-      if now - last >= wait || last > now + 60.0 {
+      // (a day after the last time latest.json was read, a clock set back counting as due too; and an hour after the
+      // last try this run, so one that failed is not asked again at each tick)
+      let due = now - last >= day_s || last > now + 60.0
+      if due && now - last_tried.val >= 3600.0 {
         check_update(false)
       }
     }
@@ -203,7 +271,8 @@ fn check_update(asked : Bool) -> Unit {
     return
   }
   update_asked.val = asked
-  if ps_fetch(cstr(latest_url), cstr(""), cstr(""), agent()) == 1 {
+  last_tried.val = ps_epoch_s()
+  if ps_fetch(cstr(download_base() + "latest.json"), cstr(""), cstr(""), agent()) == 1 {
     update.set(Checking)
   } else {
     update.set(Failed("正在下载，请稍后再试"))
@@ -246,6 +315,16 @@ fn update_told(what : String, o : Map[String, Json], body : Bytes?) -> Unit {
           }
         _ => ()
       }
+    // (the installer ended and this run is still here: it did not put the update in place)
+    "setup-ended" =>
+      if update.untracked() is Installing {
+        let code = match o.get("code") {
+          Some(Number(x, ..)) => x.to_int()
+          _ => -1
+        }
+        log("update: the installer ended (\{code}) and this run is still here")
+        update.set(Failed("无法安装更新"))
+      }
     _ => ()
   }
 }
@@ -287,7 +366,8 @@ fn latest_read(body : Bytes?) -> Unit {
     }
   }
   let version = s("version")
-  if version == "" {
+  if !plain_version(version) {
+    log("update: latest.json names no plain version")
     update.set(Failed("检查更新失败"))
     return
   }
@@ -299,10 +379,11 @@ fn latest_read(body : Bytes?) -> Unit {
   }
   let r = { version, setup_sha: s("setup_sha256"), exe_sha: s("exe_sha256") }
   release.val = Some(r)
-  // (a release that names no SHA-256 for the file this copy needs is not put in place unchecked: got by hand)
-  let sha = if update_kind() == 1 { r.setup_sha } else { r.exe_sha }
-  let by_hand = sha.length() != 64
-  log("update: \{version} found\{if by_hand { " (no checksum: by hand)" } else { "" }}")
+  // (a release not signed by the release key is not put in place here: got by hand from the download page)
+  let by_hand = !(plain_sha(r.setup_sha) &&
+    plain_sha(r.exe_sha) &&
+    ps_release_signed(cstr(version), cstr(r.setup_sha), cstr(r.exe_sha), cstr(s("signature"))) == 1)
+  log("update: \{version} found\{if by_hand { " (not signed: by hand)" } else { "" }}")
   update.set(Found(version, by_hand))
   if !update_asked.val {
     if by_hand {
@@ -319,13 +400,14 @@ fn download_update() -> Unit {
   guard release.val is Some(r) else { return }
   let (url, name, sha) = if update_kind() == 1 {
     let name = "PinShot-Setup-\{r.version}.exe"
-    (download_base + "v\{r.version}/" + name, name, r.setup_sha)
+    (download_base() + "v\{r.version}/" + name, name, r.setup_sha)
   } else {
-    (download_base + "v\{r.version}/pinshot.exe", "pinshot.exe", r.exe_sha)
+    (download_base() + "v\{r.version}/pinshot.exe", "pinshot.exe", r.exe_sha)
   }
   let path = text_of(ps_update_path(cstr(name)))
   update_file.val = path
-  if ps_fetch(cstr(url), cstr(path), cstr(sha), agent()) == 1 {
+  if path != "" &&
+    ps_fetch(cstr(url), cstr(path), cstr(sha), agent()) == 1 {
     log("update: downloading \{url}")
     update.set(Fetching(r.version, -1))
   } else {
@@ -337,15 +419,19 @@ fn download_update() -> Unit {
 /// The release downloaded put in place now (PinShot starts again in the new version).
 fn install_update() -> Unit {
   guard update.untracked() is Ready(v) else { return }
+  guard release.val is Some(r) else { return }
   log("update: installing \{v}")
   update.set(Installing)
-  let ok = if update_kind() == 1 {
+  let done = if update_kind() == 1 {
     // (the installer quits this run itself: pinshot.exe --quit)
-    ps_run_setup(cstr(update_file.val)) == 1
+    ps_run_setup(cstr(update_file.val), cstr(r.setup_sha))
   } else {
-    ps_swap_exe(cstr(update_file.val)) == 1
+    ps_swap_exe(cstr(update_file.val), cstr(r.exe_sha))
   }
-  if !ok {
+  if done == -1 {
+    log("update: \{v} is not the file signed")
+    update.set(Failed("下载的文件校验失败"))
+  } else if done != 1 {
     log("update: could not install \{v}")
     update.set(Failed("无法安装更新"))
   }
@@ -356,10 +442,13 @@ fn install_update() -> Unit {
 /// touched for two minutes); else at a later tick. Waiting a day, the person is told once that it waits for them.
 fn install_when_idle() -> Unit {
   guard update.untracked() is Ready(v) else { return }
-  if !capturing.untracked() && pins.length() == 0 && settings_wid.val == 0 && ps_idle_ms() >= 120 * 1000 {
+  if !capturing.untracked() && pins.length() == 0 && settings_wid.val == 0 && (update_now_test() || ps_idle_ms() >= 120 * 1000) {
     install_update()
     return
   }
+  log(
+    "update: \{v} waits (capture \{capturing.untracked()}, pins \{pins.length()}, settings \{settings_wid.val}, idle \{ps_idle_ms()} ms)",
+  )
   if !ready_noted.val && ps_epoch_s() - ready_at.val >= day_s {
     ready_noted.val = true
     ps_tray_note(
@@ -378,7 +467,8 @@ fn update_button_words() -> String {
     Found(_, true) => tr("前往下载")
     Found(_, false) => tr("立即更新")
     Fetching(_, p) => if p >= 0 { tr("下载中 ") + p.to_string() + "%" } else { tr("下载中…") }
-    Ready(_) => tr("重启并更新")
+    // (putting it in place closes the pins: said on the button)
+    Ready(_) => if pins.length() > 0 { tr("关闭贴图并更新") } else { tr("重启并更新") }
     Installing => tr("正在更新…")
   }
 }

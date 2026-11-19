@@ -540,6 +540,7 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PS_AGAIN:  // started again: as the shortcut, or as its arguments say (ps_start)
       if (wp == 1) ps_tell("{\"do\":\"menu\",\"item\":\"settings\"}");
       else if (wp == 2) ps_tell("{\"do\":\"menu\",\"item\":\"quit\"}");
+      else if (wp == 3) ;  // (--updated: an update's new run, and this one is still here: nothing taken)
       else capture_asked("again");
       return 0;
     case WM_PS_TRIM:
