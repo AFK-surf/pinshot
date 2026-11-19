@@ -346,9 +346,9 @@ fn settings_page(root : @view.View) -> Unit {
         },
         note=fn() {
           if settings.get().capture_keep {
-            tr("后台保持截屏会话，按键秒开（HDR 自动 16 位色彩还原）")
+            tr("后台保持截屏会话，按键秒开")
           } else {
-            tr("平时不占截屏显存（省约 240 MB），按键时拉起（HDR 同样 16 位还原）")
+            tr("平时不占截屏显存（省约 240 MB），按键时拉起")
           }
         },
         note_ink=fn() { set_muted },
@@ -429,14 +429,20 @@ fn set_row(
   note_ink? : () -> Int64 = fn() { 0xE5A545FFL },
 ) -> Unit {
   parent.box(fn(row) {
-    row.row(Is(true)).min_height(Is(Some(38.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+    row
+    .row(Is(true))
+    .min_height(Is(Some(38.0)))
+    .padding(Is((0.0, 5.0, 0.0, 5.0)))
+    .gap(Is(12.0))
+    .lines_up(Is(Some(Middle)))
+    |> ignore
     row.box(fn(l) {
-      l.grow(Is(1.0)).gap(Is(2.0)) |> ignore
+      l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
       set_words(l, fn() { tr(label) }, 13.0, set_ink)
       l.box(fn(n) {
         n
         .laid_nowhere(By(fn() { note() == "" }))
-        .words(By(note), look={ ..@view.words_plain, size: 11.5, weight: 400, line: 16.0, wrap: false })
+        .words(By(note), look={ ..@view.words_plain, size: 11.5, weight: 400, line: 16.0, wrap: true })
         .ink(By(note_ink))
         |> ignore
       })
