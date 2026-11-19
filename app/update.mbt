@@ -123,7 +123,7 @@ fn set_last_checked(at : Double) -> Unit {
 ///|
 /// A version's numbers ("1.0.10" → [1, 0, 10]; what is not a number counts 0).
 fn version_parts(v : String) -> Array[Int] {
-  v.trim().split(".").map(fn(p) { @string.parse_int(p.to_string()) catch { _ => 0 } }).collect()
+  v.trim().split(".").map(fn(p) { @string.parse_int(p.to_owned()) catch { _ => 0 } }).collect()
 }
 
 ///|
@@ -282,7 +282,7 @@ fn latest_read(body : Bytes?) -> Unit {
   }
   let s = fn(k : String) {
     match o.get(k) {
-      Some(String(v)) => v.trim().to_string().to_lower()
+      Some(String(v)) => v.trim().to_owned().to_lower()
       _ => ""
     }
   }
