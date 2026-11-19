@@ -68,7 +68,7 @@ fn copy_out() -> Unit {
         log("copy \{r_w.val}x\{r_h.val}: \{png.length()} bytes in \{num(ps_now_ms() - t0)} ms")
         if settings.untracked().keep_copies {
           let dir = settings.untracked().save_dir
-          write_picture_file(dir + "\\" + file_name(), png)
+          write_picture_file(file_in(dir, file_name()), png)
         }
       }
       None => ()
@@ -120,7 +120,7 @@ fn save_out() -> Unit {
           ps_hide(0)
           text_of(ps_save_dialog(-1, cstr(s.save_dir), cstr(file_name())))
         } else {
-          s.save_dir + "\\" + file_name()
+          file_in(s.save_dir, file_name())
         }
         if path != "" {
           write_picture_file(path, png)

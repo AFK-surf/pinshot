@@ -7,7 +7,7 @@ set -e -o pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODE=${MODE:-release}
 APPS="$ROOT/deps/stillfail/apps/mbui"
-"$ROOT/scripts/fetch-stillfail.sh"
+bash "$ROOT/scripts/fetch-stillfail.sh"
 rm -rf "$APPS/src/pinshot"
 mkdir -p "$APPS/src/pinshot"
 cp "$ROOT"/app/* "$APPS/src/pinshot/"

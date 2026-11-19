@@ -160,6 +160,7 @@ fn close_pin(wid : Int) -> Unit {
 fn pin_gone(wid : Int) -> Unit {
   guard pin_of_wid(wid) is Some((what, p)) else { return }
   pins.remove(what)
+  pin_roots.remove(wid)
   @ui.forget_image(p.key.untracked())
   trim_soon()
 }
@@ -519,7 +520,7 @@ fn pin_menu(p : Pin) -> Unit {
   let a = p.alpha.untracked()
   let o = tr("不透明度")
   let lines = [
-    "copy\t" + tr("复制") + "\tCtrl+C", "save\t" + tr("另存为…") + "\t", "ocr\t" + tr("提取文字") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
+    "copy\t" + tr("复制") + (if @ui.keys_system() == 0 { "\t⌘C" } else { "\tCtrl+C" }), "save\t" + tr("另存为…") + "\t", "ocr\t" + tr("提取文字") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
     "front\t" + tr("移到最前") + "\t", "-", "turn-ccw\t" + tr("向左旋转 90°") + "\tCtrl+Shift+R",
     "turn-cw\t" + tr("向右旋转 90°") + "\tCtrl+R",
     "flip-x\t" + tr("水平翻转") + "\t", "flip-y\t" + tr("垂直翻转") + "\t", "reset\t" + tr("重置") + "\t" + (if pin_as_pinned(p) { "g" } else { "Ctrl+0" }), "-",
@@ -744,12 +745,13 @@ fn pin_keys() -> @view.Keymap {
   let ch = fn(c : Char, action : String, mods : Int) { k(@ui.key_of_char(c), action, mods) }
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
-    ch('c', "copy", @ui.mod_ctrl),
-    ch('s', "save", @ui.mod_ctrl),
-    ch('t', "top", @ui.mod_ctrl),
-    ch('0', "reset", @ui.mod_ctrl),
-    ch('r', "turn-cw", @ui.mod_ctrl),
-    ch('r', "turn-ccw", @ui.mod_ctrl | @ui.mod_shift_key),
+    ch('c', "copy", shortcut_mod()),
+    k(@ui.key_code_copy, "copy", shortcut_mod()),
+    ch('s', "save", shortcut_mod()),
+    ch('t', "top", shortcut_mod()),
+    ch('0', "reset", shortcut_mod()),
+    ch('r', "turn-cw", shortcut_mod()),
+    ch('r', "turn-ccw", shortcut_mod() | @ui.mod_shift_key),
   ])
 }
 
@@ -801,6 +803,16 @@ fn pin_active(wid : Int, on : Bool) -> Unit {
   }
   p.active_at.set(ps_now_ms())
   p.flash.set(1.0)
+  if @hostapi.platform() == 0 && pin_roots.get(wid) is Some(root) {
+    let since = p.active_at.untracked()
+    fn advance() {
+      if p.active_at.untracked() == since && p.flash.untracked() > 0.0 {
+        pin_tick(wid)
+        root.at_moment(root.cause_at() + 16.0, advance, later=true) |> ignore
+      }
+    }
+    advance()
+  }
 }
 
 ///|

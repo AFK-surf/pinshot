@@ -2,13 +2,29 @@
 
 [中文](#中文) · [Download](https://pin-shot.pages.dev)
 
-Screenshot, mark up and pin to the screen, PixPin-style, for Windows. Written in MoonBit with still.fail's
+Screenshot, mark up and pin to the screen, PixPin-style, for Windows and macOS. Written in MoonBit with still.fail's
 [mbui](https://github.com/AFK-surf/still.fail): the UI and logic are written once, and what is system-specific is a
-thin native layer (Windows: `app/platform_win.c`, `app/capture_wgc.cpp`).
+native layer in `app/` for Windows and macOS.
 
 ![PinShot](site/public/img/en-markup.jpg)
 
-## Install
+## macOS
+
+Requires macOS 14 or later. Unzip `PinShot-mac.zip`, move `PinShot.app` to Applications, and open it.
+Click the camera in the menu bar or press Control–Option–A to capture. Control–2 pins a clipboard image.
+Right-click the camera for settings and quit. In a selection, use ⌘C to copy, ⌘S to save, ⌘T to pin,
+and ⌘Z / ⇧⌘Z to undo or redo.
+
+On the first capture, allow PinShot under System Settings › Privacy & Security › Screen & System Audio Recording,
+then quit and reopen it. If PinShot is missing from the list, click **+** and select the app. A rebuilt ad-hoc app can require granting access again.
+Settings and logs live under `~/Library/Application Support/PinShot/`.
+
+With the Xcode command-line tools and MoonBit on PATH, run `bash scripts/build-mac.sh` and then
+`open out/build/PinShot.app`. The **macOS package** GitHub Actions workflow runs on demand and on
+`v*` tags. Download the runner-architecture artifact for the app ZIP. These builds use ad-hoc signing
+without a Developer ID certificate or notarization.
+
+## Windows installation
 
 Download `PinShot-Setup.exe` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/motion-space/pinshot/releases/latest)) and run
 it. It installs for the current user (no administrator needed), adds a Start menu entry and an uninstall entry in
@@ -66,7 +82,7 @@ Settings are in `%APPDATA%\PinShot\settings.json`, the log (each capture's timin
 - Marks are kept in monitor pixels; the overlay and the export draw the same nodes, and the export is composed on the
   GPU at the original resolution by mbui's `take_picture`.
 
-## Build
+## Windows build
 
 Needs Visual Studio 2022 (C++), Git for Windows (Git Bash) and MoonBit (`moon` on PATH).
 
@@ -88,9 +104,18 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 
 ## 中文
 
-截图、标注、贴图（PixPin 式）的 Windows 工具，用 MoonBit 和 still.fail 的 mbui 写成：界面和逻辑只写一份，系统相关的部分是很薄的原生层。
+截图、标注、贴图（PixPin 式）的 Windows 和 macOS 工具，用 MoonBit 和 still.fail 的 mbui 写成：界面和逻辑只写一份，系统相关的部分是很薄的原生层。
 
-### 安装
+### macOS
+
+需要 macOS 14 或更新版本。解压 `PinShot-mac.zip`，把 `PinShot.app` 移到「应用程序」后打开。
+点菜单栏的相机或按 ⌃⌥A 截图，⌃2 贴剪贴板图片，右键相机打开设置或退出。选区内支持 ⌘C 复制、⌘S 保存、⌘T 贴图、⌘Z 撤销和 ⇧⌘Z 重做。
+
+首次截图时，在「系统设置 → 隐私与安全性 → 屏幕与系统音频录制」（部分系统显示为「屏幕录制」）中允许 PinShot，然后退出并重新打开应用。列表为空时，点「＋」选择当前的 `PinShot.app`。重新构建后，系统可能需要对新版重新授权。设置与日志在 `~/Library/Application Support/PinShot/`。
+
+本机安装 Xcode 命令行工具和 MoonBit 后，运行 `bash scripts/build-mac.sh`，用 `open out/build/PinShot.app` 启动。在 GitHub Actions 中可手动运行 **macOS package**，推送 `v*` 标签也会打包。产物使用 ad-hoc 签名，尚未使用开发者证书和公证。
+
+### Windows 安装
 
 在 [pin-shot.pages.dev](https://pin-shot.pages.dev)（或 [Releases](https://github.com/motion-space/pinshot/releases/latest)）下载 `PinShot-Setup-<版本>.exe` 运行即可：装在当前用户下，不需要管理员权限，会建开始菜单快捷方式、在「设置 › 应用」里加卸载项，可选开机自启。同一页的 `pinshot.exe` 是免安装版，单个文件，放哪里都能直接运行。
 
@@ -111,7 +136,7 @@ packaging/pack-msix.ps1      # the Microsoft Store package
 
 设置在 `%APPDATA%\PinShot\settings.json`，日志在 `%APPDATA%\PinShot\pinshot.log`。
 
-### 构建
+### Windows 构建
 
 需要 Visual Studio 2022（C++）、Git for Windows、MoonBit（`moon` 在 PATH 上），命令见上面的 Build 一节。
 

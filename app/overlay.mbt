@@ -169,7 +169,7 @@ fn overlay_first_frame() -> Unit {
   }
   if started_with_settings.val {
     open_settings()
-  } else if !capturing.untracked() && settings.untracked().capture_keep {
+  } else if @hostapi.platform() != 0 && !capturing.untracked() && settings.untracked().capture_keep {
     // (none when the person's own is open already: a shortcut pressed as the run started, shown as its first frame)
     // (one capture taken out of sight as it starts, all of it as one is (the screen taken, the overlay at the
     // monitor's size, the picture a texture, a frame drawn) and let go: the first the person takes is as quick as
@@ -746,7 +746,7 @@ fn overlay_keys() -> @view.Keymap {
     { keys: [{ code, mods }], action, when: Always }
   }
   let ch = fn(c : Char, action : String, mods : Int) { k(@ui.key_of_char(c), action, mods) }
-  let ctrl = @ui.mod_ctrl
+  let ctrl = shortcut_mod()
   let shift = @ui.mod_shift_key
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
@@ -755,6 +755,7 @@ fn overlay_keys() -> @view.Keymap {
     k(@ui.key_code_backspace, "delete", 0),
     k(@ui.key_code_enter, "copy", 0),
     ch('c', "copy", ctrl),
+    k(@ui.key_code_copy, "copy", ctrl),
     ch('s', "save", ctrl),
     ch('t', "pin", ctrl),
     ch('o', "ocr", ctrl),

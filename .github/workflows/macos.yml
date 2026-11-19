@@ -1,0 +1,20 @@
+name: macOS package
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh -o "$RUNNER_TEMP/moon-install.sh"
+          bash "$RUNNER_TEMP/moon-install.sh"
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - run: bash scripts/build-mac.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PinShot-mac-${{ runner.arch }}
+          path: out/build/PinShot-mac.zip

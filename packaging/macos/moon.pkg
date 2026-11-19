@@ -1,0 +1,23 @@
+import {
+  "mbui/host",
+  "mbui/hostapi",
+  "mbui/ui",
+  "mbui/view",
+  "mbui/signals",
+  "mbui/pixels",
+  "moonbitlang/core/json",
+  "moonbitlang/core/string",
+  "moonbitlang/core/math",
+  "moonbitlang/core/encoding/utf8",
+}
+
+options(
+  "is-main": true,
+  link: {
+    "native": {
+      "stub-cc-flags": "-fobjc-arc",
+      "cc-link-flags": "-framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit -framework Security -framework LocalAuthentication -framework AuthenticationServices -framework Carbon -framework ScreenCaptureKit -framework ServiceManagement",
+    },
+  },
+  "native-stub": [ "platform_mac.m", "capture_mac.m" ],
+)
