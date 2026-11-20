@@ -707,6 +707,119 @@ int32_t ps_hotkey(int32_t which, int32_t mods, int32_t vk) {
   return hk_on[which];
 }
 
+// ---- a shortcut set by pressing it ----
+//
+// While the settings ask for a shortcut (ps_key_record(1)), the next key pressed in PinShot's own window is taken by a
+// low-level keyboard hook, never passed on (so Alt+F4, Win+D or the Start menu do nothing then), and told the app with
+// the modifiers held: {"do":"key-pressed","mods":M,"vk":V} (Alt 1, Ctrl 2, Shift 4, Win 8, as RegisterHotKey takes
+// them), Escape as {"how":"cancel"} and Backspace or Delete alone as {"how":"clear"}. A key pressed while another
+// program is in front is let through and ends it ({"how":"cancel"}). One key ends it either way.
+
+static HHOOK key_hook;
+static int key_mods;  // the modifiers held, as the hook has seen them (it takes them from the system too)
+
+static void key_record_end(const char *how, int mods, int vk) {
+  if (key_hook) {
+    UnhookWindowsHookEx(key_hook);
+    key_hook = NULL;
+  }
+  key_mods = 0;
+  char json[96];
+  snprintf(json, sizeof json, "{\"do\":\"key-pressed\",\"how\":\"%s\",\"mods\":%d,\"vk\":%d}", how, mods, vk);
+  ps_tell(json);
+}
+
+static int key_mod_of(DWORD vk) {
+  switch (vk) {
+    case VK_MENU: case VK_LMENU: case VK_RMENU: return MOD_ALT;
+    case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL: return MOD_CONTROL;
+    case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT: return MOD_SHIFT;
+    case VK_LWIN: case VK_RWIN: return MOD_WIN;
+  }
+  return 0;
+}
+
+static LRESULT CALLBACK key_hook_proc(int code, WPARAM wp, LPARAM lp) {
+  if (code != HC_ACTION || !key_hook) return CallNextHookEx(NULL, code, wp, lp);
+  const KBDLLHOOKSTRUCT *k = (const KBDLLHOOKSTRUCT *)lp;
+  if (k->flags & LLKHF_INJECTED) return CallNextHookEx(NULL, code, wp, lp);
+  DWORD pid = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+  if (pid != GetCurrentProcessId()) {
+    key_record_end("cancel", 0, 0);
+    return CallNextHookEx(NULL, code, wp, lp);
+  }
+  int down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
+  int mod = key_mod_of(k->vkCode);
+  if (mod) {
+    if (down) key_mods |= mod;
+    else key_mods &= ~mod;
+    return 1;
+  }
+  if (!down) return 1;
+  int vk = (int)k->vkCode;
+  if (vk == VK_ESCAPE && key_mods == 0) key_record_end("cancel", 0, 0);
+  else if ((vk == VK_BACK || vk == VK_DELETE) && key_mods == 0) key_record_end("clear", 0, 0);
+  else key_record_end("key", key_mods, vk);
+  return 1;
+}
+
+// 1 a shortcut is asked for (the hook set), 0 not; ps_key_record(0) ends it with nothing told.
+int32_t ps_key_record(int32_t on) {
+  if (!on) {
+    if (key_hook) UnhookWindowsHookEx(key_hook);
+    key_hook = NULL;
+    key_mods = 0;
+    return 1;
+  }
+  if (key_hook) return 1;
+  // (the modifiers already held as it starts count: Ctrl held while the box is clicked)
+  key_mods = 0;
+  if (GetAsyncKeyState(VK_MENU) & 0x8000) key_mods |= MOD_ALT;
+  if (GetAsyncKeyState(VK_CONTROL) & 0x8000) key_mods |= MOD_CONTROL;
+  if (GetAsyncKeyState(VK_SHIFT) & 0x8000) key_mods |= MOD_SHIFT;
+  if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) key_mods |= MOD_WIN;
+  key_hook = SetWindowsHookExW(WH_KEYBOARD_LL, key_hook_proc, GetModuleHandleW(NULL), 0);
+  return key_hook ? 1 : 0;
+}
+
+// A key's name as a shortcut says it (the keyboard's own for the rest: "Page Up", "Num 5", ";").
+moonbit_bytes_t ps_key_name(int32_t vk) {
+  wchar_t name[64] = {0};
+  if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+    name[0] = (wchar_t)vk;
+  } else if (vk >= VK_F1 && vk <= VK_F24) {
+    _snwprintf(name, 63, L"F%d", vk - VK_F1 + 1);
+  } else {
+    const wchar_t *fixed = NULL;
+    switch (vk) {
+      case VK_SNAPSHOT: fixed = L"PrtSc"; break;
+      case VK_SPACE: fixed = L"Space"; break;
+      case VK_RETURN: fixed = L"Enter"; break;
+      case VK_TAB: fixed = L"Tab"; break;
+      case VK_PAUSE: fixed = L"Pause"; break;
+      case VK_INSERT: fixed = L"Insert"; break;
+      case VK_HOME: fixed = L"Home"; break;
+      case VK_END: fixed = L"End"; break;
+      case VK_PRIOR: fixed = L"PgUp"; break;
+      case VK_NEXT: fixed = L"PgDn"; break;
+      case VK_LEFT: fixed = L"\x2190"; break;
+      case VK_UP: fixed = L"\x2191"; break;
+      case VK_RIGHT: fixed = L"\x2192"; break;
+      case VK_DOWN: fixed = L"\x2193"; break;
+    }
+    if (fixed) {
+      lstrcpynW(name, fixed, 64);
+    } else {
+      UINT sc = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC_EX);
+      LONG lp = (LONG)((sc & 0xFF) << 16);
+      if (sc & 0xFF00) lp |= 1 << 24;
+      if (!GetKeyNameTextW(lp, name, 63)) _snwprintf(name, 63, L"Key %d", vk);
+    }
+  }
+  return ps_utf8_bytes(name);
+}
+
 // ---- PinShot's own windows ----
 //
 // Each an mbui window (0 the overlay, the others beside it: @ui.window_open_here) made what it is here: no frame of the

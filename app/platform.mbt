@@ -67,6 +67,16 @@ extern "C" fn ps_set_menu(lines : Bytes) -> Unit = "ps_set_menu"
 extern "C" fn ps_hotkey(which : Int, mods : Int, vk : Int) -> Int = "ps_hotkey"
 
 ///|
+/// The next key pressed in PinShot's window taken as a shortcut, told on "ps" as {"do":"key-pressed","how":"key"|
+/// "cancel"|"clear","mods":M,"vk":V} (1); 0 asks nothing more, and it is not done here (the Mac: 0). ps_key_record(0)
+/// ends it unsaid.
+extern "C" fn ps_key_record(on : Int) -> Int = "ps_key_record"
+
+///|
+/// A key's name, as a shortcut shows it (Windows' virtual key `vk`).
+extern "C" fn ps_key_name(vk : Int) -> Bytes = "ps_key_name"
+
+///|
 /// The screen taken now (the monitor the pointer is on): 1 when taken.
 extern "C" fn ps_capture_now() -> Int = "ps_capture_now"
 
