@@ -584,10 +584,9 @@ fn rec_fmt_time(ms : Int) -> String {
   let total_s = ms / 1000
   let mins = total_s / 60
   let secs = total_s % 60
-  let tenths = (ms % 1000) / 100
   let m_s = if mins < 10 { "0" + mins.to_string() } else { mins.to_string() }
   let s_s = if secs < 10 { "0" + secs.to_string() } else { secs.to_string() }
-  "\{m_s}:\{s_s}.\{tenths}"
+  "\{m_s}:\{s_s}"
 }
 
 ///|
@@ -1045,7 +1044,7 @@ fn rec_window(root : @view.View) -> Unit {
             |> ignore
             // Fixed min-width + tabular theme guarantees 0px horizontal jitter on ticks
             drag.box(fn(tm_box) {
-              tm_box.min_width(Is(Some(54.0))).shrink(Is(0.0)).lines_up(Is(Some(Start))) |> ignore
+              tm_box.min_width(Is(Some(40.0))).shrink(Is(0.0)).lines_up(Is(Some(Start))) |> ignore
               tm_box.box(fn(tm) {
                 tm
                 .shrink(Is(0.0))
