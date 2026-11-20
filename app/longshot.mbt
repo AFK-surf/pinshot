@@ -1,9 +1,9 @@
-// A long screenshot (the user, 2026-11-19: 「加一个长截图功能」, the person scrolling and PinShot stitching, as PixPin
-// does): the part picked in a capture is taken again and again from the live screen while the person scrolls what is
-// under it with the wheel, each new picture laid under the last where they overlap (longshot_win.c), into one tall
-// picture. The overlay goes as it begins; a frame round the part shows what is taken, and a panel beside it (a window of
-// this run, "long", kept out of what is taken) the picture so far, its size, and what to do with it: copy, save, pin,
-// or call it off.
+// A long screenshot (the user, 2026-11-19: 「加一个长截图功能」, 2026-11-20: bidirectional scrolling + interactive
+// scrollable preview UI): the part picked in a capture is taken repeatedly from the live screen while the person
+// scrolls up or down under it, stitched into one tall picture (longshot_win.c). A coloured frame around the part
+// reflects live state (blue active, amber lost/max, muted paused), and a movable dark panel beside it shows a
+// virtualized scrollable preview (wheel, drag-to-pan, interactive scrollbar with live capture window marker, smart
+// auto-follow with one-click jump back), Pause/Resume, Reset, and Copy/Save/Pin actions.
 
 ///|
 /// A long screenshot begun of the part x, y, w by h (the screen's pixels): 1 begun.
@@ -14,6 +14,14 @@ extern "C" fn ps_long_begin(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_lon
 extern "C" fn ps_long_stop() -> Unit = "ps_long_stop"
 
 ///|
+/// Pause (1) or resume (0) capturing while keeping the stitched picture and frame.
+extern "C" fn ps_long_pause(on : Int) -> Unit = "ps_long_pause"
+
+///|
+/// Discard stitched content and restart fresh on the exact same capture frame.
+extern "C" fn ps_long_reset() -> Unit = "ps_long_reset"
+
+///|
 /// The long screenshot let go, all it held.
 extern "C" fn ps_long_end() -> Unit = "ps_long_end"
 
@@ -22,8 +30,9 @@ extern "C" fn ps_long_end() -> Unit = "ps_long_end"
 extern "C" fn ps_long_info() -> Bytes = "ps_long_info"
 
 ///|
-/// The picture brought down to fit `w` by `h` pixels, as mbui takes pixels kept elsewhere ("MBRAWPTR"...).
-extern "C" fn ps_long_preview(w : Int, h : Int) -> Bytes = "ps_long_preview"
+/// A viewport slice of the picture starting at source row `from_row`, scaled to fit `w` by `h` pixels, as mbui takes
+/// pixels kept elsewhere ("MBRAWPTR"...).
+extern "C" fn ps_long_preview(w : Int, h : Int, from_row : Int) -> Bytes = "ps_long_preview"
 
 ///|
 /// The picture as a PNG; empty: none.
@@ -59,7 +68,7 @@ let long_scale : Ref[Double] = Ref(1.0)
 let long_mon : Ref[Rect] = Ref({ x: 0, y: 0, w: 0, h: 0 })
 
 ///|
-/// How tall the picture is (pixels), whether the last picture taken matched none, whether it is as tall as it may be.
+/// Stitched picture state told from the native side.
 let long_h : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
@@ -69,8 +78,41 @@ let long_lost : @signals.Signal[Bool] = @signals.signal(false)
 let long_full : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
-/// Whether the taking has stopped (a save's dialog up, called off there: what is taken is kept as it was).
+let long_paused : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+let long_pics : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Last stitch direction: 1 down (bottom growing), -1 up (top growing), 0 initial.
+let long_dir : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Source row where the live capture frame sits inside the stitched image.
+let long_live_at : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Whether the taking has stopped permanently (e.g. a save dialog was cancelled: what is taken is kept as it was).
 let long_stopped : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+/// Virtualized preview scroll state: top source row shown, whether auto-following live growth, drag/scrub flags.
+let long_scroll : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+let long_follow : @signals.Signal[Bool] = @signals.signal(true)
+
+///|
+let long_panning : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+let long_scrubbing : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+let long_pan_start : Ref[(Double, Int)] = Ref((0.0, 0))
+
+///|
+let long_scrub_grab : Ref[Double] = Ref(0.0)
 
 ///|
 /// The preview shown: its key ("" none) and its size (pixels); and the next, shown once it is decoded.
@@ -94,11 +136,20 @@ let long_preview_at : Ref[Double] = Ref(-10000.0)
 let long_preview_due : Ref[Bool] = Ref(false)
 
 ///|
-/// The panel's width and the preview's room in it (points).
-let long_panel_w : Double = 264.0
+/// Panel layout constants (points).
+let long_panel_w : Double = 316.0
 
 ///|
 let long_pad : Double = 14.0
+
+///|
+let long_head_h : Double = 26.0
+
+///|
+let long_status_h : Double = 28.0
+
+///|
+let long_ctrl_h : Double = 30.0
 
 ///|
 fn long_box_w() -> Double {
@@ -106,15 +157,48 @@ fn long_box_w() -> Double {
 }
 
 ///|
-let long_box_h : Ref[Double] = Ref(360.0)
+let long_box_h : Ref[Double] = Ref(400.0)
 
 ///|
-fn long_panel_h() -> Double {
-  long_pad + long_head_h + 4.0 + 16.0 + 12.0 + long_box_h.val + 12.0 + bar_button + long_pad
+fn long_chrome_h() -> Double {
+  long_pad + long_head_h + 8.0 + long_status_h + 10.0 + 10.0 + long_ctrl_h + 10.0 + bar_button + long_pad
 }
 
 ///|
-let long_head_h : Double = 22.0
+fn long_panel_h() -> Double {
+  long_chrome_h() + long_box_h.val
+}
+
+///|
+/// Scale from source image pixels to preview physical pixels (fit width, never upscale).
+fn long_preview_k() -> Double {
+  let w = long_part.val.w
+  if w <= 0 {
+    return 1.0
+  }
+  dmin(1.0, long_box_w() * long_scale.val / w.to_double())
+}
+
+///|
+/// How many source image rows fit in the preview viewport at once.
+fn long_vis_rows() -> Int {
+  let k = long_preview_k()
+  let rows = (long_box_h.val * long_scale.val / k).round().to_int()
+  if rows < 1 { 1 } else { rows }
+}
+
+///|
+/// Maximum valid scroll offset (top source row) for a stitched image of height `h`.
+fn long_max_scroll(h : Int) -> Int {
+  let m = h - long_vis_rows()
+  if m > 0 { m } else { 0 }
+}
+
+///|
+/// Source image rows per 1 logical point in the preview viewport.
+fn long_src_per_pt() -> Double {
+  long_scale.val / long_preview_k()
+}
 
 ///|
 /// The part picked in the capture taken long: the capture closed, the taking begun, the panel put beside the part.
@@ -140,14 +224,22 @@ fn long_out() -> Unit {
   long_h.set(0)
   long_lost.set(false)
   long_full.set(false)
+  long_paused.set(false)
+  long_pics.set(0)
+  long_dir.set(0)
+  long_live_at.set(0)
   long_stopped.set(false)
+  long_scroll.set(0)
+  long_follow.set(true)
+  long_panning.set(false)
+  long_scrubbing.set(false)
   long_preview.set(("", 0, 0))
   long_pending.set(("", 0, 0))
   @signals.end_batch()
   long_preview_due.val = false
   // (the preview as tall as the monitor leaves room for)
   let mh = m.h.to_double() / k
-  long_box_h.val = clamp(mh - 48.0 - (long_panel_h() - long_box_h.val), 160.0, 520.0)
+  long_box_h.val = clamp(mh - 56.0 - long_chrome_h(), 220.0, 560.0)
   let wid = @ui.window_open_here("long")
   if wid <= 0 {
     log("long: no window")
@@ -184,24 +276,143 @@ fn long_place(m : Rect) -> Unit {
 }
 
 ///|
-/// What the native side told of the picture ({"do":"long"}): its height, whether the last picture matched.
-fn long_told(h : Int, lost : Bool, full : Bool) -> Unit {
+/// What the native side told of the picture ({"do":"long"}): height, flags, direction, live frame position, top growth.
+fn long_told(
+  h : Int,
+  lost : Bool,
+  full : Bool,
+  paused : Bool,
+  pics : Int,
+  dir : Int,
+  at : Int,
+  top_added : Int,
+) -> Unit {
   if long_wid.val == 0 {
     return
+  }
+  let prev_h = long_h.untracked()
+  let max_s = long_max_scroll(h)
+  let mut next_scroll = long_scroll.untracked()
+  let follow = long_follow.untracked()
+  if max_s <= 0 {
+    next_scroll = 0
+  } else if follow {
+    next_scroll = if dir < 0 { 0 } else { max_s }
+  } else {
+    if top_added > 0 {
+      next_scroll = next_scroll + top_added
+    }
+    next_scroll = clampi(next_scroll, 0, max_s)
   }
   @signals.start_batch()
   long_h.set(h)
   long_lost.set(lost)
   long_full.set(full)
+  long_paused.set(paused)
+  long_pics.set(pics)
+  long_dir.set(dir)
+  long_live_at.set(at)
+  long_scroll.set(next_scroll)
+  if max_s <= 0 {
+    long_follow.set(true)
+  }
   @signals.end_batch()
-  long_preview_soon()
+  if h == 0 {
+    long_clear_preview_images()
+  } else if h != prev_h || top_added > 0 || long_preview.untracked().0 == "" {
+    long_preview_soon(35.0)
+  }
 }
 
 ///|
-/// The preview made again, at most every 50 ms: at once where the last is older, else as that time is up.
-fn long_preview_soon() -> Unit {
+fn long_clear_preview_images() -> Unit {
+  let (shown, _, _) = long_preview.untracked()
+  let (waiting, _, _) = long_pending.untracked()
+  @signals.start_batch()
+  long_preview.set(("", 0, 0))
+  long_pending.set(("", 0, 0))
+  @signals.end_batch()
+  for k in [shown, waiting] {
+    if k != "" {
+      @ui.forget_image(k)
+    }
+  }
+}
+
+///|
+/// Scroll the preview to source row `row`, updating auto-follow state and refreshing the viewport slice.
+fn long_scroll_to(row : Int, reengage? : Bool = true) -> Unit {
+  let h = long_h.untracked()
+  let max_s = long_max_scroll(h)
+  if max_s <= 0 {
+    return
+  }
+  let clamped = clampi(row, 0, max_s)
+  let dir = long_dir.untracked()
+  let at_live = if dir < 0 { clamped <= 16 } else { clamped >= max_s - 16 }
+  let prev = long_scroll.untracked()
+  @signals.start_batch()
+  long_scroll.set(clamped)
+  long_follow.set(if reengage { at_live } else { false })
+  @signals.end_batch()
+  if clamped != prev {
+    long_preview_soon(18.0)
+  }
+}
+
+///|
+/// Scroll by a relative number of source rows.
+fn long_scroll_by(delta_rows : Int) -> Unit {
+  long_scroll_to(long_scroll.untracked() + delta_rows)
+}
+
+///|
+/// Snap back to the active growth edge (bottom when scrolling down, top when scrolling up) and re-enable auto-follow.
+fn long_jump_live() -> Unit {
+  let max_s = long_max_scroll(long_h.untracked())
+  let target = if long_dir.untracked() < 0 { 0 } else { max_s }
+  @signals.start_batch()
+  long_scroll.set(target)
+  long_follow.set(true)
+  @signals.end_batch()
+  long_preview_soon(0.0)
+}
+
+///|
+fn long_toggle_pause() -> Unit {
+  if long_wid.val == 0 || long_stopped.untracked() || long_full.untracked() {
+    return
+  }
+  let next = !long_paused.untracked()
+  ps_long_pause(if next { 1 } else { 0 })
+}
+
+///|
+fn long_reset() -> Unit {
+  if long_wid.val == 0 {
+    return
+  }
+  long_clear_preview_images()
+  @signals.start_batch()
+  long_h.set(0)
+  long_lost.set(false)
+  long_full.set(false)
+  long_paused.set(false)
+  long_stopped.set(false)
+  long_pics.set(0)
+  long_dir.set(0)
+  long_live_at.set(0)
+  long_scroll.set(0)
+  long_follow.set(true)
+  @signals.end_batch()
+  ps_long_reset()
+}
+
+///|
+/// The preview made again, throttled to `min_ms`: at once if enough time has elapsed, else scheduled when due.
+fn long_preview_soon(min_ms : Double) -> Unit {
   let since = ps_now_ms() - long_preview_at.val
-  if since >= long_preview_ms {
+  if since >= min_ms {
     long_preview_make()
     return
   }
@@ -211,9 +422,9 @@ fn long_preview_soon() -> Unit {
   long_preview_due.val = true
   match long_root.val {
     Some(r) =>
-      r.at_moment(r.cause_at() + long_preview_ms - since, fn() {
+      r.at_moment(r.cause_at() + min_ms - since, fn() {
         long_preview_due.val = false
-        if long_wid.val != 0 {
+        if long_wid.val != 0 && long_h.untracked() > 0 {
           long_preview_make()
         }
       }, later=true)
@@ -223,13 +434,15 @@ fn long_preview_soon() -> Unit {
 }
 
 ///|
-let long_preview_ms : Double = 50.0
-
-///|
 fn long_preview_make() -> Unit {
   long_preview_at.val = ps_now_ms()
   let k = long_scale.val
-  let b = ps_long_preview((long_box_w() * k).round().to_int(), (long_box_h.val * k).round().to_int())
+  let from_row = long_scroll.untracked()
+  let b = ps_long_preview(
+    (long_box_w() * k).round().to_int(),
+    (long_box_h.val * k).round().to_int(),
+    from_row,
+  )
   if b.length() < 28 {
     return
   }
@@ -238,8 +451,7 @@ fn long_preview_make() -> Unit {
   long_preview_n.val += 1
   let key = "mem:long/\{long_preview_n.val}"
   @ui.add_image(key, b)
-  // (shown only once it is decoded, the one shown kept till then: a picture handed over is nothing till its texture
-  // is made, and shown at once it blinked out at every change; one waiting that this one comes before let go)
+  // (shown only once it is decoded, the one shown kept till then so the preview never blinks out between slices)
   let (waiting, _, _) = long_pending.untracked()
   if waiting != "" {
     @ui.forget_image(waiting)
@@ -395,34 +607,70 @@ fn long_gone() -> Unit {
     ps_long_end()
     ps_capture_open(0)
   }
-  let (key, _, _) = long_preview.untracked()
-  let (waiting, _, _) = long_pending.untracked()
-  long_preview.set(("", 0, 0))
-  long_pending.set(("", 0, 0))
+  long_clear_preview_images()
   long_root.val = None
-  for k in [key, waiting] {
-    if k != "" {
-      @ui.forget_image(k)
-    }
+  // (free preview buffers after a brief grace window so any in-flight mbui texture upload thread finishes cleanly)
+  match overlay_root.val {
+    Some(r) =>
+      r.at_moment(now() + 300.0, fn() {
+        if long_wid.val == 0 {
+          ps_long_preview_free()
+        }
+      }, later=true)
+      |> ignore
+    None => ps_long_preview_free()
   }
-  // (their pixels let go only now: mbui reads none of them once they are forgotten)
-  ps_long_preview_free()
   trim_soon()
 }
 
 ///|
-/// What the panel says under its title, and the colour of the dot before its title: how to go on, or what went wrong.
-fn long_state() -> (String, Int64) {
+/// Status copy, dot colour, and warning flag for the panel's status strip.
+fn long_state() -> (String, Int64, Bool) {
   if long_stopped.get() {
-    (tr("已停止截取"), 0x8C9199FFL)
+    (tr("已停止截取"), 0x8C9199FFL, false)
   } else if long_full.get() {
-    (tr("已到最大高度"), 0xF5A524FFL)
+    (tr("已到最大高度，可复制或保存"), 0xF5A524FFL, true)
+  } else if long_paused.get() {
+    (tr("已暂停拼接 · 按空格继续"), 0x8C9199FFL, false)
   } else if long_lost.get() {
-    (tr("没接上，往回滚一点"), 0xF5A524FFL)
-  } else if long_h.get() <= long_part.val.h {
-    (tr("在框内滚动鼠标滚轮"), 0x4CC38AFFL)
+    (tr("没接上，往回滚一点即可续接"), 0xF5A524FFL, true)
   } else {
-    (tr("继续滚动，或点复制完成"), 0x4CC38AFFL)
+    let pics = long_pics.get()
+    if pics <= 1 || long_h.get() <= long_part.val.h {
+      (tr("在蓝框内上下滚动滚轮，自动拼接"), 0x4CC38AFFL, false)
+    } else {
+      let arrow = if long_dir.get() < 0 { "↑ " } else if long_dir.get() > 0 { "↓ " } else { "" }
+      (arrow + tr("已拼接 ") + pics.to_string() + tr(" 帧"), 0x4CC38AFFL, false)
+    }
+  }
+}
+
+///|
+/// Scroll percentage (0..100) for the current preview viewport.
+fn long_scroll_pct() -> Int {
+  let max_s = long_max_scroll(long_h.get())
+  if max_s <= 0 {
+    return 0
+  }
+  clampi((long_scroll.get().to_double() * 100.0 / max_s.to_double()).round().to_int(), 0, 100)
+}
+
+///|
+/// Compact screen-height multiplier / scroll readout for the control bar.
+fn long_meta_label() -> String {
+  let h = long_h.get()
+  let fh = long_part.val.h
+  if h <= 0 || fh <= 0 {
+    return ""
+  }
+  let screens = (h.to_double() * 10.0 / fh.to_double()).round() / 10.0
+  if long_max_scroll(h) > 0 {
+    let pct = long_scroll_pct()
+    "\{num(screens)}" + tr(" 屏") + " · \{pct}%"
+  } else if screens >= 1.1 {
+    "\{num(screens)}" + tr(" 屏")
+  } else {
+    ""
   }
 }
 
@@ -433,8 +681,9 @@ let long_ink : Int64 = 0xEDEEF0FFL
 let long_muted : Int64 = 0x9EA3ABFFL
 
 ///|
-/// The panel's window, made as it opens: dark as the bar is, its corners round (the system's), a title with a dot
-/// that says how it goes and the picture's size, a line under it, the picture so far, and what to do with it.
+/// The panel's window: movable header with live status dot & dimensions, contextual status strip, true scrollable
+/// virtualized preview (wheel, drag-to-pan, scrollbar with live frame marker, floating jump-to-live pill), pause/reset
+/// controls, and Copy/Save/Pin/Cancel actions.
 fn long_window(root : @view.View) -> Unit {
   long_root.val = Some(root)
   root.tree.hand_over_presses(false)
@@ -454,20 +703,28 @@ fn long_window(root : @view.View) -> Unit {
     .padding(Is((long_pad, long_pad, long_pad, long_pad)))
     .lines_up(Is(Some(Start)))
     |> ignore
-    // the title: a dot, its name, the picture's size
-    page.box(fn(t) {
-      t
+
+    // 1. Draggable Header: live status dot + title + tabular dimension badge
+    page.box(fn(head) {
+      head
       .row(Is(true))
       .gap(Is(8.0))
       .height(Is(Some(long_head_h)))
       .width(Is(Some(long_box_w())))
       .lines_up(Is(Some(Middle)))
+      .presses(Is(true))
+      .cursor(Is(Some(Grab)))
+      .on_drag(fn(d) {
+        if d.kind == Down && long_wid.val != 0 {
+          ps_move_window(long_wid.val)
+        }
+      }, whole=true)
       |> ignore
-      t.box(fn(d) {
+      head.box(fn(d) {
         d.width(Is(Some(8.0))).height(Is(Some(8.0))).radius(Is(4.0)).ground(By(fn() { long_state().1 })) |> ignore
       })
       |> ignore
-      t.box(fn(l) {
+      head.box(fn(l) {
         l
         .grow(Is(1.0))
         .words(By(fn() { tr("长截图") }), look={ ..@view.words_plain, size: 14.0, weight: 600, line: 20.0, wrap: false })
@@ -475,12 +732,13 @@ fn long_window(root : @view.View) -> Unit {
         |> ignore
       })
       |> ignore
-      t.box(fn(s) {
+      head.box(fn(s) {
         s
-        .height(Is(Some(long_head_h)))
-        .padding(Is((7.0, 0.0, 7.0, 0.0)))
-        .radius(Is(5.0))
-        .ground(Is(0xFFFFFF12L))
+        .height(Is(Some(22.0)))
+        .padding(Is((8.0, 0.0, 8.0, 0.0)))
+        .radius(Is(6.0))
+        .ground(Is(0xFFFFFF10L))
+        .edge(Is((1.0, 0xFFFFFF14L)))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         .laid_nowhere(By(fn() { long_h.get() == 0 }))
@@ -502,31 +760,178 @@ fn long_window(root : @view.View) -> Unit {
       |> ignore
     })
     |> ignore
-    page.box(fn(g) { g.height(Is(Some(4.0))) |> ignore }) |> ignore
-    page.box(fn(t) {
-      t
-      .height(Is(Some(16.0)))
-      .padding(Is((16.0, 0.0, 0.0, 0.0)))
-      .words(By(fn() { long_state().0 }), look={ ..@view.words_plain, size: 12.0, weight: 400, line: 16.0, wrap: false })
-      .ink(By(fn() { if long_lost.get() || long_full.get() { 0xF5A524FFL } else { long_muted } }))
+
+    page.box(fn(g) { g.height(Is(Some(8.0))) |> ignore }) |> ignore
+
+    // 2. Contextual Status Banner
+    page.box(fn(st) {
+      st
+      .row(Is(true))
+      .width(Is(Some(long_box_w())))
+      .height(Is(Some(long_status_h)))
+      .padding(Is((10.0, 0.0, 10.0, 0.0)))
+      .radius(Is(7.0))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Start))
+      .ground(By(fn() { if long_state().2 { 0xF5A5241CL } else { 0xFFFFFF08L } }))
+      .edge(By(fn() { if long_state().2 { (1.0, 0xF5A52448L) } else { (1.0, 0xFFFFFF0EL) } }))
+      |> ignore
+      st.box(fn(t) {
+        t
+        .words(By(fn() { long_state().0 }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+        .ink(By(fn() { if long_state().2 { 0xF5A524FFL } else { long_muted } }))
+        |> ignore
+      })
       |> ignore
     })
     |> ignore
-    page.box(fn(g) { g.height(Is(Some(12.0))) |> ignore }) |> ignore
-    // the picture's foot at the room's width, what came in last at its foot (all of it while it is shorter, from the
-    // room's top)
-    page.box(fn(b) {
-      b
+
+    page.box(fn(g) { g.height(Is(Some(10.0))) |> ignore }) |> ignore
+
+    // 3. Scrollable Virtualized Preview Viewport
+    long_preview_viewport(page)
+
+    page.box(fn(g) { g.height(Is(Some(10.0))) |> ignore }) |> ignore
+
+    // 4. Capture Controls Strip: Pause/Resume, Reset, and Screen/Progress Readout
+    page.box(fn(ctrl) {
+      ctrl
+      .row(Is(true))
+      .gap(Is(6.0))
       .width(Is(Some(long_box_w())))
-      .height(Is(Some(long_box_h.val)))
-      .radius(Is(8.0))
-      .ground(Is(0x121316FFL))
-      .edge(Is((1.0, 0xFFFFFF14L)))
-      .clips(Is(true))
+      .height(Is(Some(long_ctrl_h)))
       .lines_up(Is(Some(Middle)))
       |> ignore
-      b.box(fn(i) {
-        i
+      long_pill_button(
+        ctrl,
+        fn() { if long_paused.get() { "play" } else { "pause" } },
+        fn() { if long_paused.get() { tr("继续") } else { tr("暂停") } },
+        fn() { tr("暂停 / 继续 Space") },
+        fn() { long_paused.get() },
+        fn() { long_stopped.get() || long_full.get() },
+        long_toggle_pause,
+      )
+      long_pill_button(
+        ctrl,
+        fn() { "reset" },
+        fn() { tr("重来") },
+        fn() { tr("重新开始 R") },
+        fn() { false },
+        fn() { long_h.get() == 0 },
+        long_reset,
+      )
+      ctrl.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+      ctrl.box(fn(meta) {
+        meta
+        .words(By(long_meta_label), look={ ..@view.words_plain, size: 11.5, weight: 500, line: 16.0, wrap: false })
+        .ink(Is(long_muted))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+
+    page.box(fn(g) { g.height(Is(Some(10.0))) |> ignore }) |> ignore
+
+    // 5. Primary Action Bar: Cancel, Pin, Save | Copy (accent)
+    page.box(fn(bar) {
+      bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(long_box_w()))).lines_up(Is(Some(Middle))) |> ignore
+      tool_button(bar, "close", "取消 Esc", fn() { false }, long_close, tip=false)
+      tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tip=false)
+      tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tip=false)
+      bar.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+      long_copy_button(bar)
+    })
+    |> ignore
+  })
+  |> ignore
+
+  let on = fn(name : String, f : () -> Unit) {
+    root.on_action(name, fn(_) {
+      f()
+      true
+    })
+    |> ignore
+  }
+  on("close", long_close)
+  on("copy", long_copy)
+  on("save", long_save)
+  on("pin", long_pin)
+  on("pause", long_toggle_pause)
+  on("reset", long_reset)
+  on("scroll-up", fn() { long_scroll_by(-(long_vis_rows() / 5)) })
+  on("scroll-down", fn() { long_scroll_by(long_vis_rows() / 5) })
+  on("page-up", fn() { long_scroll_by(-(long_vis_rows() * 4 / 5)) })
+  on("page-down", fn() { long_scroll_by(long_vis_rows() * 4 / 5) })
+  on("home", fn() { long_scroll_to(0) })
+  on("end", fn() { long_scroll_to(long_max_scroll(long_h.untracked())) })
+}
+
+///|
+/// The virtualized scrollable preview well: wheel scrolls, drag pans the image, right-edge scrollbar scrubs directly
+/// and displays the live capture window position, and a floating pill jumps back to live stitching when detached.
+fn long_preview_viewport(page : @view.View) -> Unit {
+  let box_w = long_box_w()
+  let box_h = long_box_h.val
+  let track_pad = 6.0
+  let track_h = box_h - track_pad * 2.0
+  page.box(fn(vp) {
+    vp
+    .width(Is(Some(box_w)))
+    .height(Is(Some(box_h)))
+    .radius(Is(10.0))
+    .ground(Is(0x111215FFL))
+    .edge(Is((1.0, 0xFFFFFF18L)))
+    .clips(Is(true))
+    .presses(Is(true))
+    .on_wheel(fn(w) {
+      if long_max_scroll(long_h.untracked()) <= 0 || w.dy == 0.0 {
+        return
+      }
+      let delta_rows = (w.dy * long_src_per_pt()).round().to_int()
+      if delta_rows != 0 {
+        long_scroll_by(delta_rows)
+      }
+    })
+    |> ignore
+
+    // Pan surface + preview image (sibling of scrollbar & floating pill so drag never eats their clicks)
+    vp.box(fn(canvas) {
+      canvas
+      .over(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Start))
+      .presses(Is(true))
+      .cursor(By(fn() {
+        if long_max_scroll(long_h.get()) <= 0 {
+          None
+        } else if long_panning.get() {
+          Some(Grabbing)
+        } else {
+          Some(Grab)
+        }
+      }))
+      .on_drag(fn(d) {
+        if long_max_scroll(long_h.untracked()) <= 0 {
+          return
+        }
+        match d.kind {
+          Down => {
+            long_pan_start.val = (d.wy, long_scroll.untracked())
+            long_panning.set(true)
+          }
+          Moved => {
+            let (wy0, row0) = long_pan_start.val
+            let delta = ((wy0 - d.wy) * long_src_per_pt()).round().to_int()
+            long_scroll_to(row0 + delta)
+          }
+          Up | Off => long_panning.set(false)
+        }
+      })
+      |> ignore
+      canvas.box(fn(img) {
+        img
+        .presses(Is(false))
         .width(By(fn() { Some(long_preview.get().1.to_double() / long_scale.val) }))
         .height(By(fn() { Some(long_preview.get().2.to_double() / long_scale.val) }))
         .image(By(fn() {
@@ -542,30 +947,297 @@ fn long_window(root : @view.View) -> Unit {
       |> ignore
     })
     |> ignore
-    page.box(fn(g) { g.height(Is(Some(12.0))) |> ignore }) |> ignore
-    // what to do with it: call it off, pin, save; copy, the one most asked for, apart and lit
-    page.box(fn(bar) {
-      bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(long_box_w()))).lines_up(Is(Some(Middle))) |> ignore
-      tool_button(bar, "close", "取消 Esc", fn() { false }, long_close, tip=false)
-      tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tip=false)
-      tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tip=false)
-      bar.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-      long_copy_button(bar)
+
+    // Right-edge interactive scrollbar + live capture frame marker (shown only when taller than viewport)
+    vp.box(fn(rail) {
+      rail
+      .over(Is(true))
+      .laid_nowhere(By(fn() { long_max_scroll(long_h.get()) <= 0 }))
+      .width(Is(Some(16.0)))
+      .height(Is(Some(track_h)))
+      .offset(Is((box_w - 16.0, track_pad)))
+      .presses(Is(true))
+      .cursor(Is(Some(Hand)))
+      .on_drag(fn(d) {
+        let h = long_h.untracked()
+        let max_s = long_max_scroll(h)
+        if max_s <= 0 {
+          return
+        }
+        let vis = long_vis_rows()
+        let thumb_h = clamp(track_h * vis.to_double() / h.to_double(), 28.0, track_h)
+        let travel = track_h - thumb_h
+        if travel <= 0.0 {
+          return
+        }
+        match d.kind {
+          Down => {
+            long_scrubbing.set(true)
+            let cur_y = travel * (long_scroll.untracked().to_double() / max_s.to_double())
+            if d.y >= cur_y && d.y <= cur_y + thumb_h {
+              long_scrub_grab.val = d.y - cur_y
+            } else {
+              long_scrub_grab.val = thumb_h / 2.0
+              let ny = clamp(d.y - long_scrub_grab.val, 0.0, travel)
+              long_scroll_to((ny / travel * max_s.to_double()).round().to_int())
+            }
+          }
+          Moved => {
+            let ny = clamp(d.y - long_scrub_grab.val, 0.0, travel)
+            long_scroll_to((ny / travel * max_s.to_double()).round().to_int())
+          }
+          Up | Off => long_scrubbing.set(false)
+        }
+      })
+      |> ignore
+
+      // Track backdrop
+      rail.box(fn(tr_bg) {
+        tr_bg
+        .over(Is(true))
+        .presses(Is(false))
+        .width(Is(Some(6.0)))
+        .height(Is(Some(track_h)))
+        .offset(Is((6.0, 0.0)))
+        .radius(Is(3.0))
+        .ground(Is(0x0D0E12B8L))
+        .edge(Is((1.0, 0xFFFFFF18L)))
+        |> ignore
+      })
+      |> ignore
+
+      // Live capture region indicator inside the track (shows where the active frame sits in the full image)
+      rail.box(fn(live) {
+        live
+        .over(Is(true))
+        .presses(Is(false))
+        .width(Is(Some(4.0)))
+        .radius(Is(2.0))
+        .ground(By(fn() { if long_paused.get() { 0x8C919988L } else { 0x2F9BFF99L } }))
+        .height(By(fn() {
+          let h = long_h.get()
+          if h <= 0 {
+            Some(0.0)
+          } else {
+            Some(clamp(track_h * long_part.val.h.to_double() / h.to_double(), 6.0, track_h))
+          }
+        }))
+        .offset(By(fn() {
+          let h = long_h.get()
+          if h <= 0 {
+            (7.0, 0.0)
+          } else {
+            let lh = clamp(track_h * long_part.val.h.to_double() / h.to_double(), 6.0, track_h)
+            let ly = clamp(track_h * long_live_at.get().to_double() / h.to_double(), 0.0, track_h - lh)
+            (7.0, ly)
+          }
+        }))
+        |> ignore
+      })
+      |> ignore
+
+      // Draggable viewport thumb
+      rail.box(fn(thumb) {
+        thumb
+        .over(Is(true))
+        .presses(Is(false))
+        .width(Is(Some(6.0)))
+        .radius(Is(3.0))
+        .ground(By(fn() {
+          if long_scrubbing.get() {
+            0xFFFFFFD9L
+          } else if rail.pointed() {
+            0xFFFFFFB3L
+          } else {
+            0xFFFFFF78L
+          }
+        }))
+        .height(By(fn() {
+          let h = long_h.get()
+          if h <= 0 {
+            Some(0.0)
+          } else {
+            Some(clamp(track_h * long_vis_rows().to_double() / h.to_double(), 28.0, track_h))
+          }
+        }))
+        .offset(By(fn() {
+          let h = long_h.get()
+          let max_s = long_max_scroll(h)
+          if h <= 0 || max_s <= 0 {
+            (6.0, 0.0)
+          } else {
+            let th = clamp(track_h * long_vis_rows().to_double() / h.to_double(), 28.0, track_h)
+            let ty = (track_h - th) * (long_scroll.get().to_double() / max_s.to_double())
+            (6.0, ty)
+          }
+        }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+
+    // Floating position / jump-to-live pill overlaid near the bottom of the viewport when scrollable
+    vp.box(fn(overlay_bar) {
+      overlay_bar
+      .over(Is(true))
+      .laid_nowhere(By(fn() { long_max_scroll(long_h.get()) <= 0 }))
+      .width(Is(Some(box_w)))
+      .height(Is(Some(36.0)))
+      .offset(Is((0.0, box_h - 38.0)))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      |> ignore
+
+      // Auto-follow passive hint pill
+      overlay_bar.box(fn(hint) {
+        hint
+        .laid_nowhere(By(fn() { !long_follow.get() }))
+        .height(Is(Some(24.0)))
+        .padding(Is((10.0, 0.0, 10.0, 0.0)))
+        .radius(Is(12.0))
+        .ground(Is(0x16171BD9L))
+        .edge(Is((1.0, 0xFFFFFF20L)))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .presses(Is(false))
+        |> ignore
+        hint.box(fn(t) {
+          t
+          .words(By(fn() {
+            let edge = if long_dir.get() < 0 { tr("顶部") } else { tr("底部") }
+            edge + " · " + tr("滚轮可浏览")
+          }), look={ ..@view.words_plain, size: 11.0, weight: 500, line: 15.0, wrap: false })
+          .ink(Is(0xD5D8E0FFL))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+
+      // Detached manual-inspect interactive jump pill
+      overlay_bar.box(fn(jump) {
+        jump
+        .laid_nowhere(By(fn() { long_follow.get() }))
+        .height(Is(Some(26.0)))
+        .padding(Is((11.0, 0.0, 11.0, 0.0)))
+        .radius(Is(13.0))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .presses(Is(true))
+        .cursor(Is(Some(Hand)))
+        .says(By(fn() { Some(@view.said(Button, label=if long_dir.get() < 0 { tr("回到顶部 ↑") } else { tr("回到底部 ↓") })) }))
+        .on_press(long_jump_live)
+        .ground(By(fn() {
+          if jump.pressed() {
+            0x233852F5L
+          } else if jump.pointed() {
+            0x2A476AF5L
+          } else {
+            0x1D2D42EEL
+          }
+        }))
+        .edge(Is((1.0, 0x2F9BFF88L)))
+        .shadow(Is((10.0, 2.0, 0x00000066L)))
+        |> ignore
+        jump.box(fn(t) {
+          t
+          .words(By(fn() {
+            let pct = long_scroll_pct()
+            let go = if long_dir.get() < 0 { tr("回到顶部 ↑") } else { tr("回到底部 ↓") }
+            "\{pct}% · " + go
+          }), look={ ..@view.words_plain, size: 11.5, weight: 600, line: 16.0, wrap: false })
+          .ink(Is(0x88C8FFFFL))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
     })
     |> ignore
   })
   |> ignore
-  let on = fn(name : String, f : () -> Unit) {
-    root.on_action(name, fn(_) {
-      f()
-      true
+}
+
+///|
+/// Secondary pill button for the control strip (Pause/Resume, Reset).
+fn long_pill_button(
+  row : @view.View,
+  icon : () -> String,
+  label : () -> String,
+  a11y : () -> String,
+  lit : () -> Bool,
+  dim : () -> Bool,
+  press : () -> Unit,
+) -> Unit {
+  row.box(fn(b) {
+    b
+    .row(Is(true))
+    .gap(Is(5.0))
+    .height(Is(Some(28.0)))
+    .padding(Is((9.0, 0.0, 11.0, 0.0)))
+    .radius(Is(8.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .presses(Is(true))
+    .cursor(By(fn() { if dim() { None } else { Some(Hand) } }))
+    .says(By(fn() { Some(@view.said(Button, label=a11y())) }))
+    .on_press(fn() { if !dim() { press() } })
+    .ground(By(fn() {
+      if dim() {
+        0xFFFFFF06L
+      } else if lit() {
+        if b.pointed() { 0x2F9BFF3DL } else { 0x2F9BFF29L }
+      } else if b.pressed() {
+        0xFFFFFF24L
+      } else if b.pointed() {
+        0xFFFFFF18L
+      } else {
+        0xFFFFFF0DL
+      }
+    }))
+    .edge(By(fn() {
+      if lit() && !dim() {
+        (1.0, 0x2F9BFF66L)
+      } else {
+        (1.0, 0xFFFFFF12L)
+      }
+    }))
+    |> ignore
+    b.box(fn(g) {
+      g
+      .width(Is(Some(14.0)))
+      .height(Is(Some(14.0)))
+      .picture(By(fn() { Some(glyph(icon())) }))
+      .tint(By(fn() {
+        if dim() {
+          0xFFFFFF44L
+        } else if lit() {
+          0x88C8FFFFL
+        } else {
+          0xDCDEE4FFL
+        }
+      }))
+      |> ignore
     })
     |> ignore
-  }
-  on("close", long_close)
-  on("copy", long_copy)
-  on("save", long_save)
-  on("pin", long_pin)
+    b.box(fn(t) {
+      t
+      .words(By(label), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+      .ink(By(fn() {
+        if dim() {
+          0xFFFFFF44L
+        } else if lit() {
+          0x88C8FFFFL
+        } else {
+          long_ink
+        }
+      }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
 }
 
 ///|
@@ -576,10 +1248,11 @@ fn long_copy_button(bar : @view.View) -> Unit {
     .row(Is(true))
     .gap(Is(6.0))
     .height(Is(Some(bar_button)))
-    .padding(Is((12.0, 0.0, 14.0, 0.0)))
-    .radius(Is(7.0))
+    .padding(Is((13.0, 0.0, 15.0, 0.0)))
+    .radius(Is(9.0))
     .lines_up(Is(Some(Middle)))
     .presses(Is(true))
+    .cursor(By(fn() { if long_h.get() == 0 { None } else { Some(Hand) } }))
     .says(By(fn() { Some(@view.said(Button, label=tr("复制 Enter"))) }))
     .on_press(fn() { if long_h.untracked() > 0 { long_copy() } })
     .ground(By(fn() {
@@ -618,8 +1291,16 @@ fn long_keys() -> @view.Keymap {
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
     k(@ui.key_code_enter, "copy", 0),
+    k(@ui.key_space, "pause", 0),
+    ch('r', "reset", 0),
     ch('c', "copy", shortcut_mod()),
     ch('s', "save", shortcut_mod()),
     ch('t', "pin", shortcut_mod()),
+    k(@ui.key_code_up, "scroll-up", 0),
+    k(@ui.key_code_down, "scroll-down", 0),
+    k(@ui.key_code_page_up, "page-up", 0),
+    k(@ui.key_code_page_down, "page-down", 0),
+    k(@ui.key_code_home, "home", 0),
+    k(@ui.key_code_end, "end", 0),
   ])
 }

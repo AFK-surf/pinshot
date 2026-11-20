@@ -72,17 +72,44 @@ static struct {
   int pictures;            // how many were laid in
   int lost;                // the last taken matched none (scrolled too far at once)
   int full;                // MOST_ROWS reached
+  int paused;              // taking paused by the user (Space / Pause button)
+  int last_dir;            // 1 last grew at foot, -1 at top, 0 none yet
+  int pending_top;         // rows prepended at top since last tell()
   UINT_PTR timer;
   HWND frame;
-  int told_h, told_lost, told_full;
+  COLORREF frame_color;
+  int told_h, told_lost, told_full, told_paused, told_pics, told_at, told_dir;
   ULONGLONG begun;         // when it began (GetTickCount64)
 } L;
 
+static COLORREF frame_want_color(void) {
+  if (L.paused) return RGB(0x8C, 0x91, 0x99);
+  if (L.full || L.lost) return RGB(0xF5, 0xA5, 0x24);
+  return RGB(0x2F, 0x9B, 0xFF);
+}
+
+static void frame_sync_color(void) {
+  COLORREF c = frame_want_color();
+  if (c != L.frame_color) {
+    L.frame_color = c;
+    if (L.frame) InvalidateRect(L.frame, NULL, FALSE);
+  }
+}
+
 static void tell(void) {
-  if (L.told_h == L.out_h && L.told_lost == L.lost && L.told_full == L.full) return;
+  frame_sync_color();
+  int live_at = L.head_h + L.at;
+  if (L.told_h == L.out_h && L.told_lost == L.lost && L.told_full == L.full && L.told_paused == L.paused &&
+      L.told_pics == L.pictures && L.told_at == live_at && L.told_dir == L.last_dir && L.pending_top == 0)
+    return;
   L.told_h = L.out_h, L.told_lost = L.lost, L.told_full = L.full;
-  char json[128];
-  int n = snprintf(json, sizeof json, "{\"do\":\"long\",\"h\":%d,\"lost\":%d,\"full\":%d}", L.out_h, L.lost, L.full);
+  L.told_paused = L.paused, L.told_pics = L.pictures, L.told_at = live_at, L.told_dir = L.last_dir;
+  int top = L.pending_top;
+  L.pending_top = 0;
+  char json[192];
+  int n = snprintf(json, sizeof json,
+                   "{\"do\":\"long\",\"h\":%d,\"lost\":%d,\"full\":%d,\"paused\":%d,\"pics\":%d,\"dir\":%d,\"at\":%d,\"top\":%d}",
+                   L.out_h, L.lost, L.full, L.paused, L.pictures, L.last_dir, live_at, top);
   mb_post("ps", json, (size_t)n, NULL, 0);
 }
 
@@ -388,7 +415,7 @@ static void dump(const char *what, int a, int b, int c, int d) {
 }
 
 static void tick(void) {
-  if (!L.on || L.full) return;
+  if (!L.on || L.paused || L.full) return;
   // (the overlay just put out of sight may still be in the system's last frame: the first taken a moment after)
   if (GetTickCount64() - L.begun < SETTLE_MS) return;
   if (!take_now()) return;
@@ -453,7 +480,13 @@ static void tick(void) {
       if (L.at < 0) {
         int n = -L.at;
         if (n > band) n = band;
+        int before = L.out_h;
         out_put_at(L.head_h, L.head_h, L.head_h + n);
+        int added = L.out_h - before;
+        if (added > 0) {
+          L.last_dir = -1;
+          L.pending_top += added;
+        }
         L.at = 0;
       }
     } else {
@@ -462,9 +495,11 @@ static void tick(void) {
       int past = L.at + band - laid;
       if (past > 0) {
         if (past > band) past = band;
+        int before = L.out_h;
         // (what came in at the foot laid in after the picture's scrolled rows, the foot's still rows after it again)
         L.out_h -= L.foot_h;
         out_add(L.h - L.foot_h - past, L.h);
+        if (L.out_h > before) L.last_dir = 1;
         L.at = L.out_h - L.head_h - L.foot_h - band;
       }
     }
@@ -501,7 +536,7 @@ static LRESULT CALLBACK frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     RECT r;
     GetClientRect(h, &r);
     HBRUSH key = CreateSolidBrush(FRAME_KEY);
-    HBRUSH line = CreateSolidBrush(RGB(0x2F, 0x9B, 0xFF));
+    HBRUSH line = CreateSolidBrush(L.frame_color ? L.frame_color : RGB(0x2F, 0x9B, 0xFF));
     FillRect(dc, &r, line);
     RECT in = {FRAME_LINE, FRAME_LINE, r.right - FRAME_LINE, r.bottom - FRAME_LINE};
     FillRect(dc, &in, key);
@@ -587,11 +622,43 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
   }
   L.on = 1;
   L.told_h = -1;
+  L.frame_color = RGB(0x2F, 0x9B, 0xFF);
   ps_wgc_long_hold(1);
   L.begun = GetTickCount64();
   frame_show();
   L.timer = SetTimer(NULL, 0, TICK_MS, tick_timer);
   return 1;
+}
+
+// Pause (1) or resume (0) capturing without discarding what has been stitched so far.
+void ps_long_pause(int32_t on) {
+  if (!L.on) return;
+  int p = on ? 1 : 0;
+  if (L.paused == p) return;
+  L.paused = p;
+  if (L.paused) {
+    if (L.timer) KillTimer(NULL, L.timer);
+    L.timer = 0;
+  } else {
+    if (!L.timer && !L.full) L.timer = SetTimer(NULL, 0, TICK_MS, tick_timer);
+  }
+  tell();
+}
+
+// Discard stitched rows and restart fresh on the exact same capture frame.
+void ps_long_reset(void) {
+  if (!L.out) return;
+  L.out_h = 0, L.foot_h = 0, L.head_h = 0, L.at = 0;
+  L.pictures = 0, L.lost = 0, L.full = 0, L.paused = 0, L.last_dir = 0, L.pending_top = 0;
+  L.told_h = -1;
+  if (!L.on) {
+    L.on = 1;
+    ps_wgc_long_hold(1);
+  }
+  if (!L.frame) frame_show();
+  L.begun = GetTickCount64() - SETTLE_MS;
+  if (!L.timer) L.timer = SetTimer(NULL, 0, TICK_MS, tick_timer);
+  tell();
 }
 
 // The taking stopped (the picture kept till ps_long_end), its frame gone.
@@ -627,31 +694,34 @@ moonbit_bytes_t ps_long_info(void) {
   return bytes_of(s, (size_t)n);
 }
 
-static uint8_t *kept[6];  // the previews handed to mbui, six in turn (ps_long_preview)
+#define PREVIEW_SLOTS 12
+static uint8_t *kept[PREVIEW_SLOTS];  // the previews handed to mbui, in turn (ps_long_preview)
 static int turn;
 
 // The previews' pixels let go (once mbui has forgotten each: it reads them by their address till then).
 void ps_long_preview_free(void) {
-  for (int i = 0; i < 6; i++) free(kept[i]), kept[i] = NULL;
+  for (int i = 0; i < PREVIEW_SLOTS; i++) free(kept[i]), kept[i] = NULL;
   turn = 0;
 }
 
-// The picture's foot as it would show `box_w` pixels wide (brought down to that, never up), as much of it as `box_h`
-// pixels hold (all of it while it is shorter): what came in last at its foot, the picture at one scale all along, so
-// what is added slides in under what was there rather than all of it shrinking. Each pixel the mean of those it
-// covers. As mbui takes pixels kept elsewhere (MBRAWPTR...); kept here, six in turn, so one mbui still reads is not
-// written over.
-moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h) {
-
+// A viewport slice of the picture starting at source row `from_row`, scaled to fit `box_w` pixels wide (never upscaled)
+// and clipped to at most `box_h` output pixels tall. Only the visible slice is downsampled and uploaded, so arbitrarily
+// tall captures (up to MOST_ROWS) scroll smoothly with minimal VRAM and never hit D3D11 texture height limits.
+moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) {
   if (!L.out_h || box_w <= 0 || box_h <= 0) return moonbit_make_bytes(0, 0);
   double k = (double)box_w / L.w;
   if (k > 1.0) k = 1.0;
-  int rows = (int)(box_h / k);
-  int from = L.out_h > rows ? L.out_h - rows : 0, src_h = L.out_h - from;
+  int vis_rows = (int)((double)box_h / k + 0.5);
+  if (vis_rows < 1) vis_rows = 1;
+  int max_from = L.out_h > vis_rows ? L.out_h - vis_rows : 0;
+  int from = from_row < 0 ? 0 : (from_row > max_from ? max_from : from_row);
+  int src_h = L.out_h - from;
+  if (src_h > vis_rows) src_h = vis_rows;
   int pw = (int)(L.w * k + 0.5), ph = (int)(src_h * k + 0.5);
   if (pw < 1) pw = 1;
   if (ph < 1) ph = 1;
-  turn = (turn + 1) % 6;
+  if (ph > box_h) ph = box_h;
+  turn = (turn + 1) % PREVIEW_SLOTS;
   free(kept[turn]);
   kept[turn] = (uint8_t *)malloc((size_t)pw * ph * 4);
   uint8_t *p = kept[turn];
@@ -659,6 +729,8 @@ moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h) {
   for (int y = 0; y < ph; y++) {
     int y0 = from + (int)((double)y * src_h / ph), y1 = from + (int)((double)(y + 1) * src_h / ph);
     if (y1 <= y0) y1 = y0 + 1;
+    if (y1 > L.out_h) y1 = L.out_h;
+    if (y0 >= L.out_h) y0 = L.out_h - 1;
     // (a few rows of what it covers, at most: enough for a picture this small)
     int ys = (y1 - y0) > 4 ? (y1 - y0) / 4 : 1;
     for (int x = 0; x < pw; x++) {

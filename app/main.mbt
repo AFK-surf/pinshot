@@ -128,7 +128,16 @@ fn told(json : String, bytes : Bytes?) -> Unit {
           _ => 0
         }
       }
-      long_told(n("h"), n("lost") != 0, n("full") != 0)
+      long_told(
+        n("h"),
+        n("lost") != 0,
+        n("full") != 0,
+        n("paused") != 0,
+        n("pics"),
+        n("dir"),
+        n("at"),
+        n("top"),
+      )
     }
     "tick" =>
       match o.get("wid") {

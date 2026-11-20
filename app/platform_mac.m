@@ -460,10 +460,12 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
 }
 void ps_long_stop(void) {}
 void ps_long_end(void) {}
+void ps_long_pause(int32_t on) { (void)on; }
+void ps_long_reset(void) {}
 void ps_long_preview_free(void) {}
 moonbit_bytes_t ps_long_info(void) { return moonbit_make_bytes(0, 0); }
-moonbit_bytes_t ps_long_preview(int32_t w, int32_t h) {
-  (void)w, (void)h;
+moonbit_bytes_t ps_long_preview(int32_t w, int32_t h, int32_t from_row) {
+  (void)w, (void)h, (void)from_row;
   return moonbit_make_bytes(0, 0);
 }
 moonbit_bytes_t ps_long_png(void) { return moonbit_make_bytes(0, 0); }
