@@ -115,10 +115,9 @@ let line_variants : Array[Tool] = [Arrow, Line]
 let mosaic_variants : Array[Tool] = [Mosaic, MosaicBrush, Blur]
 
 ///|
-/// 14 buttons on the main bar (15 where a scrolling screenshot can be taken): 7 tools + the background + rule + 1 undo
-/// + rule + 5 actions (6) = 16 items (17), 15 gaps (16).
+/// 14 buttons on the main bar (+1 scrolling screenshot, +1 screen record on Windows).
 fn bar_width() -> Double {
-  let n = if long_shot_here() { 15.0 } else { 14.0 }
+  let n = 14.0 + (if long_shot_here() { 1.0 } else { 0.0 }) + (if rec_here() { 1.0 } else { 0.0 })
   bar_pad * 2.0 + bar_button * n + bar_rule * 2.0 + bar_gap * (n + 1.0)
 }
 
@@ -277,10 +276,13 @@ fn toolbar(stage : @view.View) -> Unit {
           done_before.val.is_empty()
         })
         bar_rule_node(bar)
-        // 9..14. OCR, a scrolling screenshot (Windows'), Pin, Save, Close, Copy
+        // 9..15. OCR, scrolling screenshot & screen record (Windows'), Pin, Save, Close, Copy
         tool_button(bar, "ocr", "提取文字 Ctrl+O", fn() { false }, ocr_out)
         if long_shot_here() {
           tool_button(bar, "long", "长截图 Ctrl+L", fn() { false }, long_out)
+        }
+        if rec_here() {
+          tool_button(bar, "record", "录屏 Ctrl+R", fn() { false }, rec_out)
         }
         tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, pin_out)
         tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, save_out)
@@ -666,6 +668,21 @@ fn glyph(name : String) -> @pixels.Vector {
     "top" => lines(["M9 15V5", "M5 9l4-4 4 4", "M4 2.8h10"])
     "pause" => lines(["M6.5 4.2v9.6", "M11.5 4.2v9.6"])
     "play" => { w: 18.0, h: 18.0, layers: [fill_layer("M6 4.2 14 9 6 13.8z", 0x000000FFL)] }
+    "record" =>
+      {
+        w: 18.0,
+        h: 18.0,
+        layers: [
+          stroke_layer(circle_path(9.0, 9.0, 6.2), 0x000000FFL, 1.5),
+          fill_layer(circle_path(9.0, 9.0, 3.2), 0x000000FFL),
+        ],
+      }
+    "stop" =>
+      {
+        w: 18.0,
+        h: 18.0,
+        layers: [fill_layer("M5.5 4.5h7c.6 0 1 .4 1 1v7c0 .6-.4 1-1 1h-7c-.6 0-1-.4-1-1v-7c0-.6.4-1 1-1z", 0x000000FFL)],
+      }
     "reset" => lines(["M4.2 7.5a5 5 0 1 1 1.2 4.9", "M4.2 3.8v3.7h3.7"])
     _ => lines([])
   }

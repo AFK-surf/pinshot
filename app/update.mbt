@@ -442,7 +442,7 @@ fn install_update() -> Unit {
 /// touched for two minutes); else at a later tick. Waiting a day, the person is told once that it waits for them.
 fn install_when_idle() -> Unit {
   guard update.untracked() is Ready(v) else { return }
-  if !capturing.untracked() && pins.length() == 0 && settings_wid.val == 0 && (update_now_test() || ps_idle_ms() >= 120 * 1000) {
+  if !capturing.untracked() && pins.length() == 0 && settings_wid.val == 0 && long_wid.val == 0 && rec_wid.val == 0 && (update_now_test() || ps_idle_ms() >= 120 * 1000) {
     install_update()
     return
   }

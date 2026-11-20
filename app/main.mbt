@@ -54,6 +54,8 @@ fn main {
       ocr_window
     } else if what == "long" {
       long_window
+    } else if what == "rec" {
+      rec_window
     } else {
       pin_window(wid, what)
     }
@@ -78,6 +80,9 @@ fn main {
     }
     if wid == long_wid.val {
       long_gone()
+    }
+    if wid == rec_wid.val {
+      rec_gone()
     }
     pin_gone(wid)
   })
@@ -139,6 +144,21 @@ fn told(json : String, bytes : Bytes?) -> Unit {
         n("top"),
       )
     }
+    "rec" => {
+      let n = fn(k : String) {
+        match o.get(k) {
+          Some(Number(v, ..)) => v
+          _ => 0.0
+        }
+      }
+      let s = fn(k : String) {
+        match o.get(k) {
+          Some(String(v)) => v
+          _ => ""
+        }
+      }
+      rec_told(s("state"), n("ms").to_int(), n("frames").to_int(), n("bytes"), s("codec"), s("path"), s("err"))
+    }
     "tick" =>
       match o.get("wid") {
         Some(Number(w, ..)) => pin_tick(w.to_int())
@@ -175,6 +195,8 @@ fn told(json : String, bytes : Bytes?) -> Unit {
             close_window(wid)
           } else if wid == long_wid.val {
             long_close()
+          } else if wid == rec_wid.val {
+            rec_cancel()
           } else {
             close_pin(wid)
           }

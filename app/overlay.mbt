@@ -779,6 +779,7 @@ fn overlay_keys() -> @view.Keymap {
     ch('t', "pin", ctrl),
     ch('o', "ocr", ctrl),
     ch('l', "long", ctrl),
+    ch('r', "record", ctrl),
     ch('z', "undo", ctrl),
     ch('y', "redo", ctrl),
     ch('z', "redo", ctrl | shift),
@@ -830,6 +831,7 @@ fn overlay_actions(root : @view.View) -> Unit {
   on("pin", pin_out)
   on("ocr", ocr_out)
   on("long", long_out)
+  on("record", rec_out)
   on("undo", fn() { undo() |> ignore })
   on("redo", fn() { redo() |> ignore })
   on("copy-color", copy_color)
