@@ -105,7 +105,7 @@ fn beauty_toggle() -> Unit {
     match overlay_root.val {
       Some(root) => {
         beauty_fade.put(0.0)
-        beauty_fade.go(1.0, @motion.move_spring, at=root.cause_at())
+        beauty_fade.go(1.0, shown_spring, at=root.cause_at())
       }
       None => ()
     }

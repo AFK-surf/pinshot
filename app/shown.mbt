@@ -1,9 +1,14 @@
 // The part as the overlay shows it, on its way to where it is (the user, 2026-11-20: 「各个地方感觉可以加一下
 // transition，比如capture选区变化时」): the window under the pointer, a window clicked, a part nudged by the keys, and the
-// background turned on or off or its room changed, each go there by mbui's move spring from where it shows then; what
+// background turned on or off or its room changed, each go there quickly (`shown_spring`) from where it shows then; what
 // the hand drags (a part drawn, moved or resized) follows the hand at once, and a part that comes from none is there at
 // once. The veil, the frame, the handles, the size's label and the bar are drawn where it shows; what a press finds, and
 // what is copied, is where it is.
+
+///|
+/// How the part goes there: quick (0.12 s to be seen there), not mbui's move spring (0.28 s, too slow for a capture: the
+/// user, 2026-11-20 「过渡动画太慢了」).
+let shown_spring : @motion.Spec = @motion.motion_spring(0.12, threshold=0.5)
 
 ///|
 let shown_x : @motion.Way = @motion.Way::new(0.0)
@@ -51,7 +56,7 @@ fn shown_follow(stage : @view.View) -> Unit {
           if at_once {
             way.put(v.to_double())
           } else {
-            way.go(v.to_double(), @motion.move_spring, at~)
+            way.go(v.to_double(), shown_spring, at~)
           }
         }
         let room = match frame {
@@ -59,7 +64,7 @@ fn shown_follow(stage : @view.View) -> Unit {
           None => 0.0
         }
         if shown_had.val {
-          shown_room.go(room, @motion.move_spring, at~)
+          shown_room.go(room, shown_spring, at~)
         } else {
           shown_room.put(room)
         }
