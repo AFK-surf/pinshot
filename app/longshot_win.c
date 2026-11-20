@@ -36,7 +36,9 @@ void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, int rw, int r
 void ps_wgc_release(void *taken);
 void ps_wgc_long_hold(int on);
 
-#define TICK_MS 33
+// (16: Windows' timer comes at its 15.6 ms steps, so 16 is about 31 ms a picture, where 33 was 47: a quicker scroll still
+// shares enough with the last picture laid in)
+#define TICK_MS 16
 #define MOST_ROWS 30000  // how tall the picture may grow (the person told once it is)
 #define LEAST_OVERLAP 24  // rows two pictures must share to be matched
 #define FIXED_MOST 3      // a still header or foot at most a third of the part
@@ -55,6 +57,9 @@ static struct {
   size_t committed;
   int out_h;
   int foot_h;              // its last rows: the foot's still rows of the last picture laid in
+  int dir;                 // which way it is laid: 1 scrolled down (what comes is put at the foot), -1 up (put under
+                           // its head: the first picture's still rows at its top), 0 not yet; set by the first scroll
+  int head_h;              // scrolled up: its first rows, the head's still rows, what comes is put under
   int strips;
   uint8_t *ref;            // the last picture laid in, and each strip's rows' hashes and whether each is one colour
 
@@ -118,6 +123,25 @@ static void out_add(int from, int to) {
   L.out_h += n;
 }
 
+// Rows `from` to `to` of the picture taken now put in at the picture's row `at`, what was from there on moved down
+// (scrolled up: what came in at the top laid in under the head).
+static void out_put_at(int at, int from, int to) {
+  if (to <= from) return;
+  int n = to - from;
+  if (L.out_h + n > MOST_ROWS) {
+    n = MOST_ROWS - L.out_h;
+    L.full = 1;
+  }
+  if (n <= 0 || !out_room(L.out_h + n)) {
+    L.full = 1;
+    return;
+  }
+  size_t row = (size_t)L.w * 4;
+  memmove(L.out + (size_t)(at + n) * row, L.out + (size_t)at * row, (size_t)(L.out_h - at) * row);
+  memcpy(L.out + (size_t)at * row, L.now + (size_t)(to - n) * row, (size_t)n * row);
+  L.out_h += n;
+}
+
 // Each strip's rows of picture `px` hashed (their fourth bytes not read), each marked where it is all one colour:
 // strip s's row y at [s * h + y].
 static void hash_rows(const uint8_t *px, uint64_t *hash, uint8_t *flat) {
@@ -177,11 +201,13 @@ static int prof_marked(int y) {
 
 // The mean difference (grey levels a column) between now's rows y and ref's rows y + d over the band from `top`, every
 // `step`th row that says something (prof_marked); 1e9 where too few do.
-static double prof_band(int d, int top, int band, int step) {
+static double prof_band(int d, int top, int band, int step, int up) {
   long sum = 0, n = 0;
   for (int y = top; y < top + band - d; y += step) {
-    if (!prof_marked(y)) continue;
-    sum += prof_row_diff(L.now_prof, y, L.ref_prof, y + d);
+    // (scrolled up: now's row y + d is ref's row y)
+    int yn = up ? y + d : y, yr = up ? y : y + d;
+    if (!prof_marked(yn)) continue;
+    sum += prof_row_diff(L.now_prof, yn, L.ref_prof, yr);
     n++;
   }
   return n * step >= LEAST_OVERLAP ? (double)sum / (n * PROF_W) : 1e9;
@@ -193,20 +219,23 @@ static double prof_band(int d, int top, int band, int step) {
 // profiles, the shift where they are least apart kept where they are near alike there and far more alike than not
 // moved at all (the user, 2026-11-20: 「长截图滚动时候……现在似乎静止在第一帧了」). Its foot's still rows in `bot`;
 // 0 none found.
-static int loose_shift(int *bot) {
+static int loose_shift(int up, int *bot, int *head) {
   int most = L.h / FIXED_MOST, top = 0, foot = 0;
   int still_most = (int)(PROF_W * 3);
   while (top < most && prof_row_diff(L.now_prof, top, L.ref_prof, top) <= still_most) top++;
   while (foot < most && prof_row_diff(L.now_prof, L.h - 1 - foot, L.ref_prof, L.h - 1 - foot) <= still_most) foot++;
+  // (the still rows at its top and foot told whatever is found: a shift found exactly needs them too)
+  *bot = foot;
+  *head = top;
   int band = L.h - top - foot;
   if (band < LEAST_OVERLAP * 2) return 0;
-  double at0 = prof_band(0, top, band, 4);
+  double at0 = prof_band(0, top, band, 4, up);
   // (a coarse look, every other shift over every 4th row, then each shift round the best over every other row; the two
-  // pictures sharing a quarter of the band at least: a sliver at a far shift matches anything)
-  int best = 0, reach = band - (band / 4 > LEAST_OVERLAP ? band / 4 : LEAST_OVERLAP);
+  // pictures sharing a fifth of the band at least: a sliver at a far shift matches anything)
+  int best = 0, reach = band - (band / 5 > LEAST_OVERLAP * 2 ? band / 5 : LEAST_OVERLAP * 2);
   double best_v = 1e9;
   for (int d = 2; d <= reach; d += 2) {
-    double v = prof_band(d, top, band, 4);
+    double v = prof_band(d, top, band, 4, up);
     if (v < best_v) best_v = v, best = d;
   }
   if (!best) return 0;
@@ -214,11 +243,10 @@ static int loose_shift(int *bot) {
   double fine_v = 1e9;
   for (int d = best - 3; d <= best + 3; d++) {
     if (d < 1 || d > reach) continue;
-    double v = prof_band(d, top, band, 2);
+    double v = prof_band(d, top, band, 2, up);
     if (v < fine_v) fine_v = v, fine = d;
   }
   if (fine_v > LOOSE_MOST || fine_v * 3.0 > at0) return 0;
-  *bot = foot;
   return fine;
 }
 
@@ -377,32 +405,57 @@ static void tick(void) {
       st[s] = strip_of(s);
       moving += !st[s].still;
     }
-    int bot = 0, d = agreed(st, 0, &bot);
-    // (none exactly alike but moved: scrolled by part of a pixel, found by the rows' greys)
-    if (!d && moving) {
-      int loose_bot = 0, loose = loose_shift(&loose_bot);
-      if (loose) {
-        d = loose, bot = loose_bot;
-        dump("loose", moving, d, bot, 0);
+    // scrolled down (what is laid in comes at the foot) or up (at the top, under the head): either, till the first
+    // scroll says which; then the other way is going back over what is laid in already, nothing new (the user,
+    // 2026-11-20: 「好像倒着往上转无效」: only down was laid in). Exactly alike rows first, else the rows' greys
+    // (scrolled by part of a pixel).
+    int bot = 0, head = 0, d = 0, up = 0;
+    if (L.dir >= 0) {
+      d = agreed(st, 0, &bot);
+      if (!d && moving) {
+        d = loose_shift(0, &bot, &head);
+        if (d) dump("loose", moving, d, bot, 0);
       }
     }
+    if (!d && L.dir <= 0) {
+      int up_bot = 0, up_head = 0;
+      int u = agreed(st, 1, &up_bot);
+      // (exactly alike: the head's still rows as the greys find them)
+      if (u) loose_shift(1, &up_bot, &up_head);
+      if (!u && moving) {
+        u = loose_shift(1, &up_bot, &up_head);
+        if (u) dump("loose-up", moving, u, up_head, 0);
+      }
+      if (u) d = u, up = 1, head = up_head;
+    }
     if (!d) {
-      // (not moved: the most of it the same, what changed beside it moving on its own; or scrolled back up: nothing
-      // new, the last laid in kept; else nothing here is the last picture's: scrolled too far down at once, or the
+      // (not moved: the most of it the same, what changed beside it moving on its own; or scrolled back the other way:
+      // nothing new, the last laid in kept; else nothing here is the last picture's: scrolled too far at once, or the
       // page changed)
-      int still = L.strips - moving, up_bot = 0;
-      L.lost = still < moving && !agreed(st, 1, &up_bot);
+      int still = L.strips - moving, back_bot = 0;
+      L.lost = still < moving && !agreed(st, L.dir < 0 ? 0 : 1, &back_bot);
       dump(L.lost ? "lost" : "still", moving, still, 0, 0);
       tell();
       return;
     }
-    dump("moved", moving, d, bot, 0);
-    // what came in at the foot laid in after the picture's rows (the last laid in's foot taken off: its still rows,
-    // the first picture's as this one sees them), the foot's still rows after them
-    int foot = L.pictures == 1 ? bot : L.foot_h;
-    L.out_h -= foot;
-    out_add(L.h - foot - d < 0 ? 0 : L.h - foot - d, L.h);
-    L.foot_h = L.full ? 0 : bot;
+    if (!L.dir) L.dir = up ? -1 : 1;
+    if (up) {
+      // what came in at the top laid in under the picture's head (the first picture's still rows at its top, as the
+      // first scroll up sees them)
+      dump("moved-up", moving, d, head, 0);
+      if (L.pictures == 1) L.head_h = head;
+      int from = L.head_h, to = L.head_h + d;
+      if (to > L.h) to = L.h;
+      out_put_at(L.head_h, from, to);
+    } else {
+      dump("moved", moving, d, bot, 0);
+      // what came in at the foot laid in after the picture's rows (the last laid in's foot taken off: its still rows,
+      // the first picture's as this one sees them), the foot's still rows after them
+      int foot = L.pictures == 1 ? bot : L.foot_h;
+      L.out_h -= foot;
+      out_add(L.h - foot - d < 0 ? 0 : L.h - foot - d, L.h);
+      L.foot_h = L.full ? 0 : bot;
+    }
   }
   L.lost = 0;
   L.pictures++;
