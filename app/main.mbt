@@ -59,6 +59,11 @@ fn main {
   @ui.when_window_closed(fn(wid) {
     if wid == settings_wid.val {
       settings_wid.val = 0
+      // (a shortcut asked for and the settings closed: nothing taken, the shortcuts as they were)
+      if recording.untracked() != 0 {
+        stop_recording()
+        apply_keys()
+      }
       trim_soon()
     }
     if wid == toast_wid.val {
@@ -122,6 +127,19 @@ fn told(json : String, bytes : Bytes?) -> Unit {
         _ => ()
       }
     "pins" => pins_toggle()
+    "key-pressed" => {
+      let n = fn(k : String) {
+        match o.get(k) {
+          Some(Number(v, ..)) => v.to_int()
+          _ => 0
+        }
+      }
+      let how = match o.get("how") {
+        Some(String(h)) => h
+        _ => "cancel"
+      }
+      key_pressed(how, n("mods"), n("vk"))
+    }
     "fetching" | "fetched" | "setup-ended" => update_told(what, o, bytes)
     "update-tick" => update_tick()
     "close" =>

@@ -215,6 +215,16 @@ int ps_hotkey(int which, int mods, int vk) {
   return RegisterEventHotKey(code, flags, id, GetApplicationEventTarget(), 0, &keys[which]) == noErr;
 }
 
+// Shortcuts are picked from settings.mbt's key_choices here, not set by pressing them (Windows' ps_key_record).
+int ps_key_record(int on) {
+  (void)on;
+  return 0;
+}
+moonbit_bytes_t ps_key_name(int vk) {
+  (void)vk;
+  return moonbit_make_bytes(0, 0);
+}
+
 extern void mb_app_manage_window(int wid);
 extern void mb_host_window_drag(void);
 static NSRunningApplication *previousApp;
