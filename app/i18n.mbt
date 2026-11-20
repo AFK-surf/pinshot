@@ -267,4 +267,14 @@ let en_words : Map[String, String] = {
   "小": "Small",
   "大": "Large",
   "阴影": "Shadow",
+  // Monoid-style tooltip labels (separated from keycap badges) & confirm shortcut
+  "选择": "Select",
+  "美化背景": "Background",
+  "撤销": "Undo",
+  "录屏": "Record area",
+  "贴到屏幕": "Pin to screen",
+  "保存截图": "Save",
+  "确认并复制截图": "Confirm & copy",
+  "仅在截图界面生效，支持单键（如 Enter、Space）或组合键": "Works inside capture overlay; supports single keys (e.g. Enter, Space) or combos",
+  "暂不支持这个按键，换 Enter、Space、字母、数字或 F1–F12": "Key not supported here; use Enter, Space, letters, digits, or F1–F12",
 }

@@ -1,8 +1,16 @@
 diff --git a/libs/mbui/src/host/win_app.c b/libs/mbui/src/host/win_app.c
-index 93f14f04..0fb78423 100644
+index 93f14f04..2984adcb 100644
 --- a/libs/mbui/src/host/win_app.c
 +++ b/libs/mbui/src/host/win_app.c
-@@ -1236,6 +1236,12 @@ static void wins_close_beside(void) {
+@@ -533,6 +533,7 @@ static void key_down(WPARAM vk) {
+     case VK_PRIOR: code = ws->ime_active ? 0 : 15; break;
+     case VK_NEXT: code = ws->ime_active ? 0 : 16; break;
+   }
++  if (!code && vk >= VK_F1 && vk <= VK_F12) code = 100 + (int)(vk - VK_F1);
+   if (code) {
+     mb_cb.key(code, mods);
+     return;
+@@ -1236,6 +1237,12 @@ static void wins_close_beside(void) {
  // A window of this run (@hostapi.window_open_id): its id, 0 where none. As large as the first is now, down and to the
  // right of it, its title the first's, its top row the app's as the first's; out of sight (cloaked) till its first
  // frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
@@ -15,7 +23,7 @@ index 93f14f04..0fb78423 100644
  static int win_open(void) {
    if (!hwnd || !*win_class) return 0;
    int wid = 0;
-@@ -1252,25 +1258,30 @@ static int win_open(void) {
+@@ -1252,25 +1259,30 @@ static int win_open(void) {
    WCHAR title[256];
    if (!GetWindowTextW(hwnd, title, 256)) title[0] = 0;
    int off = (int)lround(32 * wid * (GetDpiForWindow(hwnd) / 96.0));

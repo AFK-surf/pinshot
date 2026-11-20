@@ -8,6 +8,8 @@ struct Settings {
   /// `key_choices` and `pin_choices` on the Mac)
   capture_key : Hotkey
   pin_key : Hotkey
+  /// capture-overlay-local shortcut that confirms & copies the screenshot (default Enter; vk=0 none)
+  confirm_key : Hotkey
   /// a pin over the other windows as it opens, and how clear (255 not seen through)
   pin_top : Bool
   pin_alpha : Int
@@ -47,6 +49,24 @@ let pin_choices : Array[(String, Int, Int)] = [
   ("F2", 0, 0x71),
   ("不用快捷键", 0, 0),
 ]
+
+///|
+let confirm_choices : Array[(String, Int, Int)] = if @hostapi.platform() == 0 {
+  [("Return", 0, 0x0D), ("Space", 0, 0x20), ("⌘Return", 2, 0x0D), ("不用快捷键", 0, 0)]
+} else {
+  [("Enter", 0, 0x0D), ("Space", 0, 0x20), ("Ctrl+Enter", 2, 0x0D), ("不用快捷键", 0, 0)]
+}
+
+///|
+/// Shortcut label for the capture "confirm & copy" key (empty if cleared), used by the toolbar tooltip.
+fn confirm_key_label() -> String {
+  let h = settings.get().confirm_key
+  if h.vk == 0 {
+    ""
+  } else {
+    key_words(h, confirm_choices)
+  }
+}
 
 ///|
 /// A shortcut: Windows' modifiers (Alt 1, Ctrl 2, Shift 4, Win 8, as RegisterHotKey takes them) and virtual key; none
@@ -113,6 +133,7 @@ fn default_settings() -> Settings {
   {
     capture_key: hotkey_of(key_choices[0]),
     pin_key: hotkey_of(pin_choices[0]),
+    confirm_key: hotkey_of(confirm_choices[0]),
     pin_top: true,
     pin_alpha: 255,
     save_format: 0,
@@ -130,6 +151,7 @@ fn default_settings() -> Settings {
 let settings : @signals.Signal[Settings] = @signals.signal({
   capture_key: hotkey_of(key_choices[0]),
   pin_key: hotkey_of(pin_choices[0]),
+  confirm_key: hotkey_of(confirm_choices[0]),
   pin_top: true,
   pin_alpha: 255,
   save_format: 0,
@@ -195,6 +217,7 @@ fn load_settings() -> Unit {
       {
         capture_key: hotkey("capture_key", "capture_keys", key_choices),
         pin_key: hotkey("pin_key", "pin_keys", pin_choices),
+        confirm_key: hotkey("confirm_key", "confirm_keys", confirm_choices),
         pin_top: flag("pin_top", d.pin_top),
         pin_alpha: clampi(num("pin_alpha", d.pin_alpha), 25, 255),
         save_format: match text("save_format", "png") {
@@ -265,6 +288,7 @@ fn save_settings() -> Unit {
   }
   o["capture_key"] = hotkey(s.capture_key)
   o["pin_key"] = hotkey(s.pin_key)
+  o["confirm_key"] = hotkey(s.confirm_key)
   o["pin_top"] = Json::boolean(s.pin_top)
   o["pin_alpha"] = Json::number(s.pin_alpha.to_double())
   o["save_format"] = Json::string(["png", "jpg-92", "jpg-80"][s.save_format])
@@ -400,8 +424,10 @@ fn clear_key(which : Int) -> Unit {
   key_trouble.set((0, ""))
   if which == 1 {
     change_settings(fn(s) { { ..s, capture_key: { mods: 0, vk: 0 } } })
-  } else {
+  } else if which == 2 {
     change_settings(fn(s) { { ..s, pin_key: { mods: 0, vk: 0 } } })
+  } else {
+    change_settings(fn(s) { { ..s, confirm_key: { mods: 0, vk: 0 } } })
   }
   apply_keys()
 }
@@ -442,6 +468,16 @@ fn key_pressed(how : String, mods : Int, vk : Int) -> Unit {
     _ => ()
   }
   let h : Hotkey = { mods, vk }
+  if which == 3 {
+    if hotkey_to_mbui(h) is None {
+      trouble(tr("暂不支持这个按键，换 Enter、Space、字母、数字或 F1–F12"))
+      return
+    }
+    log("keys: confirm set to \{key_words(h, confirm_choices)}")
+    change_settings(fn(s) { { ..s, confirm_key: h } })
+    apply_keys()
+    return
+  }
   let alone = (vk >= 0x70 && vk <= 0x87) || vk == 0x2C || vk == 0x13 || vk == 0x91
   if (mods & 11) == 0 && !alone {
     trouble(tr("要和 Ctrl、Alt 或 Win 一起按（F1–F24、PrtSc 可以单独用）"))
@@ -607,6 +643,10 @@ fn keys_page(p : @view.View) -> Unit {
         key_box(r, 2)
         key_clear_button(r, 2)
       }, note=fn() { key_note(2) })
+      set_row(g, "确认并复制截图", fn(r) {
+        key_box(r, 3)
+        key_clear_button(r, 3)
+      }, note=fn() { key_note(3) }, note_ink=fn() { if key_trouble.get().0 == 3 { 0xF5A524FFL } else { set_muted } })
     } else {
       set_row(g, "截图", fn(r) {
         choice(
@@ -624,6 +664,14 @@ fn keys_page(p : @view.View) -> Unit {
           fn(i) { change_settings(fn(s) { { ..s, pin_key: hotkey_of(pin_choices[i]) } }) },
         )
       }, note=fn() { key_note(2) })
+      set_row(g, "确认并复制截图", fn(r) {
+        choice(
+          r,
+          confirm_choices.map(fn(c) { c.0 }),
+          fn() { choice_of(confirm_choices, settings.get().confirm_key) },
+          fn(i) { change_settings(fn(s) { { ..s, confirm_key: hotkey_of(confirm_choices[i]) } }) },
+        )
+      }, note=fn() { key_note(3) }, note_ink=fn() { set_muted })
     }
   })
   if keys_pressed_in() {
@@ -653,6 +701,8 @@ fn key_note(which : Int) -> String {
   let (row, why) = key_trouble.get()
   if row == which {
     why
+  } else if which == 3 {
+    tr("仅在截图界面生效，支持单键（如 Enter、Space）或组合键")
   } else if !(if which == 1 { capture_key_ok.get() } else { pin_key_ok.get() }) {
     tr("已被其他程序占用，换一个")
   } else {
@@ -665,7 +715,14 @@ fn key_note(which : Int) -> String {
 fn key_clear_button(parent : @view.View, which : Int) -> Unit {
   let has = fn() {
     let s = settings.get()
-    recording.get() != which && (if which == 1 { s.capture_key.vk } else { s.pin_key.vk }) != 0
+    let vk = if which == 1 {
+      s.capture_key.vk
+    } else if which == 2 {
+      s.pin_key.vk
+    } else {
+      s.confirm_key.vk
+    }
+    recording.get() != which && vk != 0
   }
   parent.box(fn(b) {
     b
@@ -702,8 +759,10 @@ fn key_box(parent : @view.View, which : Int) -> Unit {
       tr("按下快捷键…")
     } else if which == 1 {
       key_words(settings.get().capture_key, key_choices)
-    } else {
+    } else if which == 2 {
       key_words(settings.get().pin_key, pin_choices)
+    } else {
+      key_words(settings.get().confirm_key, confirm_choices)
     }
   }
   parent.box(fn(b) {

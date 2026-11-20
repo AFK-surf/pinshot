@@ -202,7 +202,7 @@ fn toolbar(stage : @view.View) -> Unit {
         bar_panel(bar, bar_corner)
         bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(bar_width()))) |> ignore
         // 1. Select (Move)
-        tool_button(bar, "select", "选择（V）", fn() { tool.get() == Move }, fn() { pick_tool(Move) })
+        tool_button(bar, "select", "选择", fn() { tool.get() == Move }, fn() { pick_tool(Move) }, keys=fn() { "V" })
         // 2. Folded Shape group (Box / Oval / Focus)
         tool_group_button(
           bar,
@@ -291,26 +291,26 @@ fn toolbar(stage : @view.View) -> Unit {
           })
         }
         // 8. The background the part is laid on (beautify.mbt)
-        tool_button(bar, "beautify", "美化背景 B", fn() { beauty_on.get() }, beauty_toggle)
+        tool_button(bar, "beautify", "美化背景", fn() { beauty_on.get() }, beauty_toggle, keys=fn() { "B" })
         bar_rule_node(bar)
         // 9. Undo (Redo stays on Ctrl+Y / Ctrl+Shift+Z)
-        tool_button(bar, "undo", "撤销 Ctrl+Z", fn() { false }, fn() { undo() |> ignore }, dim=fn() {
+        tool_button(bar, "undo", "撤销", fn() { false }, fn() { undo() |> ignore }, dim=fn() {
           marks.get() |> ignore
           done_before.val.is_empty()
-        })
+        }, keys=fn() { "Ctrl+Z" })
         bar_rule_node(bar)
         // 9..15. OCR, scrolling screenshot & screen record (Windows'), Pin, Save, Close, Copy
-        tool_button(bar, "ocr", "提取文字 Ctrl+O", fn() { false }, ocr_out)
+        tool_button(bar, "ocr", "提取文字", fn() { false }, ocr_out, keys=fn() { "Ctrl+O" })
         if long_shot_here() {
-          tool_button(bar, "long", "长截图 Ctrl+L", fn() { false }, long_out)
+          tool_button(bar, "long", "长截图", fn() { false }, long_out, keys=fn() { "Ctrl+L" })
         }
         if rec_here() {
-          tool_button(bar, "record", "录屏 Ctrl+R", fn() { false }, rec_out)
+          tool_button(bar, "record", "录屏", fn() { false }, rec_out, keys=fn() { "Ctrl+R" })
         }
-        tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, pin_out)
-        tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, save_out)
-        tool_button(bar, "close", "关闭 Esc", fn() { false }, close_capture)
-        tool_button(bar, "check", "复制 Enter", fn() { false }, copy_out, strong=true)
+        tool_button(bar, "pin", "贴到屏幕", fn() { false }, pin_out, keys=fn() { "Ctrl+T" })
+        tool_button(bar, "save", "保存截图", fn() { false }, save_out, keys=fn() { "Ctrl+S" })
+        tool_button(bar, "close", "关闭", fn() { false }, close_capture, keys=fn() { "Esc" })
+        tool_button(bar, "check", "复制", fn() { false }, copy_out, strong=true, keys=confirm_key_label)
       })
       |> ignore
       col.show(fn() { styling() }, fn(row) { style_row(row) })
@@ -361,8 +361,9 @@ fn tool_button(
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
   tip? : Bool = true,
+  keys? : () -> String = fn() { "" },
 ) -> Unit {
-  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~)
+  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~, keys~)
 }
 
 ///|
@@ -376,6 +377,7 @@ fn tool_group_button(
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
   tip? : Bool = true,
+  keys? : () -> String = fn() { "" },
 ) -> Unit {
   // (`tip`: told by the overlay's tip; a button of another window, the long screenshot's panel, is not: the tip is the
   // overlay's, its node ids of no other window)
@@ -409,7 +411,7 @@ fn tool_group_button(
     }))
     |> ignore
     if tip {
-      tip_follows(b, label_fn, @view.Top)
+      tip_follows(b, label_fn, @view.Top, keys~)
     }
     b.box(fn(g) {
       g
@@ -734,15 +736,15 @@ fn glyph(name : String) -> @pixels.Vector {
 let tip_on : @signals.Signal[@view.NodeId?] = @signals.signal(None)
 
 ///|
-/// What the button pointed at does and the side its tip goes on (set with `tip_on`).
-let tip_of : Ref[(() -> String, @view.Side)] = Ref((fn() { "" }, @view.Top))
+/// What the button pointed at does, its optional shortcut, and the side its tip goes on (set with `tip_on`).
+let tip_of : Ref[(() -> String, () -> String, @view.Side)] = Ref((fn() { "" }, fn() { "" }, @view.Top))
 
 ///|
 /// Whether tips show now (the pointer has rested on a button long enough, and not moved off the bar since).
 let tip_ready : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
-let tip_wait : Double = 450.0
+let tip_wait : Double = 400.0
 
 ///|
 /// How long after leaving a button the next one's tip still shows at once.
@@ -755,12 +757,53 @@ fn tip_off() -> Unit {
 }
 
 ///|
-/// Button `b` tells what it does (`label`, said through `tr`) by a tip on `side` while it is pointed at.
-fn tip_follows(b : @view.View, label : () -> String, side : @view.Side) -> Unit {
+/// Split a shortcut string ("Ctrl+R", "⌘⇧Z", "Enter") into individual Monoid-style keycap labels.
+fn tip_key_caps(keys : String) -> Array[String] {
+  let caps : Array[String] = []
+  let trimmed = keys.trim(chars=" ").to_owned()
+  if trimmed == "" {
+    return caps
+  }
+  let on_mac = @hostapi.platform() == 0
+  let chars = trimmed.to_array()
+  let is_mark = fn(c : Char) { c == '⌃' || c == '⌥' || c == '⇧' || c == '⌘' }
+  if is_mark(chars[0]) {
+    let mut at = 0
+    while at < chars.length() && is_mark(chars[at]) {
+      caps.push(chars[at].to_string())
+      at += 1
+    }
+    let rest = String::from_array(chars[at:]).trim(chars=" ").to_owned()
+    if rest != "" {
+      caps.push(rest)
+    }
+    return caps
+  }
+  let mut part : Array[Char] = []
+  for c in chars {
+    if c == '+' && !part.is_empty() {
+      let s = String::from_array(part).trim(chars=" ").to_owned()
+      caps.push(if on_mac && s == "Ctrl" { "⌘" } else if on_mac && s == "Alt" { "⌥" } else if on_mac && s == "Shift" { "⇧" } else { s })
+      part = []
+    } else {
+      part.push(c)
+    }
+  }
+  if !part.is_empty() {
+    let s = String::from_array(part).trim(chars=" ").to_owned()
+    caps.push(if on_mac && s == "Enter" { "Return" } else { s })
+  }
+  caps
+}
+
+///|
+/// Button `b` tells what it does (`label`, said through `tr`) and optional shortcut (`keys`) by a Monoid-style tip on
+/// `side` while it is pointed at.
+fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : () -> String = fn() { "" }) -> Unit {
   let id = b.id()
   b.reacts(fn() { b.pointed() }, fn(pointed) {
     if pointed {
-      tip_of.val = (label, side)
+      tip_of.val = (label, keys, side)
       tip_on.set(Some(id))
       if !tip_ready.untracked() {
         b.at_moment(b.cause_at() + tip_wait, fn() {
@@ -779,6 +822,8 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side) -> Unit 
 }
 
 ///|
+/// Monoid-style tooltip (libs/sf-ui tip_node): 10pt superellipse, lifted charcoal surface with 9% hairline and soft
+/// small shadow, concentric 6pt shortcut keycap badges (pl=10 pr=4 py=4 -> 10-4=6).
 fn bar_tip_node(o : @view.View) -> Unit {
   o.pick(
     fn() {
@@ -790,25 +835,58 @@ fn bar_tip_node(o : @view.View) -> Unit {
     },
     fn(layer, key) {
       guard key is Some(id) else { return }
-      let (label, side) = tip_of.val
+      let (label, keys_fn, side) = tip_of.val
+      let caps = tip_key_caps(keys_fn())
+      let has_keys = !caps.is_empty()
       layer.box(fn(t) {
         t
         .beside(id, side~, along=Middle, offset=6.0, padding=4.0)
         .presses(Is(false))
         .points(Is(false))
-        .padding(Is((8.0, 4.0, 8.0, 4.0)))
-        .radius(Is(7.0))
-        .ground(Is(0x1E1F23F7L))
-        .edge(Is((1.0, 0xFFFFFF1FL)))
-        .shadow(Is((10.0, 2.0, 0x00000059L)))
+        .row(Is(true))
+        .gap(Is(7.0))
+        .lines_up(Is(Some(Middle)))
+        .padding(Is(if has_keys { (10.0, 4.0, 4.0, 4.0) } else { (10.0, 5.0, 10.0, 5.0) }))
+        .radius(Is(10.0))
+        .ground(Is(0x26282FF7L))
+        .edge(Is((1.0, 0xFFFFFF18L)))
+        .shadow(Is((8.0, 2.0, 0x00000048L)))
         |> ignore
         t.box(fn(w) {
           w
+          .padding(Is((0.0, 1.0, 0.0, 1.0)))
           .words(By(fn() { tr(label()) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
           .ink(Is(0xECEEF2FFL))
           |> ignore
         })
         |> ignore
+        if has_keys {
+          t.box(fn(q) {
+            q.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))) |> ignore
+            for cap in caps {
+              q.box(fn(k) {
+                k
+                .height(Is(Some(19.0)))
+                .min_width(Is(Some(19.0)))
+                .padding(Is((5.0, 0.0, 5.0, 0.0)))
+                .radius(Is(6.0))
+                .ground(Is(0xFFFFFF1FL))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                |> ignore
+                k.box(fn(kw) {
+                  kw
+                  .words(Is(cap), look={ ..@view.words_plain, size: 11.0, weight: 500, line: 14.0, wrap: false })
+                  .ink(Is(0xE6E8EDFFL))
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            }
+          })
+          |> ignore
+        }
       })
       |> ignore
     },
