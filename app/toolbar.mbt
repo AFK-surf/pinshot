@@ -839,6 +839,8 @@ priv struct TipHandFrom {
 /// Per-button tooltip handoff participant (6 critically-damped springs: dx, dy, dw, dh + carried cx, cy).
 priv struct TipPart {
   id : Int
+  anchor : @view.View
+  side : @view.Side
   tag : Int
   fade : TipFade
   open : @signals.Signal[Bool]
@@ -867,9 +869,11 @@ let tip_last_part : Ref[TipPart?] = Ref(None)
 let tip_went_at : Ref[Double] = Ref(-1.0e18)
 
 ///|
-fn TipPart::new(id : Int, side : @view.Side) -> TipPart {
+fn TipPart::new(id : Int, anchor : @view.View, side : @view.Side) -> TipPart {
   {
     id,
+    anchor,
+    side,
     tag: tip_side_tag(side),
     fade: TipFade::new(),
     open: @signals.signal(false, same=fn(a, b) { a == b }),
@@ -928,11 +932,34 @@ fn TipPart::start_glide(self : TipPart, v : @view.View) -> Unit {
   self.due = v.at_moment(f.at, fn() {
     self.due = fn() {  }
     self.pending = None
-    let (tx, ty, tw, th) = v.laid_window_now()
+    // Pinned mbui laid_window_now() returns (0, 0, tw, th) for .beside() nodes; compute the exact beside target
+    // rect directly via place_beside() so the spring glides from prev's rect to the button's true tip position.
+    let (_, _, tw, th) = v.laid_window_now()
+    if tw <= 0.0 || th <= 0.0 {
+      return
+    }
+    let anchor_rect = if self.anchor.was_placed() {
+      self.anchor.placed_window_now()
+    } else {
+      self.anchor.laid_window_now()
+    }
+    let k = mon_scale.untracked()
+    let (vw, vh) = (mon.val.w.to_double() / k, mon.val.h.to_double() / k)
+    let (tx, ty, _) = @view.place_beside(
+      anchor_rect,
+      tw,
+      th,
+      vw,
+      vh,
+      side=self.side,
+      along=Middle,
+      offset=6.0,
+      padding=4.0,
+    )
     let (fx, fy, fw, fh) = f.rect
-    let (vx, vy, vw, vh) = f.speed
+    let (vx, vy, vws, vhs) = f.speed
     let off = [fx - tx, fy - ty, fw - tw, fh - th, fx + fw / 2.0 - (tx + tw / 2.0), fy + fh / 2.0 - (ty + th / 2.0)]
-    let speed = [vx, vy, vw, vh, vx + vw / 2.0, vy + vh / 2.0]
+    let speed = [vx, vy, vws, vhs, vx + vws / 2.0, vy + vhs / 2.0]
     for i, w in self.ways {
       w.put(off[i])
       w.go(0.0, tip_hand_spring, at=f.at, velocity=speed[i])
@@ -1011,7 +1038,7 @@ fn tip_key_caps(keys : String) -> Array[String] {
 fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : () -> String = fn() { "" }) -> Unit {
   let anchor_id = b.id()
   tip_next_id.val = tip_next_id.val + 1
-  let part = TipPart::new(tip_next_id.val, side)
+  let part = TipPart::new(tip_next_id.val, b, side)
   let made = Ref(false)
   let shut = Ref(false)
   let rest : Ref[(() -> Unit)?] = Ref(None)
