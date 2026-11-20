@@ -30,6 +30,16 @@ extern "C" fn ps_long_preview(w : Int, h : Int) -> Bytes = "ps_long_preview"
 extern "C" fn ps_long_png() -> Bytes = "ps_long_png"
 
 ///|
+/// The previews' pixels kept on the native side let go (each forgotten by mbui first).
+extern "C" fn ps_long_preview_free() -> Unit = "ps_long_preview_free"
+
+///|
+/// Whether a scrolling screenshot can be taken here: Windows' alone (its taking is longshot_win.c's).
+fn long_shot_here() -> Bool {
+  @hostapi.platform() == 3
+}
+
+///|
 /// Window `wid` kept out of what is taken (it may stand over the part).
 extern "C" fn ps_long_exclude(wid : Int) -> Unit = "ps_long_exclude"
 
@@ -109,7 +119,7 @@ let long_head_h : Double = 22.0
 ///|
 /// The part picked in the capture taken long: the capture closed, the taking begun, the panel put beside the part.
 fn long_out() -> Unit {
-  if exporting.val != "" || long_wid.val != 0 {
+  if !long_shot_here() || exporting.val != "" || long_wid.val != 0 {
     return
   }
   guard sel.untracked() is Some(r) else { return }
@@ -132,6 +142,7 @@ fn long_out() -> Unit {
   long_full.set(false)
   long_stopped.set(false)
   long_preview.set(("", 0, 0))
+  long_pending.set(("", 0, 0))
   @signals.end_batch()
   long_preview_due.val = false
   // (the preview as tall as the monitor leaves room for)
@@ -198,9 +209,9 @@ fn long_preview_soon() -> Unit {
     return
   }
   long_preview_due.val = true
-  match overlay_root.val {
+  match long_root.val {
     Some(r) =>
-      r.at_moment(now() + long_preview_ms - since, fn() {
+      r.at_moment(r.cause_at() + long_preview_ms - since, fn() {
         long_preview_due.val = false
         if long_wid.val != 0 {
           long_preview_make()
@@ -290,6 +301,10 @@ fn long_size() -> (Int, Int) {
 ///|
 /// The picture copied (and kept in the pictures' folder where the settings say so), the long screenshot over.
 fn long_copy() -> Unit {
+  // (nothing taken yet, its first moment: a key pressed then does nothing, rather than close it with nothing)
+  if long_h.untracked() == 0 {
+    return
+  }
   let (w, h) = long_size()
   guard long_png() is Some(png) else {
     long_close()
@@ -304,7 +319,7 @@ fn long_copy() -> Unit {
   }
   log("long: copied \{w}x\{h}, \{png.length()} bytes")
   if settings.untracked().keep_copies {
-    ps_write_file(cstr(settings.untracked().save_dir + "\\" + file_name()), png) |> ignore
+    write_picture_file(file_in(settings.untracked().save_dir, file_name()), png)
   }
   long_close()
 }
@@ -313,6 +328,9 @@ fn long_copy() -> Unit {
 /// The picture saved (where the settings say to ask, where the system's dialog says), the long screenshot over; the
 /// dialog called off, the panel stays, the taking stopped.
 fn long_save() -> Unit {
+  if long_h.untracked() == 0 {
+    return
+  }
   guard long_png() is Some(png) else {
     long_close()
     return
@@ -321,12 +339,12 @@ fn long_save() -> Unit {
   let path = if s.ask_where {
     text_of(ps_save_dialog(long_wid.val, cstr(s.save_dir), cstr(file_name())))
   } else {
-    s.save_dir + "\\" + file_name()
+    file_in(s.save_dir, file_name())
   }
   if path == "" {
     return
   }
-  ps_write_file(cstr(path), png) |> ignore
+  write_picture_file(path, png)
   shutter()
   log("long: saved \{path}")
   long_close()
@@ -336,6 +354,9 @@ fn long_save() -> Unit {
 /// The picture pinned where the part was, as tall as the monitor leaves room for (its zoom brought down to fit), the
 /// long screenshot over.
 fn long_pin() -> Unit {
+  if long_h.untracked() == 0 {
+    return
+  }
   let (w, h) = long_size()
   guard long_png() is Some(png) else {
     long_close()
@@ -384,6 +405,8 @@ fn long_gone() -> Unit {
       @ui.forget_image(k)
     }
   }
+  // (their pixels let go only now: mbui reads none of them once they are forgotten)
+  ps_long_preview_free()
   trim_soon()
 }
 
@@ -523,9 +546,9 @@ fn long_window(root : @view.View) -> Unit {
     // what to do with it: call it off, pin, save; copy, the one most asked for, apart and lit
     page.box(fn(bar) {
       bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(long_box_w()))).lines_up(Is(Some(Middle))) |> ignore
-      tool_button(bar, "close", "取消 Esc", fn() { false }, long_close)
-      tool_button(bar, "pin", "贴到屏幕", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 })
-      tool_button(bar, "save", "保存", fn() { false }, long_save, dim=fn() { long_h.get() == 0 })
+      tool_button(bar, "close", "取消 Esc", fn() { false }, long_close, tip=false)
+      tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tip=false)
+      tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tip=false)
       bar.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       long_copy_button(bar)
     })
@@ -595,8 +618,8 @@ fn long_keys() -> @view.Keymap {
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
     k(@ui.key_code_enter, "copy", 0),
-    ch('c', "copy", @ui.mod_ctrl),
-    ch('s', "save", @ui.mod_ctrl),
-    ch('t', "pin", @ui.mod_ctrl),
+    ch('c', "copy", shortcut_mod()),
+    ch('s', "save", shortcut_mod()),
+    ch('t', "pin", shortcut_mod()),
   ])
 }

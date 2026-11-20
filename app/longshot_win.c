@@ -34,6 +34,7 @@
 extern void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
 void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, uint8_t **bits, int *pitch);
 void ps_wgc_release(void *taken);
+void ps_wgc_long_hold(int on);
 
 #define TICK_MS 33
 #define MOST_ROWS 30000  // how tall the picture may grow (the person told once it is)
@@ -65,13 +66,13 @@ static struct {
   int full;                // MOST_ROWS reached
   UINT_PTR timer;
   HWND frame;
-  int told_h, told_lost;
+  int told_h, told_lost, told_full;
   ULONGLONG begun;         // when it began (GetTickCount64)
 } L;
 
 static void tell(void) {
-  if (L.told_h == L.out_h && L.told_lost == L.lost) return;
-  L.told_h = L.out_h, L.told_lost = L.lost;
+  if (L.told_h == L.out_h && L.told_lost == L.lost && L.told_full == L.full) return;
+  L.told_h = L.out_h, L.told_lost = L.lost, L.told_full = L.full;
   char json[128];
   int n = snprintf(json, sizeof json, "{\"do\":\"long\",\"h\":%d,\"lost\":%d,\"full\":%d}", L.out_h, L.lost, L.full);
   mb_post("ps", json, (size_t)n, NULL, 0);
@@ -379,6 +380,9 @@ static void frame_show(void) {
 // ---- what the app calls ----
 
 static void let_go(void) {
+  if (L.on) ps_wgc_long_hold(0);
+  if (dump_log) fclose(dump_log);
+  dump_log = NULL, dumped = 0, dumped_hash = 0;
   if (L.timer) KillTimer(NULL, L.timer);
   if (L.frame) DestroyWindow(L.frame);
   if (L.out) VirtualFree(L.out, 0, MEM_RELEASE);
@@ -418,6 +422,7 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
   }
   L.on = 1;
   L.told_h = -1;
+  ps_wgc_long_hold(1);
   L.begun = GetTickCount64();
   frame_show();
   L.timer = SetTimer(NULL, 0, TICK_MS, tick_timer);
@@ -426,6 +431,9 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
 
 // The taking stopped (the picture kept till ps_long_end), its frame gone.
 void ps_long_stop(void) {
+  // (the session a long screenshot held let go now, if it was made only for it: nothing more is taken)
+  if (L.on) ps_wgc_long_hold(0);
+  L.on = 0;
   if (L.timer) KillTimer(NULL, L.timer);
   L.timer = 0;
   if (L.frame) DestroyWindow(L.frame);
@@ -454,14 +462,22 @@ moonbit_bytes_t ps_long_info(void) {
   return bytes_of(s, (size_t)n);
 }
 
+static uint8_t *kept[6];  // the previews handed to mbui, six in turn (ps_long_preview)
+static int turn;
+
+// The previews' pixels let go (once mbui has forgotten each: it reads them by their address till then).
+void ps_long_preview_free(void) {
+  for (int i = 0; i < 6; i++) free(kept[i]), kept[i] = NULL;
+  turn = 0;
+}
+
 // The picture's foot as it would show `box_w` pixels wide (brought down to that, never up), as much of it as `box_h`
 // pixels hold (all of it while it is shorter): what came in last at its foot, the picture at one scale all along, so
 // what is added slides in under what was there rather than all of it shrinking. Each pixel the mean of those it
 // covers. As mbui takes pixels kept elsewhere (MBRAWPTR...); kept here, six in turn, so one mbui still reads is not
 // written over.
 moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h) {
-  static uint8_t *kept[6];
-  static int turn;
+
   if (!L.out_h || box_w <= 0 || box_h <= 0) return moonbit_make_bytes(0, 0);
   double k = (double)box_w / L.w;
   if (k > 1.0) k = 1.0;

@@ -67,7 +67,6 @@ let en_words : Map[String, String] = {
   "在框内滚动鼠标滚轮": "Scroll the wheel in the frame",
   "继续滚动，或点复制完成": "Keep scrolling, or Copy to finish",
   "取消 Esc": "Cancel Esc",
-  "贴到屏幕": "Pin to screen",
   "细": "Thin",
   "中": "Medium",
   "粗": "Thick",
