@@ -664,6 +664,9 @@ fn glyph(name : String) -> @pixels.Vector {
     // (a page taller than its frame, an arrow down it: a long screenshot)
     "long" => lines(["M4 2.5h10v13h-10z", "M9 5.5v7", "M6.5 10 9 12.5 11.5 10"])
     "top" => lines(["M9 15V5", "M5 9l4-4 4 4", "M4 2.8h10"])
+    "pause" => lines(["M6.5 4.2v9.6", "M11.5 4.2v9.6"])
+    "play" => { w: 18.0, h: 18.0, layers: [fill_layer("M6 4.2 14 9 6 13.8z", 0x000000FFL)] }
+    "reset" => lines(["M4.2 7.5a5 5 0 1 1 1.2 4.9", "M4.2 3.8v3.7h3.7"])
     _ => lines([])
   }
 }

@@ -36,13 +36,17 @@ void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, int rw, int r
 void ps_wgc_release(void *taken);
 void ps_wgc_long_hold(int on);
 
-#define TICK_MS 33
+// (16: Windows' timer comes at its 15.6 ms steps, so 16 is about 31 ms a picture, where 33 was 47: a quicker scroll still
+// shares enough with the last picture laid in)
+#define TICK_MS 16
 #define MOST_ROWS 30000  // how tall the picture may grow (the person told once it is)
 #define LEAST_OVERLAP 24  // rows two pictures must share to be matched
 #define FIXED_MOST 3      // a still header or foot at most a third of the part
 #define SETTLE_MS 180
 #define STRIPS_MOST 8
 #define STRIP_LEAST 64    // pixels: a part narrower than two strips of it is one strip
+#define PROF_W 64         // columns of a row's grey profile (loose_shift)
+#define LOOSE_MOST 6.0    // how far apart (grey levels, each column) rows may be and still be the same, scrolled
 
 static struct {
   int on;
@@ -53,6 +57,9 @@ static struct {
   size_t committed;
   int out_h;
   int foot_h;              // its last rows: the foot's still rows of the last picture laid in
+  int head_h;              // its first rows: the head's still rows (as the first scroll finds them), kept at its top
+  int at;                  // where the part's scrolled rows (under the head, over the foot) are in the picture's
+                           // scrolled rows now: scrolled down it grows, up it shrinks; past either end, rows laid in
   int strips;
   uint8_t *ref;            // the last picture laid in, and each strip's rows' hashes and whether each is one colour
 
@@ -61,20 +68,48 @@ static struct {
   uint8_t *now;            // the picture taken now
   uint64_t *now_hash;
   uint8_t *now_flat;
+  uint8_t *ref_prof, *now_prof;  // each row's grey, PROF_W columns of it averaged (loose_shift)
   int pictures;            // how many were laid in
   int lost;                // the last taken matched none (scrolled too far at once)
   int full;                // MOST_ROWS reached
+  int paused;              // taking paused by the user (Space / Pause button)
+  int last_dir;            // 1 last grew at foot, -1 at top, 0 none yet
+  int pending_top;         // rows prepended at top since last tell()
   UINT_PTR timer;
   HWND frame;
-  int told_h, told_lost, told_full;
+  COLORREF frame_color;
+  int told_h, told_lost, told_full, told_paused, told_pics, told_at, told_dir;
   ULONGLONG begun;         // when it began (GetTickCount64)
 } L;
 
+static COLORREF frame_want_color(void) {
+  if (L.paused) return RGB(0x8C, 0x91, 0x99);
+  if (L.full || L.lost) return RGB(0xF5, 0xA5, 0x24);
+  return RGB(0x2F, 0x9B, 0xFF);
+}
+
+static void frame_sync_color(void) {
+  COLORREF c = frame_want_color();
+  if (c != L.frame_color) {
+    L.frame_color = c;
+    if (L.frame) InvalidateRect(L.frame, NULL, FALSE);
+  }
+}
+
 static void tell(void) {
-  if (L.told_h == L.out_h && L.told_lost == L.lost && L.told_full == L.full) return;
+  frame_sync_color();
+  int live_at = L.head_h + L.at;
+  if (L.told_h == L.out_h && L.told_lost == L.lost && L.told_full == L.full && L.told_paused == L.paused &&
+      L.told_pics == L.pictures && L.told_at == live_at && L.told_dir == L.last_dir && L.pending_top == 0)
+    return;
   L.told_h = L.out_h, L.told_lost = L.lost, L.told_full = L.full;
-  char json[128];
-  int n = snprintf(json, sizeof json, "{\"do\":\"long\",\"h\":%d,\"lost\":%d,\"full\":%d}", L.out_h, L.lost, L.full);
+  L.told_paused = L.paused, L.told_pics = L.pictures, L.told_at = live_at, L.told_dir = L.last_dir;
+  int top = L.pending_top;
+  L.pending_top = 0;
+  char json[192];
+  int n = snprintf(json, sizeof json,
+                   "{\"do\":\"long\",\"h\":%d,\"lost\":%d,\"full\":%d,\"paused\":%d,\"pics\":%d,\"dir\":%d,\"at\":%d,\"top\":%d}",
+                   L.out_h, L.lost, L.full, L.paused, L.pictures, L.last_dir, live_at, top);
   mb_post("ps", json, (size_t)n, NULL, 0);
 }
 
@@ -115,6 +150,25 @@ static void out_add(int from, int to) {
   L.out_h += n;
 }
 
+// Rows `from` to `to` of the picture taken now put in at the picture's row `at`, what was from there on moved down
+// (scrolled up: what came in at the top laid in under the head).
+static void out_put_at(int at, int from, int to) {
+  if (to <= from) return;
+  int n = to - from;
+  if (L.out_h + n > MOST_ROWS) {
+    n = MOST_ROWS - L.out_h;
+    L.full = 1;
+  }
+  if (n <= 0 || !out_room(L.out_h + n)) {
+    L.full = 1;
+    return;
+  }
+  size_t row = (size_t)L.w * 4;
+  memmove(L.out + (size_t)(at + n) * row, L.out + (size_t)at * row, (size_t)(L.out_h - at) * row);
+  memcpy(L.out + (size_t)at * row, L.now + (size_t)(to - n) * row, (size_t)n * row);
+  L.out_h += n;
+}
+
 // Each strip's rows of picture `px` hashed (their fourth bytes not read), each marked where it is all one colour:
 // strip s's row y at [s * h + y].
 static void hash_rows(const uint8_t *px, uint64_t *hash, uint8_t *flat) {
@@ -134,6 +188,93 @@ static void hash_rows(const uint8_t *px, uint64_t *hash, uint8_t *flat) {
       flat[s * L.h + y] = (uint8_t)one;
     }
   }
+}
+
+// Each row of `img` as PROF_W greys (each the mean of its column's pixels, every other one read): what loose_shift
+// compares.
+static void profile_of(const uint8_t *img, uint8_t *prof) {
+  for (int y = 0; y < L.h; y++) {
+    const uint8_t *row = img + (size_t)y * L.w * 4;
+    for (int c = 0; c < PROF_W; c++) {
+      int x0 = c * L.w / PROF_W, x1 = (c + 1) * L.w / PROF_W;
+      unsigned sum = 0, n = 0;
+      for (int x = x0; x < x1; x += 2) {
+        const uint8_t *px = row + (size_t)x * 4;
+        sum += (px[0] + px[1] * 5u + px[2] * 2u) >> 3;
+        n++;
+      }
+      prof[(size_t)y * PROF_W + c] = (uint8_t)(n ? sum / n : 0);
+    }
+  }
+}
+
+static int prof_row_diff(const uint8_t *a, int ya, const uint8_t *b, int yb) {
+  const uint8_t *p = a + (size_t)ya * PROF_W, *q = b + (size_t)yb * PROF_W;
+  int d = 0;
+  for (int c = 0; c < PROF_W; c++) d += p[c] > q[c] ? p[c] - q[c] : q[c] - p[c];
+  return d;
+}
+
+// Whether now's row y says something (not one grey across: a page's blank rows match any shift).
+static int prof_marked(int y) {
+  const uint8_t *p = L.now_prof + (size_t)y * PROF_W;
+  int lo = 255, hi = 0;
+  for (int c = 0; c < PROF_W; c++) {
+    if (p[c] < lo) lo = p[c];
+    if (p[c] > hi) hi = p[c];
+  }
+  return hi - lo >= 8;
+}
+
+// The mean difference (grey levels a column) between now's rows y and ref's rows y + d over the band from `top`, every
+// `step`th row that says something (prof_marked); 1e9 where too few do.
+static double prof_band(int d, int top, int band, int step, int up) {
+  long sum = 0, n = 0;
+  for (int y = top; y < top + band - d; y += step) {
+    // (scrolled up: now's row y + d is ref's row y)
+    int yn = up ? y + d : y, yr = up ? y : y + d;
+    if (!prof_marked(yn)) continue;
+    sum += prof_row_diff(L.now_prof, yn, L.ref_prof, yr);
+    n++;
+  }
+  return n * step >= LEAST_OVERLAP ? (double)sum / (n * PROF_W) : 1e9;
+}
+
+// How far the part scrolled down from the last picture laid in, found where no rows are exactly alike (shift_of's
+// way): where it scrolls by part of a pixel (a browser's, an Electron app's, still.fail's at 150 %: its words drawn a
+// little otherwise at each place), each row is a little unlike any of the last picture's. Rows compared by their grey
+// profiles, the shift where they are least apart kept where they are near alike there and far more alike than not
+// moved at all (the user, 2026-11-20: 「长截图滚动时候……现在似乎静止在第一帧了」). Its foot's still rows in `bot`;
+// 0 none found.
+static int loose_shift(int up, int *bot, int *head) {
+  int most = L.h / FIXED_MOST, top = 0, foot = 0;
+  int still_most = (int)(PROF_W * 3);
+  while (top < most && prof_row_diff(L.now_prof, top, L.ref_prof, top) <= still_most) top++;
+  while (foot < most && prof_row_diff(L.now_prof, L.h - 1 - foot, L.ref_prof, L.h - 1 - foot) <= still_most) foot++;
+  // (the still rows at its top and foot told whatever is found: a shift found exactly needs them too)
+  *bot = foot;
+  *head = top;
+  int band = L.h - top - foot;
+  if (band < LEAST_OVERLAP * 2) return 0;
+  double at0 = prof_band(0, top, band, 4, up);
+  // (a coarse look, every other shift over every 4th row, then each shift round the best over every other row; the two
+  // pictures sharing a fifth of the band at least: a sliver at a far shift matches anything)
+  int best = 0, reach = band - (band / 5 > LEAST_OVERLAP * 2 ? band / 5 : LEAST_OVERLAP * 2);
+  double best_v = 1e9;
+  for (int d = 2; d <= reach; d += 2) {
+    double v = prof_band(d, top, band, 4, up);
+    if (v < best_v) best_v = v, best = d;
+  }
+  if (!best) return 0;
+  int fine = best;
+  double fine_v = 1e9;
+  for (int d = best - 3; d <= best + 3; d++) {
+    if (d < 1 || d > reach) continue;
+    double v = prof_band(d, top, band, 2, up);
+    if (v < fine_v) fine_v = v, fine = d;
+  }
+  if (fine_v > LOOSE_MOST || fine_v * 3.0 > at0) return 0;
+  return fine;
 }
 
 // The part taken now into L.now: 1 when taken.
@@ -274,11 +415,12 @@ static void dump(const char *what, int a, int b, int c, int d) {
 }
 
 static void tick(void) {
-  if (!L.on || L.full) return;
+  if (!L.on || L.paused || L.full) return;
   // (the overlay just put out of sight may still be in the system's last frame: the first taken a moment after)
   if (GetTickCount64() - L.begun < SETTLE_MS) return;
   if (!take_now()) return;
   hash_rows(L.now, L.now_hash, L.now_flat);
+  profile_of(L.now, L.now_prof);
   if (!L.pictures) {
     dump("first", 0, 0, 0, 0);
     out_add(0, L.h);
@@ -290,24 +432,77 @@ static void tick(void) {
       st[s] = strip_of(s);
       moving += !st[s].still;
     }
-    int bot = 0, d = agreed(st, 0, &bot);
+    // scrolled down or up, either way at any time (the user, 2026-11-20: 「应该需要同时支持双向」): where the part is
+    // in what is laid in follows each scroll; past the foot of what is laid in, what came in at the part's foot is laid
+    // in at the picture's foot, past its top, what came in at the part's top is put in under the picture's head.
+    // Exactly alike rows first, else the rows' greys (scrolled by part of a pixel).
+    int bot = 0, head = 0, d = 0, up = 0;
+    d = agreed(st, 0, &bot);
     if (!d) {
-      // (not moved: the most of it the same, what changed beside it moving on its own; or scrolled back up: nothing
-      // new, the last laid in kept; else nothing here is the last picture's: scrolled too far down at once, or the
-      // page changed)
-      int still = L.strips - moving, up_bot = 0;
-      L.lost = still < moving && !agreed(st, 1, &up_bot);
+      int u_bot = 0, u = agreed(st, 1, &u_bot);
+      if (u) d = u, up = 1, bot = u_bot;
+    }
+    if (!d && moving) {
+      d = loose_shift(0, &bot, &head);
+      if (d) {
+        dump("loose", moving, d, bot, 0);
+      } else {
+        d = loose_shift(1, &bot, &head);
+        if (d) up = 1, dump("loose-up", moving, d, head, 0);
+      }
+    }
+    if (!d) {
+      // (not moved: the most of it the same, what changed beside it moving on its own; else nothing here is the last
+      // picture's: scrolled too far at once, or the page changed)
+      int still = L.strips - moving;
+      L.lost = still < moving;
       dump(L.lost ? "lost" : "still", moving, still, 0, 0);
       tell();
       return;
     }
-    dump("moved", moving, d, bot, 0);
-    // what came in at the foot laid in after the picture's rows (the last laid in's foot taken off: its still rows,
-    // the first picture's as this one sees them), the foot's still rows after them
-    int foot = L.pictures == 1 ? bot : L.foot_h;
-    L.out_h -= foot;
-    out_add(L.h - foot - d < 0 ? 0 : L.h - foot - d, L.h);
-    L.foot_h = L.full ? 0 : bot;
+    // (the still rows at its top and its foot, as the greys find them, where an exact shift found it)
+    if (!head) {
+      int b2 = 0;
+      loose_shift(up, &b2, &head);
+      if (!bot) bot = b2;
+    }
+    if (L.pictures == 1) {
+      // (the first scroll: the head's and the foot's still rows of the first picture as it finds them, kept)
+      L.head_h = head;
+      L.foot_h = bot;
+      L.at = 0;
+    }
+    int band = L.h - L.head_h - L.foot_h;
+    int laid = L.out_h - L.head_h - L.foot_h;
+    if (up) {
+      dump("moved-up", moving, d, L.at, laid);
+      L.at -= d;
+      if (L.at < 0) {
+        int n = -L.at;
+        if (n > band) n = band;
+        int before = L.out_h;
+        out_put_at(L.head_h, L.head_h, L.head_h + n);
+        int added = L.out_h - before;
+        if (added > 0) {
+          L.last_dir = -1;
+          L.pending_top += added;
+        }
+        L.at = 0;
+      }
+    } else {
+      dump("moved", moving, d, L.at, laid);
+      L.at += d;
+      int past = L.at + band - laid;
+      if (past > 0) {
+        if (past > band) past = band;
+        int before = L.out_h;
+        // (what came in at the foot laid in after the picture's scrolled rows, the foot's still rows after it again)
+        L.out_h -= L.foot_h;
+        out_add(L.h - L.foot_h - past, L.h);
+        if (L.out_h > before) L.last_dir = 1;
+        L.at = L.out_h - L.head_h - L.foot_h - band;
+      }
+    }
   }
   L.lost = 0;
   L.pictures++;
@@ -318,6 +513,8 @@ static void tick(void) {
   L.ref_hash = L.now_hash, L.now_hash = hp;
   uint8_t *fp = L.ref_flat;
   L.ref_flat = L.now_flat, L.now_flat = fp;
+  uint8_t *pp = L.ref_prof;
+  L.ref_prof = L.now_prof, L.now_prof = pp;
   tell();
 }
 
@@ -339,7 +536,7 @@ static LRESULT CALLBACK frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     RECT r;
     GetClientRect(h, &r);
     HBRUSH key = CreateSolidBrush(FRAME_KEY);
-    HBRUSH line = CreateSolidBrush(RGB(0x2F, 0x9B, 0xFF));
+    HBRUSH line = CreateSolidBrush(L.frame_color ? L.frame_color : RGB(0x2F, 0x9B, 0xFF));
     FillRect(dc, &r, line);
     RECT in = {FRAME_LINE, FRAME_LINE, r.right - FRAME_LINE, r.bottom - FRAME_LINE};
     FillRect(dc, &in, key);
@@ -387,6 +584,7 @@ static void let_go(void) {
   if (L.frame) DestroyWindow(L.frame);
   if (L.out) VirtualFree(L.out, 0, MEM_RELEASE);
   free(L.ref), free(L.now), free(L.ref_hash), free(L.now_hash), free(L.ref_flat), free(L.now_flat);
+  free(L.ref_prof), free(L.now_prof);
   memset(&L, 0, sizeof L);
 }
 
@@ -416,17 +614,51 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
   size_t rows = (size_t)L.strips * h;
   L.ref_hash = (uint64_t *)malloc(rows * sizeof(uint64_t)), L.now_hash = (uint64_t *)malloc(rows * sizeof(uint64_t));
   L.ref_flat = (uint8_t *)malloc(rows), L.now_flat = (uint8_t *)malloc(rows);
-  if (!L.out || !L.ref || !L.now || !L.ref_hash || !L.now_hash || !L.ref_flat || !L.now_flat) {
+  L.ref_prof = (uint8_t *)malloc((size_t)h * PROF_W), L.now_prof = (uint8_t *)malloc((size_t)h * PROF_W);
+  if (!L.out || !L.ref || !L.now || !L.ref_hash || !L.now_hash || !L.ref_flat || !L.now_flat || !L.ref_prof ||
+      !L.now_prof) {
     let_go();
     return 0;
   }
   L.on = 1;
   L.told_h = -1;
+  L.frame_color = RGB(0x2F, 0x9B, 0xFF);
   ps_wgc_long_hold(1);
   L.begun = GetTickCount64();
   frame_show();
   L.timer = SetTimer(NULL, 0, TICK_MS, tick_timer);
   return 1;
+}
+
+// Pause (1) or resume (0) capturing without discarding what has been stitched so far.
+void ps_long_pause(int32_t on) {
+  if (!L.on) return;
+  int p = on ? 1 : 0;
+  if (L.paused == p) return;
+  L.paused = p;
+  if (L.paused) {
+    if (L.timer) KillTimer(NULL, L.timer);
+    L.timer = 0;
+  } else {
+    if (!L.timer && !L.full) L.timer = SetTimer(NULL, 0, TICK_MS, tick_timer);
+  }
+  tell();
+}
+
+// Discard stitched rows and restart fresh on the exact same capture frame.
+void ps_long_reset(void) {
+  if (!L.out) return;
+  L.out_h = 0, L.foot_h = 0, L.head_h = 0, L.at = 0;
+  L.pictures = 0, L.lost = 0, L.full = 0, L.paused = 0, L.last_dir = 0, L.pending_top = 0;
+  L.told_h = -1;
+  if (!L.on) {
+    L.on = 1;
+    ps_wgc_long_hold(1);
+  }
+  if (!L.frame) frame_show();
+  L.begun = GetTickCount64() - SETTLE_MS;
+  if (!L.timer) L.timer = SetTimer(NULL, 0, TICK_MS, tick_timer);
+  tell();
 }
 
 // The taking stopped (the picture kept till ps_long_end), its frame gone.
@@ -462,31 +694,34 @@ moonbit_bytes_t ps_long_info(void) {
   return bytes_of(s, (size_t)n);
 }
 
-static uint8_t *kept[6];  // the previews handed to mbui, six in turn (ps_long_preview)
+#define PREVIEW_SLOTS 12
+static uint8_t *kept[PREVIEW_SLOTS];  // the previews handed to mbui, in turn (ps_long_preview)
 static int turn;
 
 // The previews' pixels let go (once mbui has forgotten each: it reads them by their address till then).
 void ps_long_preview_free(void) {
-  for (int i = 0; i < 6; i++) free(kept[i]), kept[i] = NULL;
+  for (int i = 0; i < PREVIEW_SLOTS; i++) free(kept[i]), kept[i] = NULL;
   turn = 0;
 }
 
-// The picture's foot as it would show `box_w` pixels wide (brought down to that, never up), as much of it as `box_h`
-// pixels hold (all of it while it is shorter): what came in last at its foot, the picture at one scale all along, so
-// what is added slides in under what was there rather than all of it shrinking. Each pixel the mean of those it
-// covers. As mbui takes pixels kept elsewhere (MBRAWPTR...); kept here, six in turn, so one mbui still reads is not
-// written over.
-moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h) {
-
+// A viewport slice of the picture starting at source row `from_row`, scaled to fit `box_w` pixels wide (never upscaled)
+// and clipped to at most `box_h` output pixels tall. Only the visible slice is downsampled and uploaded, so arbitrarily
+// tall captures (up to MOST_ROWS) scroll smoothly with minimal VRAM and never hit D3D11 texture height limits.
+moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) {
   if (!L.out_h || box_w <= 0 || box_h <= 0) return moonbit_make_bytes(0, 0);
   double k = (double)box_w / L.w;
   if (k > 1.0) k = 1.0;
-  int rows = (int)(box_h / k);
-  int from = L.out_h > rows ? L.out_h - rows : 0, src_h = L.out_h - from;
+  int vis_rows = (int)((double)box_h / k + 0.5);
+  if (vis_rows < 1) vis_rows = 1;
+  int max_from = L.out_h > vis_rows ? L.out_h - vis_rows : 0;
+  int from = from_row < 0 ? 0 : (from_row > max_from ? max_from : from_row);
+  int src_h = L.out_h - from;
+  if (src_h > vis_rows) src_h = vis_rows;
   int pw = (int)(L.w * k + 0.5), ph = (int)(src_h * k + 0.5);
   if (pw < 1) pw = 1;
   if (ph < 1) ph = 1;
-  turn = (turn + 1) % 6;
+  if (ph > box_h) ph = box_h;
+  turn = (turn + 1) % PREVIEW_SLOTS;
   free(kept[turn]);
   kept[turn] = (uint8_t *)malloc((size_t)pw * ph * 4);
   uint8_t *p = kept[turn];
@@ -494,6 +729,8 @@ moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h) {
   for (int y = 0; y < ph; y++) {
     int y0 = from + (int)((double)y * src_h / ph), y1 = from + (int)((double)(y + 1) * src_h / ph);
     if (y1 <= y0) y1 = y0 + 1;
+    if (y1 > L.out_h) y1 = L.out_h;
+    if (y0 >= L.out_h) y0 = L.out_h - 1;
     // (a few rows of what it covers, at most: enough for a picture this small)
     int ys = (y1 - y0) > 4 ? (y1 - y0) / 4 : 1;
     for (int x = 0; x < pw; x++) {
