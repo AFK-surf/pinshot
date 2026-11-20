@@ -549,8 +549,13 @@ fn press_down(x : Double, y : Double) -> Unit {
           selected.set(None)
           hand.set(Sizing(hx, hy, r))
         }
-        // (outside it: a part dragged out anew, where nothing is marked yet)
-        None => if marks.untracked().is_empty() { hand.set(Drawing(x, y)) }
+        // (outside it: a part dragged out anew, where nothing is marked yet; but not on the background it is laid on,
+        // which is the picture as it will be copied: a click there leaves the part as it is)
+        None =>
+          match beauty_frame() {
+            Some(f) if f.contains(x, y) => ()
+            _ => if marks.untracked().is_empty() { hand.set(Drawing(x, y)) }
+          }
       }
   }
 }
