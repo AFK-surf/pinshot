@@ -210,7 +210,7 @@ let warming : Ref[Bool] = Ref(false)
 fn overlay_window(root : @view.View) -> Unit {
   overlay_root.val = Some(root)
   root.tree.hand_over_presses(false)
-  root.ground(Is(0x000000FFL)).keymap(Is(overlay_keys())) |> ignore
+  root.ground(Is(0x000000FFL)).keymap(By(fn() { overlay_keys(settings.get().confirm_key) })) |> ignore
   overlay_actions(root)
   // (seen once its first frame with the picture is on the screen: the frame after the decode is told)
   root.reacts(fn() {
@@ -814,14 +814,54 @@ fn step_back() -> Unit {
 // ---- the keys ----
 
 ///|
-fn overlay_keys() -> @view.Keymap {
+/// Map a stored Win32-style Hotkey (Alt=1, Ctrl=2, Shift=4, Win=8) to mbui's (key_code, mods).
+fn hotkey_to_mbui(h : Hotkey) -> (Int, Int)? {
+  if h.vk == 0 {
+    return None
+  }
+  let mut mods = 0
+  if (h.mods & 4) != 0 {
+    mods = mods | @ui.mod_shift_key
+  }
+  if (h.mods & 2) != 0 {
+    mods = mods | shortcut_mod()
+  }
+  if (h.mods & 1) != 0 {
+    mods = mods | @ui.mod_alt
+  }
+  if (h.mods & 8) != 0 {
+    mods = mods | @ui.mod_cmd
+  }
+  let code = match h.vk {
+    0x0D => @ui.key_code_enter
+    0x20 => @ui.key_space
+    0x09 => @ui.key_tab
+    0x24 => @ui.key_code_home
+    0x23 => @ui.key_code_end
+    0x21 => @ui.key_code_page_up
+    0x22 => @ui.key_code_page_down
+    v if v >= 0x41 && v <= 0x5A => 1000 + (v - 0x41 + 97)
+    v if v >= 0x30 && v <= 0x39 => 1000 + v
+    v if v >= 0x70 && v <= 0x7B => 100 + (v - 0x70)
+    _ => return None
+  }
+  Some((code, mods))
+}
+
+///|
+fn overlay_keys(confirm : Hotkey) -> @view.Keymap {
   let k = fn(code : Int, action : String, mods : Int) -> @view.Binding {
     { keys: [{ code, mods }], action, when: Always }
   }
   let ch = fn(c : Char, action : String, mods : Int) { k(@ui.key_of_char(c), action, mods) }
   let ctrl = shortcut_mod()
   let shift = @ui.mod_shift_key
-  @view.Keymap::new([
+  let list : Array[@view.Binding] = []
+  match hotkey_to_mbui(confirm) {
+    Some((code, mods)) => list.push(k(code, "copy", mods))
+    None => ()
+  }
+  let rest : Array[@view.Binding] = [
     k(@ui.key_escape, "close", 0),
     k(@ui.key_code_delete, "delete", 0),
     ch('v', "select", 0),
@@ -850,7 +890,11 @@ fn overlay_keys() -> @view.Keymap {
     k(@ui.key_code_right, "right10", shift),
     k(@ui.key_code_up, "up10", shift),
     k(@ui.key_code_down, "down10", shift),
-  ])
+  ]
+  for b in rest {
+    list.push(b)
+  }
+  @view.Keymap::new(list)
 }
 
 ///|

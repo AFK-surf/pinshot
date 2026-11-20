@@ -182,7 +182,6 @@ fn pick_tool(which : Tool) -> Unit {
 fn toolbar(stage : @view.View) -> Unit {
   stage.box(fn(o) {
     o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
-    bar_tip_node(o)
     o.box(fn(col) {
       col
       .gap(Is(4.0))
@@ -202,7 +201,7 @@ fn toolbar(stage : @view.View) -> Unit {
         bar_panel(bar, bar_corner)
         bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(bar_width()))) |> ignore
         // 1. Select (Move)
-        tool_button(bar, "select", "选择（V）", fn() { tool.get() == Move }, fn() { pick_tool(Move) })
+        tool_button(bar, "select", "选择", fn() { tool.get() == Move }, fn() { pick_tool(Move) }, keys=fn() { "V" })
         // 2. Folded Shape group (Box / Oval / Focus)
         tool_group_button(
           bar,
@@ -291,32 +290,33 @@ fn toolbar(stage : @view.View) -> Unit {
           })
         }
         // 8. The background the part is laid on (beautify.mbt)
-        tool_button(bar, "beautify", "美化背景 B", fn() { beauty_on.get() }, beauty_toggle)
+        tool_button(bar, "beautify", "美化背景", fn() { beauty_on.get() }, beauty_toggle, keys=fn() { "B" })
         bar_rule_node(bar)
         // 9. Undo (Redo stays on Ctrl+Y / Ctrl+Shift+Z)
-        tool_button(bar, "undo", "撤销 Ctrl+Z", fn() { false }, fn() { undo() |> ignore }, dim=fn() {
+        tool_button(bar, "undo", "撤销", fn() { false }, fn() { undo() |> ignore }, dim=fn() {
           marks.get() |> ignore
           done_before.val.is_empty()
-        })
+        }, keys=fn() { "Ctrl+Z" })
         bar_rule_node(bar)
         // 9..15. OCR, scrolling screenshot & screen record (Windows'), Pin, Save, Close, Copy
-        tool_button(bar, "ocr", "提取文字 Ctrl+O", fn() { false }, ocr_out)
+        tool_button(bar, "ocr", "提取文字", fn() { false }, ocr_out, keys=fn() { "Ctrl+O" })
         if long_shot_here() {
-          tool_button(bar, "long", "长截图 Ctrl+L", fn() { false }, long_out)
+          tool_button(bar, "long", "长截图", fn() { false }, long_out, keys=fn() { "Ctrl+L" })
         }
         if rec_here() {
-          tool_button(bar, "record", "录屏 Ctrl+R", fn() { false }, rec_out)
+          tool_button(bar, "record", "录屏", fn() { false }, rec_out, keys=fn() { "Ctrl+R" })
         }
-        tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, pin_out)
-        tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, save_out)
-        tool_button(bar, "close", "关闭 Esc", fn() { false }, close_capture)
-        tool_button(bar, "check", "复制 Enter", fn() { false }, copy_out, strong=true)
+        tool_button(bar, "pin", "贴到屏幕", fn() { false }, pin_out, keys=fn() { "Ctrl+T" })
+        tool_button(bar, "save", "保存截图", fn() { false }, save_out, keys=fn() { "Ctrl+S" })
+        tool_button(bar, "close", "关闭", fn() { false }, close_capture, keys=fn() { "Esc" })
+        tool_button(bar, "check", "复制", fn() { false }, copy_out, strong=true, keys=confirm_key_label)
       })
       |> ignore
       col.show(fn() { styling() }, fn(row) { style_row(row) })
       col.show(fn() { beauty_on.get() }, fn(row) { beauty_row(row) })
     })
     |> ignore
+    bar_tip_node(o)
   })
   |> ignore
 }
@@ -361,8 +361,9 @@ fn tool_button(
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
   tip? : Bool = true,
+  keys? : () -> String = fn() { "" },
 ) -> Unit {
-  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~)
+  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~, keys~)
 }
 
 ///|
@@ -376,6 +377,7 @@ fn tool_group_button(
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
   tip? : Bool = true,
+  keys? : () -> String = fn() { "" },
 ) -> Unit {
   // (`tip`: told by the overlay's tip; a button of another window, the long screenshot's panel, is not: the tip is the
   // overlay's, its node ids of no other window)
@@ -409,7 +411,7 @@ fn tool_group_button(
     }))
     |> ignore
     if tip {
-      tip_follows(b, label_fn, @view.Top)
+      tip_follows(b, label_fn, @view.Top, keys~)
     }
     b.box(fn(g) {
       g
@@ -725,93 +727,503 @@ fn glyph(name : String) -> @pixels.Vector {
   }
 }
 
-// The bar's tips (the user, 2026-11-20: 「给那些按钮加一个 hover tips，不然我都不知道是什么功能」): what a button does,
-// in a small dark label beside it once the pointer has rested on it a moment; from one button to the next while one
-// shows, at once. Gone as the pointer leaves or presses.
+// Monoid-style fluid tooltips (aligned with still.fail libs/sf-ui/src/tip_node.mbt + motion/handoff.mbt):
+// - 10pt superellipse, lifted charcoal ground, 9% hairline, soft small shadow, concentric 6pt shortcut keycap badges.
+// - Ground-first 120ms fade-in (Ease::Out) and words-first 120ms fade-out with 0.97 scale toward anchor (FromBeside).
+// - Critically-damped spring handoff (0.09s) gliding position, width, height & carried content smoothly across buttons
+//   on the same side when sweeping along the toolbar.
 
 ///|
-/// The button pointed at.
-let tip_on : @signals.Signal[@view.NodeId?] = @signals.signal(None)
+let tip_wait : Double = 400.0
 
 ///|
-/// What the button pointed at does and the side its tip goes on (set with `tip_on`).
-let tip_of : Ref[(() -> String, @view.Side)] = Ref((fn() { "" }, @view.Top))
-
-///|
-/// Whether tips show now (the pointer has rested on a button long enough, and not moved off the bar since).
-let tip_ready : @signals.Signal[Bool] = @signals.signal(false)
-
-///|
-let tip_wait : Double = 450.0
-
-///|
-/// How long after leaving a button the next one's tip still shows at once.
 let tip_linger : Double = 300.0
 
 ///|
-fn tip_off() -> Unit {
-  tip_on.set(None)
-  tip_ready.set(false)
+let tip_in_ms : Double = 120.0
+
+///|
+let tip_out_ms : Double = 120.0
+
+///|
+let tip_out_scale : Double = 0.97
+
+///|
+let tip_hand_spring : @motion.Spec = @motion.motion_spring(0.09, threshold=0.5)
+
+///|
+/// Overlay layer node that hosts all toolbar tooltips (painted on top of the bar and sub-rows).
+let tip_layer : Ref[@view.View?] = Ref(None)
+
+///|
+/// Active tooltip owner id (only one tooltip owns the window slot at any instant; 0 = none).
+let tip_owner : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+let tip_next_id : Ref[Int] = Ref(0)
+
+///|
+/// Monoid TipFade: smooth continuous progress (0..1) with mid-flight reversal.
+priv struct TipFade {
+  mut from : Double
+  mut to : Double
+  mut start : Double
+  mut ms : Double
+  mut ease : @ui.Ease
+  moving : @signals.Signal[Bool]
+  mut due : (() -> Unit)?
 }
 
 ///|
-/// Button `b` tells what it does (`label`, said through `tr`) by a tip on `side` while it is pointed at.
-fn tip_follows(b : @view.View, label : () -> String, side : @view.Side) -> Unit {
-  let id = b.id()
-  b.reacts(fn() { b.pointed() }, fn(pointed) {
-    if pointed {
-      tip_of.val = (label, side)
-      tip_on.set(Some(id))
-      if !tip_ready.untracked() {
-        b.at_moment(b.cause_at() + tip_wait, fn() {
-          if tip_on.untracked() == Some(id) {
-            tip_ready.set(true)
-          }
-        })
-        |> ignore
-      }
-    } else if tip_on.untracked() == Some(id) {
-      tip_on.set(None)
-      b.at_moment(b.cause_at() + tip_linger, fn() { if tip_on.untracked() is None { tip_ready.set(false) } }, later=true)
-      |> ignore
+fn TipFade::new() -> TipFade {
+  { from: 0.0, to: 0.0, start: 0.0, ms: 0.0, ease: Out, moving: @signals.signal(false, same=fn(a, b) { a == b }), due: None }
+}
+
+///|
+fn TipFade::at(self : TipFade, t : Double) -> Double {
+  if self.ms <= 0.0 || t >= self.start + self.ms {
+    return self.to
+  }
+  let p = (t - self.start) / self.ms
+  self.from + (self.to - self.from) * self.ease.at(if p < 0.0 { 0.0 } else { p })
+}
+
+///|
+fn TipFade::stop(self : TipFade) -> Unit {
+  match self.due {
+    Some(s) => s()
+    None => ()
+  }
+  self.due = None
+}
+
+///|
+fn TipFade::go(self : TipFade, node : @view.View, to : Double, at : Double, ms : Double, ease : @ui.Ease) -> Unit {
+  self.from = self.at(at)
+  self.to = to
+  self.start = at
+  self.ms = ms
+  self.ease = ease
+  self.stop()
+  self.moving.set(true)
+  self.due = Some(node.at_moment(at + ms, fn() { self.moving.set(false) }))
+}
+
+///|
+fn TipFade::put(self : TipFade, to : Double) -> Unit {
+  self.from = to
+  self.to = to
+  self.start = 0.0
+  self.ms = 0.0
+  self.stop()
+  self.moving.set(false)
+}
+
+///|
+fn TipFade::shown(self : TipFade, v : @view.View) -> Double {
+  if self.moving.get() {
+    self.at(v.drawn_at())
+  } else {
+    self.to
+  }
+}
+
+///|
+priv struct TipHandFrom {
+  rect : (Double, Double, Double, Double)
+  speed : (Double, Double, Double, Double)
+  at : Double
+}
+
+///|
+/// Per-button tooltip handoff participant (6 critically-damped springs: dx, dy, dw, dh + carried cx, cy).
+priv struct TipPart {
+  id : Int
+  tag : Int
+  fade : TipFade
+  open : @signals.Signal[Bool]
+  ways : Array[@motion.Way]
+  mut node : @view.View?
+  mut due : () -> Unit
+  mut pending : TipHandFrom?
+  mut went : Double
+}
+
+///|
+fn tip_side_tag(side : @view.Side) -> Int {
+  match side {
+    Top => 0
+    Right => 1
+    Bottom => 2
+    Left => 3
+  }
+}
+
+///|
+/// Shared handoff coordinator for the toolbar tooltip group.
+let tip_last_part : Ref[TipPart?] = Ref(None)
+
+///|
+let tip_went_at : Ref[Double] = Ref(-1.0e18)
+
+///|
+fn TipPart::new(id : Int, side : @view.Side) -> TipPart {
+  {
+    id,
+    tag: tip_side_tag(side),
+    fade: TipFade::new(),
+    open: @signals.signal(false, same=fn(a, b) { a == b }),
+    ways: Array::makei(6, fn(_) { @motion.Way::new(0.0) }),
+    node: None,
+    due: fn() {  },
+    pending: None,
+    went: -1.0e18,
+  }
+}
+
+///|
+fn TipPart::still(self : TipPart) -> Unit {
+  (self.due)()
+  self.due = fn() {  }
+  self.pending = None
+  for w in self.ways {
+    w.put(0.0)
+  }
+}
+
+///|
+fn TipPart::ground(self : TipPart, v : @view.View) -> @view.GroundShape {
+  let dx = self.ways[0].shown_on(v)
+  let dy = self.ways[1].shown_on(v)
+  let dw = self.ways[2].shown_on(v)
+  let dh = self.ways[3].shown_on(v)
+  if dx == 0.0 && dy == 0.0 && dw == 0.0 && dh == 0.0 {
+    @view.ground_as_laid
+  } else {
+    { dx, dy, dw, dh, corners: None }
+  }
+}
+
+///|
+fn TipPart::drawn_at(self : TipPart, at : Double) -> ((Double, Double, Double, Double), (Double, Double, Double, Double))? {
+  if self.fade.at(at) <= 0.0 {
+    return None
+  }
+  match self.node {
+    Some(v) if v.alive() && v.was_placed() => {
+      let (x, y, w, h) = v.placed_window_now()
+      let (d0, v0) = self.ways[0].at(at)
+      let (d1, v1) = self.ways[1].at(at)
+      let (d2, v2) = self.ways[2].at(at)
+      let (d3, v3) = self.ways[3].at(at)
+      Some(((x + d0, y + d1, w + d2, h + d3), (v0, v1, v2, v3)))
+    }
+    _ => None
+  }
+}
+
+///|
+fn TipPart::start_glide(self : TipPart, v : @view.View) -> Unit {
+  guard self.pending is Some(f) else { return }
+  self.due = v.at_moment(f.at, fn() {
+    self.due = fn() {  }
+    self.pending = None
+    let (tx, ty, tw, th) = v.laid_window_now()
+    let (fx, fy, fw, fh) = f.rect
+    let (vx, vy, vw, vh) = f.speed
+    let off = [fx - tx, fy - ty, fw - tw, fh - th, fx + fw / 2.0 - (tx + tw / 2.0), fy + fh / 2.0 - (ty + th / 2.0)]
+    let speed = [vx, vy, vw, vh, vx + vw / 2.0, vy + vh / 2.0]
+    for i, w in self.ways {
+      w.put(off[i])
+      w.go(0.0, tip_hand_spring, at=f.at, velocity=speed[i])
     }
   })
 }
 
 ///|
-fn bar_tip_node(o : @view.View) -> Unit {
-  o.pick(
-    fn() {
-      if tip_ready.get() {
-        tip_on.get()
-      } else {
-        None
-      }
-    },
-    fn(layer, key) {
-      guard key is Some(id) else { return }
-      let (label, side) = tip_of.val
-      layer.box(fn(t) {
-        t
-        .beside(id, side~, along=Middle, offset=6.0, padding=4.0)
-        .presses(Is(false))
-        .points(Is(false))
-        .padding(Is((8.0, 4.0, 8.0, 4.0)))
-        .radius(Is(7.0))
-        .ground(Is(0x1E1F23F7L))
-        .edge(Is((1.0, 0xFFFFFF1FL)))
-        .shadow(Is((10.0, 2.0, 0x00000059L)))
+fn TipPart::other_near(self : TipPart, at : Double) -> Bool {
+  match tip_last_part.val {
+    Some(l) => l.id != self.id && (l.went > 1.0e17 || at < l.went + tip_linger)
+    None => false
+  }
+}
+
+///|
+fn tip_off() -> Unit {
+  tip_owner.set(0)
+  match tip_last_part.val {
+    Some(l) => {
+      l.fade.put(0.0)
+      l.still()
+      l.open.set(false)
+      l.went = -1.0e18
+    }
+    None => ()
+  }
+  tip_last_part.val = None
+  tip_went_at.val = -1.0e18
+}
+
+///|
+/// Split a shortcut string ("Ctrl+R", "⌘⇧Z", "Enter") into individual Monoid-style keycap labels.
+fn tip_key_caps(keys : String) -> Array[String] {
+  let caps : Array[String] = []
+  let trimmed = keys.trim(chars=" ").to_owned()
+  if trimmed == "" {
+    return caps
+  }
+  let on_mac = @hostapi.platform() == 0
+  let chars = trimmed.to_array()
+  let is_mark = fn(c : Char) { c == '⌃' || c == '⌥' || c == '⇧' || c == '⌘' }
+  if is_mark(chars[0]) {
+    let mut at = 0
+    while at < chars.length() && is_mark(chars[at]) {
+      caps.push(chars[at].to_string())
+      at += 1
+    }
+    let rest = String::from_array(chars[at:]).trim(chars=" ").to_owned()
+    if rest != "" {
+      caps.push(rest)
+    }
+    return caps
+  }
+  let mut part : Array[Char] = []
+  for c in chars {
+    if c == '+' && !part.is_empty() {
+      let s = String::from_array(part).trim(chars=" ").to_owned()
+      caps.push(if on_mac && s == "Ctrl" { "⌘" } else if on_mac && s == "Alt" { "⌥" } else if on_mac && s == "Shift" { "⇧" } else { s })
+      part = []
+    } else {
+      part.push(c)
+    }
+  }
+  if !part.is_empty() {
+    let s = String::from_array(part).trim(chars=" ").to_owned()
+    caps.push(if on_mac && s == "Enter" { "Return" } else { s })
+  }
+  caps
+}
+
+///|
+/// Button `b` tells what it does (`label`, said through `tr`) and optional shortcut (`keys`) via a Monoid-style
+/// fluid-transition tooltip on `side` (ground-first fade-in, 0.97 scale-out, critically-damped spring glide between
+/// buttons on the same side).
+fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : () -> String = fn() { "" }) -> Unit {
+  let anchor_id = b.id()
+  tip_next_id.val = tip_next_id.val + 1
+  let part = TipPart::new(tip_next_id.val, side)
+  let made = Ref(false)
+  let shut = Ref(false)
+  let rest : Ref[(() -> Unit)?] = Ref(None)
+  let stop_rest = fn() {
+    match rest.val {
+      Some(cancel) => cancel()
+      None => ()
+    }
+    rest.val = None
+  }
+  let make = fn() -> Bool {
+    guard tip_layer.val is Some(l) else { return false }
+    let holder = l.box(fn(h) { h.over(Is(true)).presses(Is(false)).points(Is(false)) |> ignore }).lives_with(b)
+    holder.show(fn() { part.open.get() }, leave=tip_out_ms, at_once=true, fn(t) {
+      let caps = tip_key_caps(keys())
+      let has_keys = !caps.is_empty()
+      part.node = Some(t)
+      t.owns(fn() {
+        match part.node {
+          Some(n) if n.id() == t.id() => part.node = None
+          _ => ()
+        }
+      })
+      |> ignore
+      t
+      .beside(anchor_id, side~, along=Middle, offset=6.0, padding=4.0)
+      .presses(Is(false))
+      .points(Is(false))
+      .padding(Is(if has_keys { (10.0, 4.0, 4.0, 4.0) } else { (10.0, 5.0, 10.0, 5.0) }))
+      .radius(Is(10.0))
+      .ground(Is(0x26282FF7L))
+      .edge(Is((1.0, 0xFFFFFF18L)))
+      .shadow(Is((8.0, 2.0, 0x00000048L)))
+      .ground_drawn(By(fn() { part.ground(t) }))
+      .clips(By(fn() {
+        let g = part.ground(t)
+        g.dx != 0.0 || g.dy != 0.0 || g.dw != 0.0
+      }))
+      // Ground fades in first half (0..60ms), words in second half (60..120ms); reversed on exit
+      .alpha(By(fn() {
+        let a = if tip_owner.get() == part.id { part.fade.shown(t) } else { 0.0 }
+        if a * 2.0 < 1.0 {
+          a * 2.0
+        } else {
+          1.0
+        }
+      }))
+      // Gentle 0.97 shrink toward the button while exiting
+      .scale(
+        By(fn() {
+          let a = part.fade.shown(t)
+          if part.fade.to > 0.5 {
+            1.0
+          } else {
+            tip_out_scale + (1.0 - tip_out_scale) * a
+          }
+        }),
+        about=@view.FromBeside,
+      )
+      .hides(By(fn() { tip_owner.get() != part.id }))
+      |> ignore
+      t.box(fn(content) {
+        content
+        .row(Is(true))
+        .gap(Is(7.0))
+        .lines_up(Is(Some(Middle)))
+        .drawn_off(By(fn() { (part.ways[4].shown_on(content), part.ways[5].shown_on(content)) }))
+        .alpha(By(fn() {
+          let a = part.fade.shown(t)
+          let g = if a * 2.0 < 1.0 { a * 2.0 } else { 1.0 }
+          let w = if a * 2.0 - 1.0 > 0.0 { a * 2.0 - 1.0 } else { 0.0 }
+          if g > 0.0 {
+            w / g
+          } else {
+            0.0
+          }
+        }))
         |> ignore
-        t.box(fn(w) {
+        content.box(fn(w) {
           w
+          .padding(Is((0.0, 1.0, 0.0, 1.0)))
           .words(By(fn() { tr(label()) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
           .ink(Is(0xECEEF2FFL))
           |> ignore
         })
         |> ignore
+        if has_keys {
+          content.box(fn(q) {
+            q.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))) |> ignore
+            for cap in caps {
+              q.box(fn(k) {
+                k
+                .height(Is(Some(19.0)))
+                .min_width(Is(Some(19.0)))
+                .padding(Is((5.0, 0.0, 5.0, 0.0)))
+                .radius(Is(6.0))
+                .ground(Is(0xFFFFFF1FL))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                |> ignore
+                k.box(fn(kw) {
+                  kw
+                  .words(Is(cap), look={ ..@view.words_plain, size: 11.0, weight: 500, line: 14.0, wrap: false })
+                  .ink(Is(0xE6E8EDFFL))
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            }
+          })
+          |> ignore
+        }
       })
       |> ignore
-    },
-    at_once=true,
-  )
+      part.start_glide(t)
+    })
+    true
+  }
+  let set_open = fn(on : Bool) {
+    if on == part.open.untracked() {
+      return
+    }
+    let at = b.cause_at()
+    if on {
+      let mut handed = false
+      let from = match tip_last_part.val {
+        Some(prev) if prev.id != part.id && prev.tag == part.tag && (prev.went > 1.0e17 || at < prev.went + tip_linger) =>
+          match prev.drawn_at(at) {
+            Some((rect, speed)) => Some((prev, rect, speed))
+            None => None
+          }
+        _ => None
+      }
+      tip_last_part.val = Some(part)
+      part.went = 1.0e18
+      match from {
+        Some((prev, rect, speed)) => {
+          prev.fade.put(0.0)
+          prev.still()
+          prev.open.set(false)
+          part.pending = Some({ rect, speed, at })
+          handed = true
+        }
+        None => part.still()
+      }
+      if !made.val {
+        made.val = make()
+      }
+      if made.val {
+        tip_owner.set(part.id)
+      }
+      if handed {
+        part.fade.put(1.0)
+        match part.node {
+          Some(n) if n.alive() => part.start_glide(n)
+          _ => ()
+        }
+      } else {
+        part.fade.go(b, 1.0, at, tip_in_ms, Out)
+      }
+      part.open.set(true)
+    } else {
+      part.fade.go(b, 0.0, at, tip_out_ms, Leave)
+      part.went = at
+      tip_went_at.val = at
+      part.open.set(false)
+    }
+  }
+  b.reacts(fn() { (b.pointed(), b.pressed()) }, fn(st) {
+    let (pointed, pressed) = st
+    let at = b.cause_at()
+    stop_rest()
+    if pressed {
+      shut.val = true
+    } else if !pointed {
+      shut.val = false
+    }
+    if shut.val || !pointed {
+      set_open(false)
+    } else if part.open.untracked() {
+      tip_owner.set(part.id)
+    } else if at < tip_went_at.val + tip_linger || part.other_near(at) {
+      set_open(true)
+    } else {
+      rest.val = Some(
+        b.at_moment(at + tip_wait, fn() {
+          if b.pointed() && !b.pressed() && !shut.val {
+            set_open(true)
+          }
+        }),
+      )
+    }
+  })
+  b.owns(fn() {
+    stop_rest()
+    part.fade.stop()
+    part.still()
+    match tip_last_part.val {
+      Some(l) if l.id == part.id => tip_last_part.val = None
+      _ => ()
+    }
+  })
+  |> ignore
+}
+
+///|
+/// Mount the overlay layer that hosts all fluid Monoid-style tooltips above the toolbar.
+fn bar_tip_node(o : @view.View) -> Unit {
+  o.box(fn(l) {
+    l.over(Is(true)).presses(Is(false)).points(Is(false)) |> ignore
+    tip_layer.val = Some(l)
+  })
+  |> ignore
 }
