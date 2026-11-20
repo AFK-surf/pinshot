@@ -128,17 +128,17 @@ let rec_path : @signals.Signal[String] = @signals.signal("")
 let rec_err : @signals.Signal[String] = @signals.signal("")
 
 ///|
-/// Transparent shadow halo around the floating superellipse card (L, T, R, B points).
-let rec_pad_l : Double = 22.0
+/// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma so alpha reaches 0 before every window edge).
+let rec_pad_l : Double = 30.0
 
 ///|
-let rec_pad_t : Double = 14.0
+let rec_pad_t : Double = 26.0
 
 ///|
-let rec_pad_r : Double = 22.0
+let rec_pad_r : Double = 30.0
 
 ///|
-let rec_pad_b : Double = 26.0
+let rec_pad_b : Double = 36.0
 
 ///|
 fn rec_out_dims(max_side : Int) -> (Int, Int) {
@@ -971,6 +971,7 @@ fn rec_window(root : @view.View) -> Unit {
       content.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
         bar_panel(bar, bar_corner)
         bar
+        .shadow(Is((9.0, 3.0, 0x00000058L)))
         .row(Is(true))
         .gap(Is(bar_gap))
         .height(Is(Some(bar_height)))
@@ -1205,7 +1206,7 @@ fn rec_window(root : @view.View) -> Unit {
         .radius(Is(16.0))
         .ground(Is(0x1E1F23F7L))
         .edge(Is((1.0, 0xFFFFFF1FL)))
-        .shadow(Is((20.0, 5.0, 0x00000078L)))
+        .shadow(Is((10.0, 4.0, 0x0000005CL)))
         |> ignore
 
         // 1. Draggable header: recorded summary + audio badge + close
