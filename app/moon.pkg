@@ -5,6 +5,7 @@ import {
   "mbui/view",
   "mbui/signals",
   "mbui/pixels",
+  "mbui/motion",
   "moonbitlang/core/json",
   "moonbitlang/core/string",
   "moonbitlang/core/math",

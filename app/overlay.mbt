@@ -112,7 +112,7 @@ fn clear_part() -> Rect? {
 
 ///|
 /// The veil, the frame of what is clear and, a part picked, its eight handles: one picture in the monitor's pixels.
-fn chrome_picture() -> @pixels.Vector? {
+fn chrome_picture(c : @view.View) -> @pixels.Vector? {
   if !capturing.get() {
     return None
   }
@@ -121,12 +121,13 @@ fn chrome_picture() -> @pixels.Vector? {
   let k = mon_scale.get()
   let picked = sel.get() is Some(_)
   let layers : Array[@pixels.VectorPath] = []
-  match clear_part() {
+  // (where the part shows, on its way: shown.mbt)
+  match shown_part(c) {
     Some(r) => {
       let (x, y, rw, rh) = (r.x.to_double(), r.y.to_double(), r.w.to_double(), r.h.to_double())
       // (the veil one path, the part a hole in it: no seam where two pieces would meet; laid on a background, the hole
       // is the whole picture as it will be copied)
-      let hole = match beauty_frame() {
+      let hole = match shown_frame(c) {
         Some(f) => rect_path(f.x.to_double(), f.y.to_double(), f.w.to_double(), f.h.to_double())
         None => rect_path(x, y, rw, rh)
       }
@@ -263,11 +264,13 @@ fn overlay_window(root : @view.View) -> Unit {
       |> ignore
     })
     |> ignore
+    // (where the part shows follows where it is, on its way: shown.mbt)
+    shown_follow(stage)
     // (the background the part is laid on, while it is: beautify.mbt)
     beauty_layer(stage)
     marks_layer(stage, editing=true)
     // the veil, the frame, the handles
-    stage.box(fn(c) { c.over(Is(true)).presses(Is(false)).picture(By(chrome_picture)) |> ignore }) |> ignore
+    stage.box(fn(c) { c.over(Is(true)).presses(Is(false)).picture(By(fn() { chrome_picture(c) })) |> ignore }) |> ignore
     size_label(stage)
     toolbar(stage)
     magnifier(stage)
@@ -380,7 +383,7 @@ fn size_label(stage : @view.View) -> Unit {
       .laid_nowhere(By(fn() { clear_part() is None }))
       .offset(By(fn() {
         let k = mon_scale.get()
-        match beauty_or(clear_part()) {
+        match shown_whole(l) {
           Some(r) => {
             let x = r.x.to_double() / k
             let y = r.y.to_double() / k
