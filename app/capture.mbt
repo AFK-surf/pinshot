@@ -58,6 +58,8 @@ enum Hand {
   Sizing(Int, Int, Rect)
   /// a mark being drawn
   Marking
+  /// erasing freehand pen strokes: marks as they were before the swipe, last pointer (x, y), whether anything was erased
+  Erasing(Array[Mark], Double, Double, Bool)
   /// a mark dragged from where it went down: the mark as it was, the marks as they were (it out of them while it is
   /// dragged, drawn as the draft), where it was among them, and by what: its handle (hx, hy: marks.mbt's
   /// mark_handles), or (-1, -1) the whole of it

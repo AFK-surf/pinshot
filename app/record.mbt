@@ -1,8 +1,12 @@
-// Lightweight area screen recorder (Windows): picks a region in the frozen overlay (or Ctrl+R), closes the overlay,
-// shows a click-through border frame outside the region, and opens a compact dark floating control bar excluded from
-// capture. Encodes silent MP4 (optimal cascade: HW HEVC with hvc1 tag -> HW H.264 -> SW H.264) or animated GIF
-// (adaptive palette + dirty-rect delta + LZW), saves into the screenshots folder, and copies the file (CF_HDROP) to
-// the clipboard for one-paste sharing.
+// Lightweight area screen recorder & post-recording exporter (Windows):
+// - Captures a selected region into a temporary high-quality MP4 via WGC + optimal GPU hardware cascade
+//   (HEVC hvc1 -> H.264 HW -> H.264 SW) with optional WASAPI system audio (AAC), cursor capture, mouse-click ripples +
+//   keycap overlay, and live transparent GDI+ annotations (rect, arrow, pen, number, undo, clear).
+// - After stopping, opens a compact post-recording encoding/compression panel offering:
+//     * MP4 Original (instant copy, 0 re-encode)
+//     * MP4 Compressed (Standard <=1080p / Compact <=720p via D3D11VA + PeakConstrainedVBR, preserves audio)
+//     * Animated GIF (15fps <=1080p / 10fps Compact <=720p, adaptive Median-Cut palette + dirty-rect delta + LZW)
+// - Saves into the screenshots folder (or custom Save As path) and copies the exported file (CF_HDROP) to clipboard.
 
 ///|
 extern "C" fn ps_rec_prepare(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_rec_prepare"
@@ -11,8 +15,7 @@ extern "C" fn ps_rec_prepare(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_re
 extern "C" fn ps_rec_rect() -> Bytes = "ps_rec_rect"
 
 ///|
-#borrow(path)
-extern "C" fn ps_rec_start(path : Bytes, fmt : Int, fps : Int, cursor : Int) -> Int = "ps_rec_start"
+extern "C" fn ps_rec_start(fps : Int, cursor : Int, audio : Int) -> Int = "ps_rec_start"
 
 ///|
 extern "C" fn ps_rec_pause(on : Int) -> Unit = "ps_rec_pause"
@@ -21,19 +24,36 @@ extern "C" fn ps_rec_pause(on : Int) -> Unit = "ps_rec_pause"
 extern "C" fn ps_rec_stop(cancel : Int) -> Unit = "ps_rec_stop"
 
 ///|
+#borrow(dest_path)
+extern "C" fn ps_rec_export(dest_path : Bytes, mode : Int) -> Int = "ps_rec_export"
+
+///|
 extern "C" fn ps_rec_end() -> Unit = "ps_rec_end"
 
 ///|
 extern "C" fn ps_rec_exclude(wid : Int) -> Unit = "ps_rec_exclude"
 
 ///|
-/// Screen recording is Windows-only for now (record_win.cpp); macOS keeps C stubs.
+extern "C" fn ps_rec_draw_tool(tool : Int) -> Unit = "ps_rec_draw_tool"
+
+///|
+extern "C" fn ps_rec_draw_color(rgb : Int) -> Unit = "ps_rec_draw_color"
+
+///|
+extern "C" fn ps_rec_draw_undo() -> Unit = "ps_rec_draw_undo"
+
+///|
+extern "C" fn ps_rec_draw_clear() -> Unit = "ps_rec_draw_clear"
+
+///|
+extern "C" fn ps_rec_input_show(on : Int) -> Unit = "ps_rec_input_show"
+
+///|
 fn rec_here() -> Bool {
   @hostapi.platform() == 3
 }
 
 ///|
-/// Recording floating bar window id (0: not open).
 let rec_wid : Ref[Int] = Ref(0)
 
 ///|
@@ -49,33 +69,65 @@ let rec_mon : Ref[Rect] = Ref({ x: 0, y: 0, w: 0, h: 0 })
 let rec_scale : Ref[Double] = Ref(1.0)
 
 ///|
-/// Phase: 0 Ready, 1 Recording, 2 Paused, 3 Saving, 4 Done, 5 Error.
+/// Phase: 0 Ready, 1 Recording, 2 Paused, 3 Finalizing master, 4 Export picker, 5 Exporting, 6 Exported, 7 Error.
 let rec_phase : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
-/// Format: 0 MP4, 1 GIF (remembered across recordings in this session).
-let rec_fmt : @signals.Signal[Int] = @signals.signal(0)
+/// Recording options (remembered for the session).
+let rec_fps : @signals.Signal[Int] = @signals.signal(30)
 
 ///|
-/// Target FPS per format.
-let rec_fps_mp4 : @signals.Signal[Int] = @signals.signal(30)
-
-///|
-let rec_fps_gif : @signals.Signal[Int] = @signals.signal(15)
-
-///|
-/// Whether the mouse cursor is captured (default true).
 let rec_cursor : @signals.Signal[Bool] = @signals.signal(true)
 
 ///|
-/// Live stats from the native worker thread.
+let rec_audio : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+let rec_input : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+/// Live annotation state: 0 passthrough, 1 rect, 2 arrow, 3 pen, 4 number.
+let rec_draw : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+let rec_marks_n : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+let rec_draw_colors : Array[(Int, Int64)] = [
+  (0xD84A2F, 0xD84A2FFFL),
+  (0xF5A524, 0xF5A524FFL),
+  (0x2F9BFF, 0x2F9BFFFFL),
+  (0x4CC38A, 0x4CC38AFFL),
+]
+
+///|
+let rec_color_i : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Export selection: kind 0=MP4 Original, 1=MP4 Compressed, 2=GIF; sub 0=Standard/15fps, 1=Compact/10fps.
+let rec_exp_kind : @signals.Signal[Int] = @signals.signal(1)
+
+///|
+let rec_exp_sub : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Live & master stats from native side.
 let rec_ms : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 let rec_frames : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
-let rec_bytes : @signals.Signal[Double] = @signals.signal(0.0)
+let rec_master_bytes : @signals.Signal[Double] = @signals.signal(0.0)
+
+///|
+let rec_master_audio : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+let rec_exp_bytes : @signals.Signal[Double] = @signals.signal(0.0)
+
+///|
+let rec_exp_pct : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 let rec_codec : @signals.Signal[String] = @signals.signal("")
@@ -87,36 +139,47 @@ let rec_path : @signals.Signal[String] = @signals.signal("")
 let rec_err : @signals.Signal[String] = @signals.signal("")
 
 ///|
-/// Generation counter to cancel stale auto-close timers.
-let rec_done_gen : @signals.Signal[Int] = @signals.signal(0)
-
-///|
-let rec_bar_w : Double = 448.0
+let rec_bar_w : Double = 604.0
 
 ///|
 let rec_bar_h : Double = 44.0
 
 ///|
-fn rec_current_fps() -> Int {
-  if rec_fmt.get() == 0 {
-    rec_fps_mp4.get()
+let rec_exp_w : Double = 486.0
+
+///|
+let rec_exp_h : Double = 172.0
+
+///|
+fn rec_export_mode_code() -> Int {
+  let k = rec_exp_kind.untracked()
+  let s = rec_exp_sub.untracked()
+  if k == 0 {
+    0
+  } else if k == 1 {
+    if s == 0 { 1 } else { 2 }
+  } else if s == 0 {
+    3
   } else {
-    rec_fps_gif.get()
+    4
   }
 }
 
 ///|
-fn rec_cycle_fps() -> Unit {
-  if rec_fmt.untracked() == 0 {
-    rec_fps_mp4.set(if rec_fps_mp4.untracked() == 30 { 60 } else { 30 })
-  } else {
-    let cur = rec_fps_gif.untracked()
-    rec_fps_gif.set(if cur == 15 { 10 } else if cur == 10 { 20 } else { 15 })
-  }
+fn rec_pick_draw(t : Int) -> Unit {
+  let next = if rec_draw.untracked() == t { 0 } else { t }
+  rec_draw.set(next)
+  ps_rec_draw_tool(next)
 }
 
 ///|
-/// Open the lightweight screen recorder for the current overlay selection.
+fn rec_cycle_color() -> Unit {
+  let next = (rec_color_i.untracked() + 1) % rec_draw_colors.length()
+  rec_color_i.set(next)
+  ps_rec_draw_color(rec_draw_colors[next].0)
+}
+
+///|
 fn rec_out() -> Unit {
   if !rec_here() || exporting.val != "" || long_wid.val != 0 || rec_wid.val != 0 {
     return
@@ -143,13 +206,20 @@ fn rec_out() -> Unit {
   rec_scale.val = k
   @signals.start_batch()
   rec_phase.set(0)
+  rec_draw.set(0)
+  rec_marks_n.set(0)
   rec_ms.set(0)
   rec_frames.set(0)
-  rec_bytes.set(0.0)
+  rec_master_bytes.set(0.0)
+  rec_master_audio.set(false)
+  rec_exp_bytes.set(0.0)
+  rec_exp_pct.set(0)
   rec_codec.set("")
   rec_path.set("")
   rec_err.set("")
   @signals.end_batch()
+  ps_rec_draw_color(rec_draw_colors[rec_color_i.untracked()].0)
+  ps_rec_input_show(if rec_input.untracked() { 1 } else { 0 })
   let wid = @ui.window_open_here("rec")
   if wid <= 0 {
     log("rec: no window")
@@ -161,17 +231,17 @@ fn rec_out() -> Unit {
   ps_own(wid, 1) |> ignore
   ps_shadow(wid)
   ps_rec_exclude(wid)
-  rec_place(m)
+  rec_place(rec_bar_w, rec_bar_h, true)
   log("rec: ready \{part.w}x\{part.h} at \{part.x},\{part.y}")
 }
 
 ///|
-/// Position the floating control bar below the region (or above / inside if near the bottom edge).
-fn rec_place(m : Rect) -> Unit {
+fn rec_place(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
+  let m = rec_mon.val
   let k = rec_scale.val
   let p = rec_part.val
-  let w = (rec_bar_w * k).round().to_int()
-  let h = (rec_bar_h * k).round().to_int()
+  let w = (pt_w * k).round().to_int()
+  let h = (pt_h * k).round().to_int()
   let gap = (10.0 * k).round().to_int()
   let x = clampi(p.x + (p.w - w) / 2, m.x + gap, m.right() - gap - w)
   let y = if p.bottom() + gap + h <= m.bottom() - gap {
@@ -179,19 +249,9 @@ fn rec_place(m : Rect) -> Unit {
   } else if p.y - gap - h >= m.y + gap {
     p.y - gap - h
   } else {
-    p.bottom() - gap - h
+    clampi(p.y + (p.h - h) / 2, m.y + gap, m.bottom() - gap - h)
   }
-  ps_place(rec_wid.val, x, y, w, h, 1, 1)
-}
-
-///|
-fn rec_output_path(fmt : Int) -> String {
-  let test_out = @ui.env("PINSHOT_TEST_REC_OUT")
-  if test_out != "" {
-    return test_out
-  }
-  let ext = if fmt == 0 { ".mp4" } else { ".gif" }
-  file_in(settings.untracked().save_dir, "PinShot_" + text_of(ps_stamp()) + ext)
+  ps_place(rec_wid.val, x, y, w, h, 1, if focus { 1 } else { 0 })
 }
 
 ///|
@@ -199,25 +259,23 @@ fn rec_start_now() -> Unit {
   if rec_wid.val == 0 || rec_phase.untracked() != 0 {
     return
   }
-  let fmt = rec_fmt.untracked()
-  let fps = if fmt == 0 { rec_fps_mp4.untracked() } else { rec_fps_gif.untracked() }
+  let fps = rec_fps.untracked()
   let cur = if rec_cursor.untracked() { 1 } else { 0 }
-  let path = rec_output_path(fmt)
+  let aud = if rec_audio.untracked() { 1 } else { 0 }
   @signals.start_batch()
-  rec_path.set(path)
   rec_ms.set(0)
   rec_frames.set(0)
-  rec_bytes.set(0.0)
   rec_err.set("")
   rec_phase.set(1)
   @signals.end_batch()
-  if ps_rec_start(cstr(path), fmt, fps, cur) == 0 {
+  ps_rec_input_show(if rec_input.untracked() { 1 } else { 0 })
+  if ps_rec_start(fps, cur, aud) == 0 {
     rec_err.set(tr("启动录屏失败"))
-    rec_phase.set(5)
+    rec_phase.set(7)
     log("rec: failed to start")
     return
   }
-  log("rec: started fmt=\{fmt} fps=\{fps} cursor=\{cur} -> \{path}")
+  log("rec: started fps=\{fps} cursor=\{cur} audio=\{aud}")
 }
 
 ///|
@@ -233,19 +291,62 @@ fn rec_toggle_pause() -> Unit {
 }
 
 ///|
-fn rec_finish() -> Unit {
+fn rec_finish_capture() -> Unit {
   let ph = rec_phase.untracked()
   if ph != 1 && ph != 2 {
     return
   }
+  rec_draw.set(0)
   rec_phase.set(3)
   ps_rec_stop(0)
+}
+
+///|
+fn rec_export_dest(ask_dialog : Bool) -> String {
+  let test_out = @ui.env("PINSHOT_TEST_REC_OUT")
+  if test_out != "" && !ask_dialog {
+    return test_out
+  }
+  let ext = if rec_exp_kind.untracked() == 2 { ".gif" } else { ".mp4" }
+  let name = "PinShot_" + text_of(ps_stamp()) + ext
+  let dir = settings.untracked().save_dir
+  if ask_dialog {
+    text_of(ps_save_dialog(rec_wid.val, cstr(dir), cstr(name)))
+  } else {
+    file_in(dir, name)
+  }
+}
+
+///|
+fn rec_run_export(ask_dialog : Bool) -> Unit {
+  let ph = rec_phase.untracked()
+  if rec_wid.val == 0 || (ph != 4 && ph != 6 && ph != 7) {
+    return
+  }
+  let dest = rec_export_dest(ask_dialog)
+  if dest == "" {
+    return
+  }
+  let mode = rec_export_mode_code()
+  @signals.start_batch()
+  rec_path.set(dest)
+  rec_exp_pct.set(0)
+  rec_err.set("")
+  rec_phase.set(5)
+  @signals.end_batch()
+  if ps_rec_export(cstr(dest), mode) == 0 {
+    rec_err.set(tr("启动导出失败"))
+    rec_phase.set(7)
+  } else {
+    log("rec: export mode=\{mode} -> \{dest}")
+  }
 }
 
 ///|
 fn rec_cancel() -> Unit {
   let ph = rec_phase.untracked()
   if ph == 1 || ph == 2 {
+    rec_draw.set(0)
     rec_phase.set(3)
     ps_rec_stop(1)
   } else if ph != 3 {
@@ -278,8 +379,29 @@ fn rec_gone() -> Unit {
 }
 
 ///|
-/// Native recording status callback ({"do":"rec",...}).
-fn rec_told(state : String, ms : Int, frames : Int, bytes : Double, codec : String, path : String, err : String) -> Unit {
+fn rec_draw_told(tool : Int, count : Int) -> Unit {
+  if rec_wid.val == 0 {
+    return
+  }
+  @signals.start_batch()
+  rec_draw.set(tool)
+  rec_marks_n.set(count)
+  @signals.end_batch()
+}
+
+///|
+fn rec_told(
+  state : String,
+  ms : Int,
+  frames : Int,
+  bytes : Double,
+  orig : Double,
+  pct : Int,
+  audio : Int,
+  codec : String,
+  path : String,
+  err : String,
+) -> Unit {
   if rec_wid.val == 0 {
     return
   }
@@ -291,6 +413,7 @@ fn rec_told(state : String, ms : Int, frames : Int, bytes : Double, codec : Stri
       }
       rec_ms.set(ms)
       rec_frames.set(frames)
+      rec_master_audio.set(audio != 0)
       if codec != "" {
         rec_codec.set(codec)
       }
@@ -310,30 +433,54 @@ fn rec_told(state : String, ms : Int, frames : Int, bytes : Double, codec : Stri
       log("rec: cancelled")
       rec_close()
     }
-    "done" => {
-      shutter()
+    "recorded" => {
       ps_capture_open(0)
       @signals.start_batch()
       rec_ms.set(ms)
       rec_frames.set(frames)
-      rec_bytes.set(bytes)
+      rec_master_bytes.set(bytes)
+      rec_master_audio.set(audio != 0)
       if codec != "" {
         rec_codec.set(codec)
       }
+      rec_phase.set(4)
+      @signals.end_batch()
+      rec_place(rec_exp_w, rec_exp_h, true)
+      log("rec: master ready \{codec} audio=\{audio} \{frames}f \{ms}ms \{bytes}B")
+    }
+    "exporting" => {
+      @signals.start_batch()
+      rec_phase.set(5)
+      rec_exp_pct.set(pct)
+      @signals.end_batch()
+    }
+    "exported" => {
+      shutter()
+      @signals.start_batch()
+      rec_exp_bytes.set(bytes)
+      if orig > 0.0 {
+        rec_master_bytes.set(orig)
+      }
+      rec_exp_pct.set(100)
       if path != "" {
         rec_path.set(path)
       }
-      rec_phase.set(4)
-      rec_done_gen.set(rec_done_gen.untracked() + 1)
+      rec_phase.set(6)
       @signals.end_batch()
-      log("rec: done \{codec} \{frames}f \{ms}ms \{bytes}B -> \{path}")
+      log("rec: exported \{codec} \{bytes}B (orig \{orig}B) -> \{path}")
+    }
+    "export-error" => {
+      @signals.start_batch()
+      rec_err.set(if err != "" { tr(err) } else { tr("导出失败") })
+      rec_phase.set(7)
+      @signals.end_batch()
+      log("rec: export-error \{err}")
     }
     "error" => {
       ps_capture_open(0)
       @signals.start_batch()
       rec_err.set(if err != "" { tr(err) } else { tr("录屏失败") })
-      rec_phase.set(5)
-      rec_done_gen.set(rec_done_gen.untracked() + 1)
+      rec_phase.set(7)
       @signals.end_batch()
       log("rec: error \{err}")
     }
@@ -374,10 +521,24 @@ fn rec_short_codec() -> String {
     "H.265"
   } else if c.has_prefix("H.264") {
     "H.264"
-  } else if rec_fmt.get() == 1 {
-    "GIF"
   } else {
     "MP4"
+  }
+}
+
+///|
+fn rec_saved_pct_tag() -> String {
+  let orig = rec_master_bytes.get()
+  let out = rec_exp_bytes.get()
+  if orig > 0.0 && out > 0.0 && out < orig * 0.96 {
+    let saved = ((orig - out) / orig * 100.0).round().to_int()
+    if saved > 0 {
+      "（-\{saved}%）"
+    } else {
+      ""
+    }
+  } else {
+    ""
   }
 }
 
@@ -400,22 +561,25 @@ fn rec_icon_btn(
   label_fn : () -> String,
   lit : () -> Bool,
   press : () -> Unit,
+  dim? : () -> Bool = fn() { false },
   tint_lit? : Int64 = 0x88C8FFFFL,
   bg_lit? : Int64 = 0x2F9BFF29L,
 ) -> Unit {
   row.box(fn(b) {
     b
-    .width(Is(Some(30.0)))
-    .height(Is(Some(30.0)))
-    .radius(Is(9.0))
+    .width(Is(Some(28.0)))
+    .height(Is(Some(28.0)))
+    .radius(Is(8.0))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
-    .cursor(Is(Some(Hand)))
+    .cursor(By(fn() { if dim() { None } else { Some(Hand) } }))
     .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
-    .on_press(press)
+    .on_press(fn() { if !dim() { press() } })
     .ground(By(fn() {
-      if b.pressed() {
+      if dim() {
+        0L
+      } else if b.pressed() {
         0xFFFFFF2EL
       } else if lit() {
         bg_lit
@@ -428,44 +592,20 @@ fn rec_icon_btn(
     |> ignore
     b.box(fn(g) {
       g
-      .width(Is(Some(16.0)))
-      .height(Is(Some(16.0)))
+      .width(Is(Some(15.0)))
+      .height(Is(Some(15.0)))
       .picture(By(fn() { Some(glyph(glyph_fn())) }))
-      .tint(By(fn() { if lit() { tint_lit } else if b.pointed() { 0xFFFFFFFFL } else { 0xD6DAE0FFL } }))
-      |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-fn rec_chip_btn(row : @view.View, text_fn : () -> String, active : () -> Bool, press : () -> Unit) -> Unit {
-  row.box(fn(b) {
-    b
-    .height(Is(Some(28.0)))
-    .padding(Is((8.0, 0.0, 8.0, 0.0)))
-    .radius(Is(8.0))
-    .lines_up(Is(Some(Middle)))
-    .lies_along(Is(Middle))
-    .presses(Is(true))
-    .cursor(Is(Some(Hand)))
-    .says(By(fn() { Some(@view.said(Button, label=text_fn())) }))
-    .on_press(press)
-    .ground(By(fn() {
-      if active() {
-        0xFFFFFF26L
-      } else if b.pointed() {
-        0xFFFFFF14L
-      } else {
-        0L
-      }
-    }))
-    |> ignore
-    b.box(fn(t) {
-      t
-      .words(By(text_fn), look={ ..@view.words_plain, size: 12.0, weight: 600, line: 16.0, wrap: false })
-      .ink(By(fn() { if active() { 0xFFFFFFFFL } else { 0x9EA3ABFFL } }))
+      .tint(By(fn() {
+        if dim() {
+          0xFFFFFF40L
+        } else if lit() {
+          tint_lit
+        } else if b.pointed() {
+          0xFFFFFFFFL
+        } else {
+          0xD6DAE0FFL
+        }
+      }))
       |> ignore
     })
     |> ignore
@@ -483,22 +623,25 @@ fn rec_action_btn(
   bg_hover : Int64,
   bg_press : Int64,
   press : () -> Unit,
+  dim? : () -> Bool = fn() { false },
 ) -> Unit {
   row.box(fn(b) {
     b
     .row(Is(true))
     .gap(Is(6.0))
     .height(Is(Some(30.0)))
-    .padding(Is((12.0, 0.0, 12.0, 0.0)))
+    .padding(Is((11.0, 0.0, 12.0, 0.0)))
     .radius(Is(9.0))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
-    .cursor(Is(Some(Hand)))
+    .cursor(By(fn() { if dim() { None } else { Some(Hand) } }))
     .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
-    .on_press(press)
+    .on_press(fn() { if !dim() { press() } })
     .ground(By(fn() {
-      if b.pressed() {
+      if dim() {
+        0xFFFFFF14L
+      } else if b.pressed() {
         bg_press
       } else if b.pointed() {
         bg_hover
@@ -523,7 +666,71 @@ fn rec_action_btn(
     b.box(fn(t) {
       t
       .words(By(label_fn), look={ ..@view.words_plain, size: 12.5, weight: 600, line: 16.0, wrap: false })
-      .ink(Is(0xFFFFFFFFL))
+      .ink(By(fn() { if dim() { 0xFFFFFF59L } else { 0xFFFFFFFFL } }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+fn rec_export_card(
+  row : @view.View,
+  kind : Int,
+  title : String,
+  sub_fn : () -> String,
+  toggle_sub : (() -> Unit)?,
+) -> Unit {
+  row.box(fn(c) {
+    let active = fn() { rec_exp_kind.get() == kind }
+    c
+    .grow(Is(1.0))
+    .height(Is(Some(58.0)))
+    .padding(Is((10.0, 8.0, 10.0, 8.0)))
+    .gap(Is(3.0))
+    .radius(Is(10.0))
+    .lines_up(Is(Some(Start)))
+    .lies_along(Is(Middle))
+    .presses(Is(true))
+    .cursor(Is(Some(Hand)))
+    .says(By(fn() { Some(@view.said(Button, label=tr(title) + " " + sub_fn())) }))
+    .on_press(fn() {
+      if rec_phase.untracked() == 5 {
+        return
+      }
+      if rec_exp_kind.untracked() == kind {
+        match toggle_sub {
+          Some(f) => f()
+          None => ()
+        }
+      } else {
+        rec_exp_kind.set(kind)
+        rec_exp_sub.set(0)
+      }
+    })
+    .ground(By(fn() {
+      if active() {
+        0x2F9BFF22L
+      } else if c.pointed() {
+        0xFFFFFF12L
+      } else {
+        0xFFFFFF09L
+      }
+    }))
+    .edge(By(fn() { if active() { (1.5, 0x2F9BFFCCL) } else { (1.0, 0xFFFFFF16L) } }))
+    |> ignore
+    c.box(fn(t) {
+      t
+      .words(By(fn() { tr(title) }), look={ ..@view.words_plain, size: 13.0, weight: 600, line: 17.0, wrap: false })
+      .ink(By(fn() { if active() { 0xFFFFFFFFL } else { 0xD6DAE0FFL } }))
+      |> ignore
+    })
+    |> ignore
+    c.box(fn(s) {
+      s
+      .words(By(sub_fn), look={ ..@view.words_plain, size: 11.0, weight: 500, line: 15.0, wrap: false })
+      .ink(By(fn() { if active() { 0x88C8FFFFL } else { 0x9EA3ABFFL } }))
       |> ignore
     })
     |> ignore
@@ -544,8 +751,9 @@ fn rec_window(root : @view.View) -> Unit {
   root.on_action("primary", fn(_) {
     match rec_phase.untracked() {
       0 => rec_start_now()
-      1 | 2 => rec_finish()
-      4 | 5 => rec_close()
+      1 | 2 => rec_finish_capture()
+      4 | 6 => rec_run_export(false)
+      7 => rec_close()
       _ => ()
     }
     true
@@ -561,65 +769,35 @@ fn rec_window(root : @view.View) -> Unit {
   })
   |> ignore
 
-  // Auto-close Done / Error pill after 4.5s unless the user hovers it or opens the folder.
-  root.reacts(fn() { rec_done_gen.get() }, fn(gen) {
-    if gen == 0 {
-      return
-    }
-    root.at_moment(root.cause_at() + 4500.0, fn() {
-      let ph = rec_phase.untracked()
-      if rec_wid.val != 0 && (ph == 4 || ph == 5) && gen == rec_done_gen.untracked() {
-        if root.pointed() {
-          rec_done_gen.set(gen + 1)
-        } else {
-          rec_close()
-        }
-      }
-    }, later=true)
-    |> ignore
-  })
-
-  root.box(fn(bar) {
-    bar
+  root.box(fn(page) {
+    page
     .over(Is(true))
-    .row(Is(true))
-    .gap(Is(4.0))
-    .padding(Is((10.0, 0.0, 8.0, 0.0)))
     .ground(Is(0x1E1F23FFL))
     .edge(Is((1.0, 0xFFFFFF18L)))
-    .lines_up(Is(Some(Middle)))
+    .lines_up(Is(Some(Start)))
     |> ignore
 
-    // Phase 0: Ready
-    bar.show(fn() { rec_phase.get() == 0 }, fn(r) {
-      r.row(Is(true)).gap(Is(4.0)).grow(Is(1.0)).lines_up(Is(Some(Middle))) |> ignore
-      // Draggable status + resolution
-      r.box(fn(drag) {
-        drag
-        .row(Is(true))
-        .gap(Is(7.0))
-        .grow(Is(1.0))
-        .height(Is(Some(32.0)))
-        .lines_up(Is(Some(Middle)))
-        .presses(Is(true))
-        .cursor(Is(Some(Grab)))
-        .on_drag(fn(d) {
-          if d.kind == Down && rec_wid.val != 0 {
-            ps_move_window(rec_wid.val)
-          }
-        }, whole=true)
-        |> ignore
-        drag.box(fn(dot) {
-          dot.width(Is(Some(8.0))).height(Is(Some(8.0))).radius(Is(4.0)).ground(Is(accent)) |> ignore
-        })
-        |> ignore
-        drag.box(fn(sz) {
-          sz
-          .words(By(fn() { "\{rec_part.val.w} × \{rec_part.val.h}" }), look={
+    // ---- Phases 0..3: Compact single-row PixPin-style live control bar ----
+    page.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
+      bar
+      .row(Is(true))
+      .gap(Is(3.0))
+      .width(Is(Some(rec_bar_w)))
+      .height(Is(Some(rec_bar_h)))
+      .padding(Is((10.0, 0.0, 8.0, 0.0)))
+      .lines_up(Is(Some(Middle)))
+      |> ignore
+
+      // Phase 3: Finalizing master
+      bar.show(fn() { rec_phase.get() == 3 }, fn(r) {
+        r.row(Is(true)).grow(Is(1.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+        r.box(fn(w) {
+          w
+          .words(By(fn() { tr("正在收尾录屏…") }), look={
             ..@view.words_plain,
-            size: 12.0,
+            size: 13.0,
             weight: 500,
-            line: 16.0,
+            line: 18.0,
             wrap: false,
           })
           .ink(Is(0xD6DAE0FFL))
@@ -627,234 +805,450 @@ fn rec_window(root : @view.View) -> Unit {
         })
         |> ignore
       })
-      |> ignore
-      // Format toggle (MP4 / GIF)
-      r.box(fn(seg) {
-        seg
-        .row(Is(true))
-        .gap(Is(2.0))
-        .padding(Is((2.0, 2.0, 2.0, 2.0)))
-        .radius(Is(9.0))
-        .ground(Is(0xFFFFFF0CL))
-        .lines_up(Is(Some(Middle)))
-        |> ignore
-        rec_chip_btn(seg, fn() { "MP4" }, fn() { rec_fmt.get() == 0 }, fn() { rec_fmt.set(0) })
-        rec_chip_btn(seg, fn() { "GIF" }, fn() { rec_fmt.get() == 1 }, fn() { rec_fmt.set(1) })
-      })
-      |> ignore
-      // FPS toggle
-      rec_chip_btn(r, fn() { "\{rec_current_fps()}fps" }, fn() { false }, rec_cycle_fps)
-      // Cursor toggle
-      rec_icon_btn(
-        r,
-        fn() { "select" },
-        fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
-        fn() { rec_cursor.get() },
-        fn() { rec_cursor.set(!rec_cursor.untracked()) },
-      )
-      bar_rule_node(r)
-      rec_icon_btn(r, fn() { "close" }, fn() { tr("取消 Esc") }, fn() { false }, rec_cancel)
-      rec_action_btn(
-        r,
-        Some(0xFFFFFFFFL),
-        None,
-        fn() { tr("录制") },
-        0xE5484DFFL,
-        0xF0585DFFL,
-        0xCC3A3FFFL,
-        rec_start_now,
-      )
-    })
 
-    // Phase 1 & 2: Recording / Paused
-    bar.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(r) {
-      r.row(Is(true)).gap(Is(4.0)).grow(Is(1.0)).lines_up(Is(Some(Middle))) |> ignore
-      // Draggable live timer + codec badge
-      r.box(fn(drag) {
-        drag
-        .row(Is(true))
-        .gap(Is(8.0))
-        .grow(Is(1.0))
-        .height(Is(Some(32.0)))
-        .lines_up(Is(Some(Middle)))
-        .presses(Is(true))
-        .cursor(Is(Some(Grab)))
-        .on_drag(fn(d) {
-          if d.kind == Down && rec_wid.val != 0 {
-            ps_move_window(rec_wid.val)
-          }
-        }, whole=true)
-        |> ignore
-        drag.box(fn(dot) {
-          dot
-          .width(Is(Some(8.0)))
-          .height(Is(Some(8.0)))
-          .radius(Is(4.0))
-          .ground(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0xEF4444FFL } }))
-          |> ignore
-        })
-        |> ignore
-        drag.box(fn(tm) {
-          tm
-          .words(By(fn() { rec_fmt_time(rec_ms.get()) }), look={
-            ..@view.words_plain,
-            size: 13.5,
-            weight: 600,
-            line: 18.0,
-            wrap: false,
-          })
-          .ink(Is(0xFFFFFFFFL))
-          |> ignore
-        })
-        |> ignore
-        drag.box(fn(meta) {
-          meta
-          .height(Is(Some(20.0)))
-          .padding(Is((6.0, 0.0, 6.0, 0.0)))
-          .radius(Is(5.0))
-          .ground(Is(0xFFFFFF10L))
+      // Phases 0, 1, 2: Ready / Recording / Paused
+      bar.show(fn() { rec_phase.get() <= 2 }, fn(r) {
+        r.row(Is(true)).gap(Is(3.0)).grow(Is(1.0)).lines_up(Is(Some(Middle))) |> ignore
+
+        // Draggable left status + tabular timer
+        r.box(fn(drag) {
+          drag
+          .row(Is(true))
+          .gap(Is(7.0))
+          .height(Is(Some(32.0)))
+          .padding(Is((0.0, 0.0, 4.0, 0.0)))
           .lines_up(Is(Some(Middle)))
-          .lies_along(Is(Middle))
+          .presses(Is(true))
+          .cursor(Is(Some(Grab)))
+          .on_drag(fn(d) {
+            if d.kind == Down && rec_wid.val != 0 {
+              ps_move_window(rec_wid.val)
+            }
+          }, whole=true)
           |> ignore
-          meta.box(fn(w) {
-            w
-            .words(
-              By(fn() {
-                if rec_phase.get() == 2 {
-                  tr("已暂停")
-                } else {
-                  "\{rec_short_codec()} · \{rec_current_fps()}fps"
-                }
-              }),
-              look={ ..@view.words_plain, size: 11.0, weight: 500, line: 14.0, wrap: false },
-            )
-            .ink(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0x9EA3ABFFL } }))
+          drag.box(fn(dot) {
+            dot
+            .width(Is(Some(8.0)))
+            .height(Is(Some(8.0)))
+            .radius(Is(4.0))
+            .ground(By(fn() {
+              match rec_phase.get() {
+                1 => 0xEF4444FFL
+                2 => 0xF5A524FFL
+                _ => accent
+              }
+            }))
+            |> ignore
+          })
+          |> ignore
+          // Fixed min-width + tabular theme guarantees 0px horizontal jitter on ticks
+          drag.box(fn(tm_box) {
+            tm_box.min_width(Is(Some(54.0))).lines_up(Is(Some(Start))) |> ignore
+            tm_box.box(fn(tm) {
+              tm
+              .words(By(fn() { rec_fmt_time(rec_ms.get()) }), look={
+                ..@view.words_plain,
+                size: 13.0,
+                weight: 600,
+                line: 18.0,
+                wrap: false,
+              })
+              .ink(By(fn() { if rec_phase.get() == 0 { 0xB8BDC6FFL } else { 0xFFFFFFFFL } }))
+              |> ignore
+            })
             |> ignore
           })
           |> ignore
         })
         |> ignore
-      })
-      |> ignore
-      bar_rule_node(r)
-      rec_icon_btn(
-        r,
-        fn() { if rec_phase.get() == 2 { "play" } else { "pause" } },
-        fn() { if rec_phase.get() == 2 { tr("继续 Space") } else { tr("暂停 Space") } },
-        fn() { rec_phase.get() == 2 },
-        rec_toggle_pause,
-        tint_lit=0xF5A524FFL,
-        bg_lit=0xF5A52426L,
-      )
-      rec_icon_btn(r, fn() { "close" }, fn() { tr("取消 Esc") }, fn() { false }, rec_cancel)
-      rec_action_btn(
-        r,
-        None,
-        Some("stop"),
-        fn() { tr("停止") },
-        0xE5484DFFL,
-        0xF0585DFFL,
-        0xCC3A3FFFL,
-        rec_finish,
-      )
-    })
 
-    // Phase 3: Saving
-    bar.show(fn() { rec_phase.get() == 3 }, fn(r) {
-      r.row(Is(true)).gap(Is(8.0)).grow(Is(1.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
-      r.box(fn(w) {
-        w
-        .words(By(fn() { tr("正在保存录屏…") }), look={
-          ..@view.words_plain,
-          size: 13.0,
-          weight: 500,
-          line: 18.0,
-          wrap: false,
-        })
-        .ink(Is(0xD6DAE0FFL))
-        |> ignore
-      })
-      |> ignore
-    })
-
-    // Phase 4: Done
-    bar.show(fn() { rec_phase.get() == 4 }, fn(r) {
-      r.row(Is(true)).gap(Is(6.0)).grow(Is(1.0)).lines_up(Is(Some(Middle))) |> ignore
-      r.box(fn(drag) {
-        drag
-        .row(Is(true))
-        .gap(Is(7.0))
-        .grow(Is(1.0))
-        .height(Is(Some(32.0)))
-        .lines_up(Is(Some(Middle)))
-        .presses(Is(true))
-        .cursor(Is(Some(Grab)))
-        .on_drag(fn(d) {
-          if d.kind == Down && rec_wid.val != 0 {
-            ps_move_window(rec_wid.val)
-          }
-        }, whole=true)
-        |> ignore
-        drag.box(fn(dot) {
-          dot.width(Is(Some(8.0))).height(Is(Some(8.0))).radius(Is(4.0)).ground(Is(0x4CC38AFFL)) |> ignore
-        })
-        |> ignore
-        drag.box(fn(w) {
-          w
-          .words(By(fn() { tr("已保存并复制") + " · " + rec_fmt_size(rec_bytes.get()) }), look={
-            ..@view.words_plain,
-            size: 12.5,
-            weight: 500,
-            line: 16.0,
-            wrap: false,
+        // FPS / codec pill (clickable in Ready to switch 30 / 60fps)
+        r.box(fn(fps_b) {
+          fps_b
+          .height(Is(Some(24.0)))
+          .padding(Is((7.0, 0.0, 7.0, 0.0)))
+          .radius(Is(6.0))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .presses(Is(true))
+          .cursor(By(fn() { if rec_phase.get() == 0 { Some(Hand) } else { None } }))
+          .says(By(fn() { Some(@view.said(Button, label="\{rec_fps.get()}fps")) }))
+          .on_press(fn() {
+            if rec_phase.untracked() == 0 {
+              rec_fps.set(if rec_fps.untracked() == 30 { 60 } else { 30 })
+            }
           })
-          .ink(Is(0xECEEF2FFL))
+          .ground(By(fn() {
+            if rec_phase.get() == 0 && fps_b.pointed() {
+              0xFFFFFF1CL
+            } else {
+              0xFFFFFF10L
+            }
+          }))
+          |> ignore
+          fps_b.box(fn(w) {
+            w
+            .words(
+              By(fn() {
+                if rec_phase.get() == 2 {
+                  tr("已暂停")
+                } else if rec_phase.get() == 1 {
+                  "\{rec_short_codec()}·\{rec_fps.get()}"
+                } else {
+                  "\{rec_fps.get()}fps"
+                }
+              }),
+              look={ ..@view.words_plain, size: 11.0, weight: 500, line: 14.0, wrap: false },
+            )
+            .ink(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0xB8BDC6FFL } }))
+            |> ignore
+          })
           |> ignore
         })
         |> ignore
+
+        // Capture option toggles: System audio, Cursor, Click & keycap overlay
+        rec_icon_btn(
+          r,
+          fn() { if rec_audio.get() { "speaker" } else { "speaker-off" } },
+          fn() { if rec_audio.get() { tr("系统声音：开") } else { tr("系统声音：关") } },
+          fn() { rec_audio.get() },
+          fn() {
+            if rec_phase.untracked() == 0 {
+              rec_audio.set(!rec_audio.untracked())
+            }
+          },
+          dim=fn() { rec_phase.get() != 0 },
+        )
+        rec_icon_btn(
+          r,
+          fn() { "select" },
+          fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
+          fn() { rec_cursor.get() },
+          fn() {
+            if rec_phase.untracked() == 0 {
+              rec_cursor.set(!rec_cursor.untracked())
+            }
+          },
+          dim=fn() { rec_phase.get() != 0 },
+        )
+        rec_icon_btn(
+          r,
+          fn() { "keycap" },
+          fn() { if rec_input.get() { tr("按键与点击显示：开") } else { tr("按键与点击显示：关") } },
+          fn() { rec_input.get() },
+          fn() {
+            let next = !rec_input.untracked()
+            rec_input.set(next)
+            ps_rec_input_show(if next { 1 } else { 0 })
+          },
+        )
+
+        bar_rule_node(r)
+
+        // Live annotation tools (rect, arrow, pen, number, color swatch, undo, clear)
+        rec_icon_btn(r, fn() { "box" }, fn() { tr("矩形") }, fn() { rec_draw.get() == 1 }, fn() { rec_pick_draw(1) })
+        rec_icon_btn(r, fn() { "arrow" }, fn() { tr("箭头") }, fn() { rec_draw.get() == 2 }, fn() { rec_pick_draw(2) })
+        rec_icon_btn(r, fn() { "pen" }, fn() { tr("画笔") }, fn() { rec_draw.get() == 3 }, fn() { rec_pick_draw(3) })
+        rec_icon_btn(r, fn() { "number" }, fn() { tr("序号") }, fn() { rec_draw.get() == 4 }, fn() { rec_pick_draw(4) })
+        // Color swatch dot
+        r.box(fn(cb) {
+          cb
+          .width(Is(Some(24.0)))
+          .height(Is(Some(28.0)))
+          .radius(Is(8.0))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .presses(Is(true))
+          .cursor(Is(Some(Hand)))
+          .says(By(fn() { Some(@view.said(Button, label=tr("切换标注颜色"))) }))
+          .on_press(rec_cycle_color)
+          .ground(By(fn() { if cb.pointed() { 0xFFFFFF17L } else { 0L } }))
+          |> ignore
+          cb.box(fn(sw) {
+            sw
+            .width(Is(Some(12.0)))
+            .height(Is(Some(12.0)))
+            .radius(Is(6.0))
+            .ground(By(fn() { rec_draw_colors[rec_color_i.get()].1 }))
+            .edge(Is((1.5, 0xFFFFFF66L)))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        rec_icon_btn(
+          r,
+          fn() { "undo" },
+          fn() { tr("撤销标注") },
+          fn() { false },
+          ps_rec_draw_undo,
+          dim=fn() { rec_marks_n.get() == 0 },
+        )
+        rec_icon_btn(
+          r,
+          fn() { "eraser" },
+          fn() { tr("清空标注") },
+          fn() { false },
+          ps_rec_draw_clear,
+          dim=fn() { rec_marks_n.get() == 0 },
+        )
+
+        bar_rule_node(r)
+
+        // Spacer pushes right actions cleanly
+        r.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
+
+        // Pause / Resume (recording or paused)
+        r.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(pb) {
+          rec_icon_btn(
+            pb,
+            fn() { if rec_phase.get() == 2 { "play" } else { "pause" } },
+            fn() { if rec_phase.get() == 2 { tr("继续 Space") } else { tr("暂停 Space") } },
+            fn() { rec_phase.get() == 2 },
+            rec_toggle_pause,
+            tint_lit=0xF5A524FFL,
+            bg_lit=0xF5A52426L,
+          )
+        })
+        rec_icon_btn(r, fn() { "close" }, fn() { tr("取消 Esc") }, fn() { false }, rec_cancel)
+        // Start (Ready) or Stop (Recording / Paused)
+        r.show(fn() { rec_phase.get() == 0 }, fn(sb) {
+          rec_action_btn(
+            sb,
+            Some(0xFFFFFFFFL),
+            None,
+            fn() { tr("录制") },
+            0xE5484DFFL,
+            0xF0585DFFL,
+            0xCC3A3FFFL,
+            rec_start_now,
+          )
+        })
+        r.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(sb) {
+          rec_action_btn(
+            sb,
+            None,
+            Some("stop"),
+            fn() { tr("停止") },
+            0xE5484DFFL,
+            0xF0585DFFL,
+            0xCC3A3FFFL,
+            rec_finish_capture,
+          )
+        })
       })
-      |> ignore
-      rec_action_btn(
-        r,
-        None,
-        None,
-        fn() { tr("打开位置") },
-        0xFFFFFF1CL,
-        0xFFFFFF29L,
-        0xFFFFFF36L,
-        fn() {
-          let p = rec_path.untracked()
-          if p != "" {
-            ps_reveal(cstr(p))
-          }
-          rec_close()
-        },
-      )
-      rec_icon_btn(r, fn() { "close" }, fn() { tr("关闭") }, fn() { false }, rec_close)
     })
 
-    // Phase 5: Error
-    bar.show(fn() { rec_phase.get() == 5 }, fn(r) {
-      r.row(Is(true)).gap(Is(6.0)).grow(Is(1.0)).lines_up(Is(Some(Middle))) |> ignore
-      r.box(fn(dot) {
-        dot.width(Is(Some(8.0))).height(Is(Some(8.0))).radius(Is(4.0)).ground(Is(0xF5A524FFL)) |> ignore
-      })
+    // ---- Phases 4..7: Post-recording encoding & compression panel ----
+    page.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
+      exp
+      .width(Is(Some(rec_exp_w)))
+      .height(Is(Some(rec_exp_h)))
+      .padding(Is((14.0, 12.0, 14.0, 12.0)))
+      .gap(Is(10.0))
+      .lines_up(Is(Some(Start)))
       |> ignore
-      r.box(fn(w) {
-        w
-        .grow(Is(1.0))
-        .words(By(fn() { rec_err.get() }), look={
-          ..@view.words_plain,
-          size: 12.5,
-          weight: 500,
-          line: 16.0,
-          wrap: false,
-        })
-        .ink(Is(0xF5A524FFL))
+
+      // 1. Draggable header: summary + audio badge + close
+      exp.box(fn(hd) {
+        hd.row(Is(true)).gap(Is(8.0)).width(Is(Some(rec_exp_w - 28.0))).height(Is(Some(26.0))).lines_up(Is(Some(Middle)))
         |> ignore
+        hd.box(fn(drag) {
+          drag
+          .row(Is(true))
+          .gap(Is(8.0))
+          .grow(Is(1.0))
+          .height(Is(Some(26.0)))
+          .lines_up(Is(Some(Middle)))
+          .presses(Is(true))
+          .cursor(Is(Some(Grab)))
+          .on_drag(fn(d) {
+            if d.kind == Down && rec_wid.val != 0 {
+              ps_move_window(rec_wid.val)
+            }
+          }, whole=true)
+          |> ignore
+          drag.box(fn(dot) {
+            dot
+            .width(Is(Some(8.0)))
+            .height(Is(Some(8.0)))
+            .radius(Is(4.0))
+            .ground(By(fn() { if rec_phase.get() == 7 { 0xF5A524FFL } else { 0x4CC38AFFL } }))
+            |> ignore
+          })
+          |> ignore
+          drag.box(fn(info) {
+            info
+            .words(
+              By(fn() {
+                let dur = rec_fmt_time(rec_ms.get())
+                let sz = rec_fmt_size(rec_master_bytes.get())
+                tr("录制完成") + " · \{dur} · \{rec_part.val.w}×\{rec_part.val.h} · " + tr("原画 ") + sz
+              }),
+              look={ ..@view.words_plain, size: 12.5, weight: 600, line: 16.0, wrap: false },
+            )
+            .ink(Is(0xECEEF2FFL))
+            |> ignore
+          })
+          |> ignore
+          drag.show(fn() { rec_master_audio.get() }, fn(ab) {
+            ab
+            .height(Is(Some(18.0)))
+            .padding(Is((5.0, 0.0, 5.0, 0.0)))
+            .radius(Is(5.0))
+            .ground(Is(0x2F9BFF24L))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            |> ignore
+            ab.box(fn(t) {
+              t
+              .words(By(fn() { tr("含声音") }), look={
+                ..@view.words_plain,
+                size: 10.5,
+                weight: 500,
+                line: 14.0,
+                wrap: false,
+              })
+              .ink(Is(0x88C8FFFFL))
+              |> ignore
+            })
+            |> ignore
+          })
+        })
+        |> ignore
+        rec_icon_btn(hd, fn() { "close" }, fn() { tr("关闭 Esc") }, fn() { false }, rec_close)
       })
       |> ignore
-      rec_icon_btn(r, fn() { "close" }, fn() { tr("关闭") }, fn() { false }, rec_close)
+
+      // 2. Three export/compression mode cards
+      exp.box(fn(cards) {
+        cards.row(Is(true)).gap(Is(8.0)).width(Is(Some(rec_exp_w - 28.0))) |> ignore
+        rec_export_card(cards, 0, "MP4 原画", fn() { tr("零重编码 · 秒出") }, None)
+        rec_export_card(
+          cards,
+          1,
+          "MP4 压缩",
+          fn() {
+            if rec_exp_kind.get() == 1 && rec_exp_sub.get() == 1 {
+              tr("小体积 720p · 点击切换")
+            } else {
+              tr("标准 1080p · 点击切换")
+            }
+          },
+          Some(fn() { rec_exp_sub.set(if rec_exp_sub.untracked() == 0 { 1 } else { 0 }) }),
+        )
+        rec_export_card(
+          cards,
+          2,
+          "GIF 动图",
+          fn() {
+            if rec_exp_kind.get() == 2 && rec_exp_sub.get() == 1 {
+              tr("10fps 极小 · 点击切换")
+            } else {
+              tr("15fps 清晰 · 点击切换")
+            }
+          },
+          Some(fn() { rec_exp_sub.set(if rec_exp_sub.untracked() == 0 { 1 } else { 0 }) }),
+        )
+      })
+      |> ignore
+
+      // 3. Bottom status/progress + Save As / Export & Copy actions
+      exp.box(fn(foot) {
+        foot
+        .row(Is(true))
+        .gap(Is(8.0))
+        .width(Is(Some(rec_exp_w - 28.0)))
+        .height(Is(Some(32.0)))
+        .lines_up(Is(Some(Middle)))
+        |> ignore
+
+        foot.box(fn(st) {
+          st.row(Is(true)).gap(Is(8.0)).grow(Is(1.0)).lines_up(Is(Some(Middle))) |> ignore
+          st.box(fn(w) {
+            w
+            .words(
+              By(fn() {
+                match rec_phase.get() {
+                  5 => tr("正在编码 ") + rec_exp_pct.get().to_string() + "%"
+                  6 => tr("已保存并复制 · ") + rec_fmt_size(rec_exp_bytes.get()) + rec_saved_pct_tag()
+                  7 => rec_err.get()
+                  _ => tr("导出后自动保存并复制文件")
+                }
+              }),
+              look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false },
+            )
+            .ink(By(fn() {
+              match rec_phase.get() {
+                6 => 0x4CC38AFFL
+                7 => 0xF5A524FFL
+                5 => 0x88C8FFFFL
+                _ => 0x9EA3ABFFL
+              }
+            }))
+            |> ignore
+          })
+          |> ignore
+          st.show(fn() { rec_phase.get() == 6 }, fn(op) {
+            op
+            .height(Is(Some(24.0)))
+            .padding(Is((8.0, 0.0, 8.0, 0.0)))
+            .radius(Is(6.0))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            .presses(Is(true))
+            .cursor(Is(Some(Hand)))
+            .says(By(fn() { Some(@view.said(Button, label=tr("打开位置"))) }))
+            .on_press(fn() {
+              let p = rec_path.untracked()
+              if p != "" {
+                ps_reveal(cstr(p))
+              }
+            })
+            .ground(By(fn() { if op.pointed() { 0xFFFFFF22L } else { 0xFFFFFF12L } }))
+            |> ignore
+            op.box(fn(t) {
+              t
+              .words(By(fn() { tr("打开位置") }), look={
+                ..@view.words_plain,
+                size: 11.5,
+                weight: 500,
+                line: 15.0,
+                wrap: false,
+              })
+              .ink(Is(0xECEEF2FFL))
+              |> ignore
+            })
+            |> ignore
+          })
+        })
+        |> ignore
+
+        rec_action_btn(
+          foot,
+          None,
+          None,
+          fn() { tr("另存为…") },
+          0xFFFFFF16L,
+          0xFFFFFF24L,
+          0xFFFFFF30L,
+          fn() { rec_run_export(true) },
+          dim=fn() { rec_phase.get() == 5 },
+        )
+        rec_action_btn(
+          foot,
+          None,
+          Some("check"),
+          fn() { if rec_phase.get() == 5 { tr("编码中…") } else { tr("保存并复制") } },
+          accent,
+          0x48A8FFFFL,
+          0x1F7FDDFFL,
+          fn() { rec_run_export(false) },
+          dim=fn() { rec_phase.get() == 5 },
+        )
+      })
+      |> ignore
     })
   })
   |> ignore

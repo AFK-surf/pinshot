@@ -40,13 +40,13 @@ anyway. Windows 10 2004 or later, x64.
   in the settings)
   - Click without moving: select the window under the pointer; drag: select an area; drag edges and corners: resize;
     arrow keys: move the selection 1 px (Shift: 10 px)
-  - Toolbar: shapes (rectangle / ellipse / focus), lines (arrow / line; Shift: horizontal, vertical or 45°), pen,
+  - Toolbar: shapes (rectangle / ellipse / focus), lines (arrow / line; Shift: horizontal, vertical or 45°), pen & eraser,
     mosaic & redaction (pixel mosaic, brush mosaic, blur), numbered marker, text, undo, extract text
     (`Ctrl+O`), pin, save, close, copy
   - `Enter`, `Ctrl+C` or double-click in the selection: copy; `Ctrl+S`: save (PNG lossless, JPEG high or JPEG compact);
-    `Ctrl+T`: pin; `Ctrl+O`: extract text; `Ctrl+L`: scrolling screenshot (Windows); `Ctrl+R`: record area as MP4/GIF (Windows); `Ctrl+Z` / `Ctrl+Y`: undo / redo; `C`: copy the colour under the pointer; `Ctrl+A`: the whole screen
+    `Ctrl+T`: pin; `Ctrl+O`: extract text; `Ctrl+L`: scrolling screenshot (Windows); `Ctrl+R`: record area as MP4/GIF (Windows, with optional system audio, live annotations, click/keycap overlay, and post-recording compression); `Ctrl+Z` / `Ctrl+Y`: undo / redo; `C`: copy the colour under the pointer; `Ctrl+A`: the whole screen
   - Right-click: clear the selection, again to quit; `Esc`: quit
-- Pins: drag to move; drag an edge to stretch it that way, a corner to resize it (`Shift`: freely), the wheel to zoom;
+- Pins: drag to move; drag any edge or corner to resize keeping aspect ratio (`Shift`: stretch freely), the wheel to zoom;
   `Ctrl+wheel` for opacity; double-click or `Esc` to close; the right-click menu has copy, save as, extract text, always on top,
   rotate left / right 90° (`Ctrl+Shift+R` / `Ctrl+R`), flip horizontally / vertically, reset (`Ctrl+0`), opacity,
   close all
@@ -129,10 +129,10 @@ PinShot is free. If it helps you, you can support it on the [sponsor page](https
 
 - `Ctrl+Alt+A`（或点托盘图标）：冻结鼠标所在的显示器进入截图（设置里可换快捷键）
   - 不动鼠标点一下选中窗口；拖动框选；拖边和角调整大小；方向键移动 1 像素（Shift 10 像素）
-  - 工具条：形状（矩形 / 椭圆 / 聚焦）、线条（箭头 / 直线，按住 Shift 只走水平、垂直或 45°）、画笔、打码（像素框选 / 涂抹马赛克 / 模糊遮罩）、序号、文字、撤销、提取文字（`Ctrl+O`）、贴图、保存、关闭、复制
-  - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存（设置里可选 PNG 无损 / JPEG 高清 / JPEG 小体积）；`Ctrl+T` 贴图；`Ctrl+O` 提取文字；`Ctrl+L` 长截图（Windows）；`Ctrl+R` 区域录屏 MP4/GIF（Windows）；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色；`Ctrl+A` 选中整个屏幕
+  - 工具条：形状（矩形 / 椭圆 / 聚焦）、线条（箭头 / 直线，按住 Shift 只走水平、垂直或 45°）、画笔与橡皮擦、打码（像素框选 / 涂抹马赛克 / 模糊遮罩）、序号、文字、撤销、提取文字（`Ctrl+O`）、贴图、保存、关闭、复制
+  - `Enter`、`Ctrl+C` 或在选区里双击：复制；`Ctrl+S` 保存（设置里可选 PNG 无损 / JPEG 高清 / JPEG 小体积）；`Ctrl+T` 贴图；`Ctrl+O` 提取文字；`Ctrl+L` 长截图（Windows）；`Ctrl+R` 区域录屏 MP4/GIF（Windows，支持系统声音、实时标注、键鼠显示与录后压缩）；`Ctrl+Z` / `Ctrl+Y` 撤销 / 重做；`C` 复制鼠标下的颜色；`Ctrl+A` 选中整个屏幕
   - 右键先取消选区，再右键退出；`Esc` 退出
-- 贴图：拖动移动；拖边框单向拉伸、拖四角等比缩放（按住 `Shift` 自由拉伸）、滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、提取文字、置顶、向左 / 向右旋转 90°（`Ctrl+Shift+R` / `Ctrl+R`）、水平 / 垂直翻转、重置（`Ctrl+0`）、不透明度、关闭全部
+- 贴图：拖动移动；拖任意边或角等比缩放（按住 `Shift` 自由拉伸）、滚轮缩放；`Ctrl+滚轮` 调透明度；双击或 `Esc` 关闭；右键菜单有复制、另存为、提取文字、置顶、向左 / 向右旋转 90°（`Ctrl+Shift+R` / `Ctrl+R`）、水平 / 垂直翻转、重置（`Ctrl+0`）、不透明度、关闭全部
 - 提取文字：用 Windows 自带的 OCR 识别选区或贴图里的文字（不联网；装了中文 OCR 就优先用中文，里面的英文和数字也能认），在弹出的窗口里改、复制
 - `Ctrl+2`：把剪贴板里的图片贴到屏幕上
 - 托盘右键：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、检查更新、退出

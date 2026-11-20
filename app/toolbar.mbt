@@ -58,6 +58,14 @@ fn is_line_tool(t : Tool) -> Bool {
 }
 
 ///|
+fn is_pen_tool(t : Tool) -> Bool {
+  match t {
+    Pen | Eraser => true
+    _ => false
+  }
+}
+
+///|
 fn is_mosaic_tool(t : Tool) -> Bool {
   match t {
     Mosaic | MosaicBrush | Blur => true
@@ -75,6 +83,7 @@ fn tool_glyph(t : Tool) -> String {
     Arrow => "arrow"
     Line => "line"
     Pen => "pen"
+    Eraser => "eraser"
     Mosaic => "mosaic"
     MosaicBrush => "mosaic-brush"
     Blur => "blur"
@@ -93,6 +102,7 @@ fn tool_label(t : Tool) -> String {
     Arrow => "箭头（按住 Shift 水平、垂直或 45°）"
     Line => "直线（按住 Shift 水平、垂直或 45°）"
     Pen => "画笔"
+    Eraser => "橡皮擦（涂抹擦除画笔）"
     Mosaic => "像素马赛克（框选打码）"
     MosaicBrush => "涂抹马赛克（按住涂抹打码）"
     Blur => "模糊遮罩（平滑柔化打码）"
@@ -110,6 +120,9 @@ let shape_variants : Array[Tool] = [Box, Oval, Focus]
 
 ///|
 let line_variants : Array[Tool] = [Arrow, Line]
+
+///|
+let pen_variants : Array[Tool] = [Pen, Eraser]
 
 ///|
 let mosaic_variants : Array[Tool] = [Mosaic, MosaicBrush, Blur]
@@ -236,8 +249,18 @@ fn toolbar(stage : @view.View) -> Unit {
             }
           },
         )
-        // 4. Pen
-        tool_button(bar, "pen", "画笔", fn() { tool.get() == Pen }, fn() { pick_tool(Pen) })
+        // 4. Pen / Eraser group (always opens as Pen; second row offers Pen & Eraser)
+        tool_button(bar, "pen", "画笔", fn() { is_pen_tool(tool.get()) }, fn() {
+          if words_open.untracked() is Some(_) {
+            commit_words()
+          }
+          if is_pen_tool(tool.untracked()) {
+            tool.set(Move)
+          } else {
+            selected.set(None)
+            tool.set(Pen)
+          }
+        })
         // 5. Folded Mosaic group (Mosaic / MosaicBrush / Blur)
         tool_group_button(
           bar,
@@ -483,6 +506,15 @@ fn style_row(row : @view.View) -> Unit {
     })
   }
   bar_rule_node(row, shown=in_line)
+  // Pen variants: Pen, Eraser
+  let in_pen = fn() { is_pen_tool(tool.get()) }
+  for which in pen_variants {
+    sub_tool_button(row, which, in_pen, fn(w) {
+      selected.set(None)
+      tool.set(w)
+    })
+  }
+  bar_rule_node(row, shown=in_pen)
   // Mosaic variants: Mosaic, MosaicBrush, Blur (6-key compact bar: 3 modes + 3 sizes, no colour swatches)
   let in_mosaic = fn() { is_mosaic_tool(tool.get()) }
   for which in mosaic_variants {
@@ -495,7 +527,7 @@ fn style_row(row : @view.View) -> Unit {
   let has_color = fn() {
     let t = tool.get()
     if t != Move {
-      !is_mosaic_tool(t) && t != Focus
+      !is_mosaic_tool(t) && t != Focus && t != Eraser
     } else {
       match selected.get() {
         Some(id) =>
@@ -683,6 +715,11 @@ fn glyph(name : String) -> @pixels.Vector {
         h: 18.0,
         layers: [fill_layer("M5.5 4.5h7c.6 0 1 .4 1 1v7c0 .6-.4 1-1 1h-7c-.6 0-1-.4-1-1v-7c0-.6.4-1 1-1z", 0x000000FFL)],
       }
+    "speaker" => lines(["M3 7.2h2.8l3.7-3.2v10l-3.7-3.2H3z", "M12.2 6.8a3.2 3.2 0 0 1 0 4.4", "M14.3 4.8a6 6 0 0 1 0 8.4"])
+    "speaker-off" => lines(["M3 7.2h2.8l3.7-3.2v10l-3.7-3.2H3z", "M12.2 7l3.3 4", "M15.5 7l-3.3 4"])
+    "keycap" =>
+      lines(["M2.5 4.5h13c.7 0 1.2.5 1.2 1.2v6.6c0 .7-.5 1.2-1.2 1.2h-13c-.7 0-1.2-.5-1.2-1.2V5.7c0-.7.5-1.2 1.2-1.2z", "M5.2 8h1.5", "M8.3 8h1.5", "M11.4 8h1.5", "M6 10.8h6"])
+    "eraser" => lines(["M4.2 11.2 9.8 5.6a1.5 1.5 0 0 1 2.1 0l2.5 2.5a1.5 1.5 0 0 1 0 2.1l-3.6 3.6H6.8z", "M7.5 8l4 4", "M3.5 13.8h11"])
     "reset" => lines(["M4.2 7.5a5 5 0 1 1 1.2 4.9", "M4.2 3.8v3.7h3.7"])
     _ => lines([])
   }
