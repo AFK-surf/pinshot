@@ -90,6 +90,8 @@ extern "C" void ps_wgc_timing(double *out) {
 extern "C" int ps_wgc_ready(void) {
   if (ready) return ready > 0;
   ready = -1;
+  const char *how = getenv("PINSHOT_CAPTURE");
+  if (how && !strcmp(how, "gdi")) return 0;
   static int lock_made;
   if (!lock_made) {
     InitializeCriticalSection(&frame_lock);
@@ -114,15 +116,16 @@ extern "C" int ps_wgc_ready(void) {
   if (FAILED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Graphics_Capture_Direct3D11CaptureFramePool).Get(),
                                     IID_PPV_ARGS(&pool_statics))))
     return 0;
-  // (the shader: scRGB over the SDR white back to sRGB, its bytes in BGRA order as GDI's are)
+  // (the shader: scRGB over the SDR white back to sRGB, its bytes in BGRA order as GDI's are; ox/oy let a partial
+  // capture convert only its region instead of the full 4K frame)
   static const char hlsl[] =
       "Texture2D<float4> src : register(t0);"
       "RWTexture2D<unorm float4> dst : register(u0);"
-      "cbuffer K : register(b0) { float inv_white; float3 pad; };"
+      "cbuffer K : register(b0) { float inv_white; uint ox; uint oy; uint pad; };"
       "float enc(float v) { v = saturate(v); return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0 / 2.4) - 0.055; }"
       "[numthreads(16, 16, 1)] void main(uint3 id : SV_DispatchThreadID) {"
-      "  uint w, h; src.GetDimensions(w, h); if (id.x >= w || id.y >= h) return;"
-      "  float3 c = src[id.xy].rgb * inv_white;"
+      "  uint dw, dh; dst.GetDimensions(dw, dh); if (id.x >= dw || id.y >= dh) return;"
+      "  float3 c = src[uint2(id.x + ox, id.y + oy)].rgb * inv_white;"
       "  dst[id.xy] = float4(enc(c.b), enc(c.g), enc(c.r), 1.0); }";
   ComPtr<ID3DBlob> code, errs;
   if (SUCCEEDED(D3DCompile(hlsl, sizeof hlsl - 1, "to_srgb", NULL, NULL, "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
@@ -463,35 +466,74 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     QueryPerformanceCounter(&now);
     age = (now.QuadPart - at) / (double)f.QuadPart;
   }
+  auto drop_on_demand = [&]() {
+    if (!keep_sessions && !long_holds) {
+      mon_stop(m);
+      nmons = 0;
+    }
+  };
   take_age = age;
-  if (!fr) return NULL;
+  if (!fr) {
+    drop_on_demand();
+    return NULL;
+  }
   ComPtr<WD3D::IDirect3DSurface> surface;
   ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> access;
   ComPtr<ID3D11Texture2D> tex;
-  if (FAILED(fr->get_Surface(&surface)) || FAILED(surface.As(&access)) || FAILED(access->GetInterface(IID_PPV_ARGS(&tex))))
+  if (FAILED(fr->get_Surface(&surface)) || FAILED(surface.As(&access)) || FAILED(access->GetInterface(IID_PPV_ARGS(&tex)))) {
+    fr.Reset();
+    drop_on_demand();
     return NULL;
+  }
   D3D11_TEXTURE2D_DESC td;
   tex->GetDesc(&td);
-  if ((int)td.Width != w || (int)td.Height != h) return NULL;
+  if ((int)td.Width != w || (int)td.Height != h) {
+    tex.Reset();
+    surface.Reset();
+    access.Reset();
+    fr.Reset();
+    drop_on_demand();
+    return NULL;
+  }
+  int whole = rx == 0 && ry == 0 && rw == w && rh == h;
   said_half = 0;
   if (m->hdr) {
-    // (brought down to sRGB first: read where the shader can, written into a texture of 8-bit RGBA whose bytes are
-    // BGRA's)
+    // (brought down to sRGB first: only the requested region rw x rh is converted so a scrolling capture does not
+    // allocate and shade a full 4K UAV texture on every tick)
     ComPtr<ID3D11ShaderResourceView> srv;
     ComPtr<ID3D11Texture2D> half;
+    uint32_t ox = (uint32_t)rx, oy = (uint32_t)ry;
     if (FAILED(dev->CreateShaderResourceView(tex.Get(), NULL, &srv))) {
       D3D11_TEXTURE2D_DESC hd = td;
+      hd.Width = (UINT)rw;
+      hd.Height = (UINT)rh;
       hd.Usage = D3D11_USAGE_DEFAULT;
       hd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
       hd.CPUAccessFlags = 0;
       hd.MiscFlags = 0;
       hd.MipLevels = hd.ArraySize = 1;
       said_half = 1;
-      if (FAILED(dev->CreateTexture2D(&hd, NULL, &half))) return NULL;
-      ctx->CopyResource(half.Get(), tex.Get());
-      if (FAILED(dev->CreateShaderResourceView(half.Get(), NULL, &srv))) return NULL;
+      if (FAILED(dev->CreateTexture2D(&hd, NULL, &half))) {
+        tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
+        drop_on_demand();
+        return NULL;
+      }
+      if (whole) {
+        ctx->CopyResource(half.Get(), tex.Get());
+      } else {
+        D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
+        ctx->CopySubresourceRegion(half.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
+      }
+      ox = oy = 0;
+      if (FAILED(dev->CreateShaderResourceView(half.Get(), NULL, &srv))) {
+        tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
+        drop_on_demand();
+        return NULL;
+      }
     }
     D3D11_TEXTURE2D_DESC od = td;
+    od.Width = (UINT)rw;
+    od.Height = (UINT)rh;
     od.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     od.Usage = D3D11_USAGE_DEFAULT;
     od.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
@@ -500,12 +542,19 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     od.MipLevels = od.ArraySize = 1;
     ComPtr<ID3D11Texture2D> out;
     ComPtr<ID3D11UnorderedAccessView> uav;
-    if (FAILED(dev->CreateTexture2D(&od, NULL, &out)) || FAILED(dev->CreateUnorderedAccessView(out.Get(), NULL, &uav)))
+    if (FAILED(dev->CreateTexture2D(&od, NULL, &out)) || FAILED(dev->CreateUnorderedAccessView(out.Get(), NULL, &uav))) {
+      tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
+      drop_on_demand();
       return NULL;
+    }
     D3D11_MAPPED_SUBRESOURCE kp;
-    if (FAILED(ctx->Map(to_srgb_k.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &kp))) return NULL;
-    float k[4] = {1.0f / white, 0, 0, 0};
-    memcpy(kp.pData, k, sizeof k);
+    if (FAILED(ctx->Map(to_srgb_k.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &kp))) {
+      tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
+      drop_on_demand();
+      return NULL;
+    }
+    struct { float inv_white; uint32_t ox; uint32_t oy; uint32_t pad; } k = {1.0f / white, ox, oy, 0};
+    memcpy(kp.pData, &k, sizeof k);
     ctx->Unmap(to_srgb_k.Get(), 0);
     ID3D11ShaderResourceView *srvs[1] = {srv.Get()};
     ID3D11UnorderedAccessView *uavs[1] = {uav.Get()};
@@ -514,7 +563,7 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     ctx->CSSetShaderResources(0, 1, srvs);
     ctx->CSSetUnorderedAccessViews(0, 1, uavs, NULL);
     ctx->CSSetConstantBuffers(0, 1, ks);
-    ctx->Dispatch((w + 15) / 16, (h + 15) / 16, 1);
+    ctx->Dispatch((rw + 15) / 16, (rh + 15) / 16, 1);
     ID3D11ShaderResourceView *no_srv[1] = {NULL};
     ID3D11UnorderedAccessView *no_uav[1] = {NULL};
     ctx->CSSetShaderResources(0, 1, no_srv);
@@ -522,22 +571,20 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     ctx->CSSetShader(NULL, NULL, 0);
     tex = out;
     td = od;
+    whole = 1;
   }
   td.Usage = D3D11_USAGE_STAGING;
   td.BindFlags = 0;
   td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
   td.MiscFlags = 0;
   td.MipLevels = td.ArraySize = 1;
-  int whole = rx == 0 && ry == 0 && rw == w && rh == h;
   td.Width = (UINT)rw;
   td.Height = (UINT)rh;
   ComPtr<ID3D11Texture2D> staging;
   D3D11_MAPPED_SUBRESOURCE mp;
   if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) {
-    if (!keep_sessions && !long_holds) {
-      mon_stop(m);
-      nmons = 0;
-    }
+    tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
+    drop_on_demand();
     return NULL;
   }
   if (whole) {
@@ -562,6 +609,16 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   QueryPerformanceCounter(&t1);
   take_ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
   return staging.Detach();
+}
+
+// Trim unused driver pools on the WGC D3D11 device when idle (leaving live capture sessions intact).
+extern "C" void ps_wgc_trim(void) {
+  if (ready > 0 && dev && ctx && !long_holds) {
+    ctx->ClearState();
+    ctx->Flush();
+    ComPtr<IDXGIDevice3> d3;
+    if (SUCCEEDED(dev.As(&d3))) d3->Trim();
+  }
 }
 
 // A picture taken let go (its staging texture, unmapped), and what the device keeps of it and of the textures it was
