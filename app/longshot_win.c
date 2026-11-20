@@ -43,6 +43,8 @@ void ps_wgc_long_hold(int on);
 #define SETTLE_MS 180
 #define STRIPS_MOST 8
 #define STRIP_LEAST 64    // pixels: a part narrower than two strips of it is one strip
+#define PROF_W 64         // columns of a row's grey profile (loose_shift)
+#define LOOSE_MOST 6.0    // how far apart (grey levels, each column) rows may be and still be the same, scrolled
 
 static struct {
   int on;
@@ -61,6 +63,7 @@ static struct {
   uint8_t *now;            // the picture taken now
   uint64_t *now_hash;
   uint8_t *now_flat;
+  uint8_t *ref_prof, *now_prof;  // each row's grey, PROF_W columns of it averaged (loose_shift)
   int pictures;            // how many were laid in
   int lost;                // the last taken matched none (scrolled too far at once)
   int full;                // MOST_ROWS reached
@@ -134,6 +137,89 @@ static void hash_rows(const uint8_t *px, uint64_t *hash, uint8_t *flat) {
       flat[s * L.h + y] = (uint8_t)one;
     }
   }
+}
+
+// Each row of `img` as PROF_W greys (each the mean of its column's pixels, every other one read): what loose_shift
+// compares.
+static void profile_of(const uint8_t *img, uint8_t *prof) {
+  for (int y = 0; y < L.h; y++) {
+    const uint8_t *row = img + (size_t)y * L.w * 4;
+    for (int c = 0; c < PROF_W; c++) {
+      int x0 = c * L.w / PROF_W, x1 = (c + 1) * L.w / PROF_W;
+      unsigned sum = 0, n = 0;
+      for (int x = x0; x < x1; x += 2) {
+        const uint8_t *px = row + (size_t)x * 4;
+        sum += (px[0] + px[1] * 5u + px[2] * 2u) >> 3;
+        n++;
+      }
+      prof[(size_t)y * PROF_W + c] = (uint8_t)(n ? sum / n : 0);
+    }
+  }
+}
+
+static int prof_row_diff(const uint8_t *a, int ya, const uint8_t *b, int yb) {
+  const uint8_t *p = a + (size_t)ya * PROF_W, *q = b + (size_t)yb * PROF_W;
+  int d = 0;
+  for (int c = 0; c < PROF_W; c++) d += p[c] > q[c] ? p[c] - q[c] : q[c] - p[c];
+  return d;
+}
+
+// Whether now's row y says something (not one grey across: a page's blank rows match any shift).
+static int prof_marked(int y) {
+  const uint8_t *p = L.now_prof + (size_t)y * PROF_W;
+  int lo = 255, hi = 0;
+  for (int c = 0; c < PROF_W; c++) {
+    if (p[c] < lo) lo = p[c];
+    if (p[c] > hi) hi = p[c];
+  }
+  return hi - lo >= 8;
+}
+
+// The mean difference (grey levels a column) between now's rows y and ref's rows y + d over the band from `top`, every
+// `step`th row that says something (prof_marked); 1e9 where too few do.
+static double prof_band(int d, int top, int band, int step) {
+  long sum = 0, n = 0;
+  for (int y = top; y < top + band - d; y += step) {
+    if (!prof_marked(y)) continue;
+    sum += prof_row_diff(L.now_prof, y, L.ref_prof, y + d);
+    n++;
+  }
+  return n * step >= LEAST_OVERLAP ? (double)sum / (n * PROF_W) : 1e9;
+}
+
+// How far the part scrolled down from the last picture laid in, found where no rows are exactly alike (shift_of's
+// way): where it scrolls by part of a pixel (a browser's, an Electron app's, still.fail's at 150 %: its words drawn a
+// little otherwise at each place), each row is a little unlike any of the last picture's. Rows compared by their grey
+// profiles, the shift where they are least apart kept where they are near alike there and far more alike than not
+// moved at all (the user, 2026-11-20: 「长截图滚动时候……现在似乎静止在第一帧了」). Its foot's still rows in `bot`;
+// 0 none found.
+static int loose_shift(int *bot) {
+  int most = L.h / FIXED_MOST, top = 0, foot = 0;
+  int still_most = (int)(PROF_W * 3);
+  while (top < most && prof_row_diff(L.now_prof, top, L.ref_prof, top) <= still_most) top++;
+  while (foot < most && prof_row_diff(L.now_prof, L.h - 1 - foot, L.ref_prof, L.h - 1 - foot) <= still_most) foot++;
+  int band = L.h - top - foot;
+  if (band < LEAST_OVERLAP * 2) return 0;
+  double at0 = prof_band(0, top, band, 4);
+  // (a coarse look, every other shift over every 4th row, then each shift round the best over every other row; the two
+  // pictures sharing a quarter of the band at least: a sliver at a far shift matches anything)
+  int best = 0, reach = band - (band / 4 > LEAST_OVERLAP ? band / 4 : LEAST_OVERLAP);
+  double best_v = 1e9;
+  for (int d = 2; d <= reach; d += 2) {
+    double v = prof_band(d, top, band, 4);
+    if (v < best_v) best_v = v, best = d;
+  }
+  if (!best) return 0;
+  int fine = best;
+  double fine_v = 1e9;
+  for (int d = best - 3; d <= best + 3; d++) {
+    if (d < 1 || d > reach) continue;
+    double v = prof_band(d, top, band, 2);
+    if (v < fine_v) fine_v = v, fine = d;
+  }
+  if (fine_v > LOOSE_MOST || fine_v * 3.0 > at0) return 0;
+  *bot = foot;
+  return fine;
 }
 
 // The part taken now into L.now: 1 when taken.
@@ -279,6 +365,7 @@ static void tick(void) {
   if (GetTickCount64() - L.begun < SETTLE_MS) return;
   if (!take_now()) return;
   hash_rows(L.now, L.now_hash, L.now_flat);
+  profile_of(L.now, L.now_prof);
   if (!L.pictures) {
     dump("first", 0, 0, 0, 0);
     out_add(0, L.h);
@@ -291,6 +378,14 @@ static void tick(void) {
       moving += !st[s].still;
     }
     int bot = 0, d = agreed(st, 0, &bot);
+    // (none exactly alike but moved: scrolled by part of a pixel, found by the rows' greys)
+    if (!d && moving) {
+      int loose_bot = 0, loose = loose_shift(&loose_bot);
+      if (loose) {
+        d = loose, bot = loose_bot;
+        dump("loose", moving, d, bot, 0);
+      }
+    }
     if (!d) {
       // (not moved: the most of it the same, what changed beside it moving on its own; or scrolled back up: nothing
       // new, the last laid in kept; else nothing here is the last picture's: scrolled too far down at once, or the
@@ -318,6 +413,8 @@ static void tick(void) {
   L.ref_hash = L.now_hash, L.now_hash = hp;
   uint8_t *fp = L.ref_flat;
   L.ref_flat = L.now_flat, L.now_flat = fp;
+  uint8_t *pp = L.ref_prof;
+  L.ref_prof = L.now_prof, L.now_prof = pp;
   tell();
 }
 
@@ -387,6 +484,7 @@ static void let_go(void) {
   if (L.frame) DestroyWindow(L.frame);
   if (L.out) VirtualFree(L.out, 0, MEM_RELEASE);
   free(L.ref), free(L.now), free(L.ref_hash), free(L.now_hash), free(L.ref_flat), free(L.now_flat);
+  free(L.ref_prof), free(L.now_prof);
   memset(&L, 0, sizeof L);
 }
 
@@ -416,7 +514,9 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
   size_t rows = (size_t)L.strips * h;
   L.ref_hash = (uint64_t *)malloc(rows * sizeof(uint64_t)), L.now_hash = (uint64_t *)malloc(rows * sizeof(uint64_t));
   L.ref_flat = (uint8_t *)malloc(rows), L.now_flat = (uint8_t *)malloc(rows);
-  if (!L.out || !L.ref || !L.now || !L.ref_hash || !L.now_hash || !L.ref_flat || !L.now_flat) {
+  L.ref_prof = (uint8_t *)malloc((size_t)h * PROF_W), L.now_prof = (uint8_t *)malloc((size_t)h * PROF_W);
+  if (!L.out || !L.ref || !L.now || !L.ref_hash || !L.now_hash || !L.ref_flat || !L.now_flat || !L.ref_prof ||
+      !L.now_prof) {
     let_go();
     return 0;
   }
