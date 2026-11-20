@@ -257,7 +257,10 @@ static struct {
 
   // Export job params
   std::wstring exp_dest;
-  int exp_mode;
+  int exp_fmt;       // 0=MP4 H.265, 1=MP4 H.264, 2=GIF
+  int exp_quality;   // 0=Original, 1=High, 2=Balanced, 3=Compact
+  int exp_max_side;  // 0=Original, else max long edge (1920/1280/854)
+  int exp_gif_fps;   // 10 / 15 / 20
 } R;
 
 static void rec_exclude_hwnd(HWND h) {
@@ -1144,7 +1147,7 @@ struct Mp4Encoder {
   }
 
   bool open(ID3D11Device *dev, IMFDXGIDeviceManager *shared_mgr, const std::wstring &path, int w, int h,
-            int target_fps, bool want_audio, IMFMediaType *passthrough_audio = NULL) {
+            int target_fps, bool want_audio, IMFMediaType *passthrough_audio = NULL, bool prefer_hevc = true) {
     if (!ensure_mf_started()) return false;
     if (!lock_init) {
       InitializeCriticalSection(&write_lock);
@@ -1156,7 +1159,7 @@ struct Mp4Encoder {
     fps = target_fps;
 
     const char *force = getenv("PINSHOT_REC_CODEC");
-    bool allow_hevc = !force || !force[0] || strcmp(force, "hevc") == 0;
+    bool allow_hevc = prefer_hevc && (!force || !force[0] || strcmp(force, "hevc") == 0);
     bool allow_hw = !force || !force[0] || strcmp(force, "sw") != 0;
 
     if ((dev || shared_mgr) && allow_hw && allow_hevc &&
@@ -2048,7 +2051,10 @@ static DWORD WINAPI export_worker(LPVOID) {
   HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
   std::wstring src = R.master_path;
   std::wstring dst = R.exp_dest;
-  int mode = R.exp_mode;
+  int fmt = R.exp_fmt;           // 0=MP4 H.265, 1=MP4 H.264, 2=GIF
+  int quality = R.exp_quality;   // 0=Original, 1=High, 2=Balanced, 3=Compact
+  int max_side = R.exp_max_side; // 0=Original, else 1920/1280/854
+  int gif_fps = R.exp_gif_fps > 0 ? R.exp_gif_fps : 15;
   uint64_t orig_bytes = R.master_bytes;
   int64_t total_ms = R.master_ms > 0 ? R.master_ms : 1;
   int src_w = R.master_w;
@@ -2058,8 +2064,13 @@ static DWORD WINAPI export_worker(LPVOID) {
 
   rec_make_dirs(dst);
 
-  // Mode 0: MP4 Original (instant copy, 0 re-encode)
-  if (mode == 0) {
+  bool need_resize = (max_side > 0) && (src_w > max_side || src_h > max_side);
+  bool master_is_hevc = (R.master_codec.rfind("HEVC", 0) == 0);
+  bool want_hevc = (fmt == 0);
+  bool direct_copy = (fmt == 0 || fmt == 1) && quality == 0 && !need_resize && (want_hevc == master_is_hevc);
+
+  // Zero re-encode instant copy when codec, quality=Original, and size all match master
+  if (direct_copy) {
     if (CopyFileW(src.c_str(), dst.c_str(), FALSE)) {
       uint64_t sz = file_size_of(dst);
       copy_file_to_clipboard(dst);
@@ -2081,11 +2092,10 @@ static DWORD WINAPI export_worker(LPVOID) {
     return 0;
   }
 
-  // Modes 1 & 2: Compressed MP4 (GPU D3D11VA decode + VideoProcessor resize + HW HEVC/H.264 encode + AAC passthrough)
-  if (mode == 1 || mode == 2) {
-    int max_side = (mode == 1) ? 1920 : 1280;
+  // MP4 transcode / compress (fmt 0 = H.265 preferred, fmt 1 = H.264)
+  if (fmt == 0 || fmt == 1) {
     int out_w = src_w, out_h = src_h;
-    if (out_w > max_side || out_h > max_side) {
+    if (need_resize) {
       double k = (double)max_side / (double)(out_w > out_h ? out_w : out_h);
       out_w = std::max(16, ((int)(out_w * k + 0.5)) & ~1);
       out_h = std::max(16, ((int)(out_h * k + 0.5)) & ~1);
@@ -2172,19 +2182,21 @@ static DWORD WINAPI export_worker(LPVOID) {
     }
 
     Mp4Encoder enc;
-    double bpp_hevc = (mode == 1) ? 0.042 : 0.022;
-    double bpp_h264 = (mode == 1) ? 0.062 : 0.034;
-    double lo_hevc = (mode == 1) ? 450000.0 : 250000.0;
-    double hi_hevc = (mode == 1) ? 5500000.0 : 2200000.0;
-    double lo_h264 = (mode == 1) ? 650000.0 : 350000.0;
-    double hi_h264 = (mode == 1) ? 7500000.0 : 3000000.0;
-    double r_hevc = (double)out_w * out_h * src_fps * bpp_hevc;
-    double r_h264 = (double)out_w * out_h * src_fps * bpp_h264;
-    enc.custom_bps_hevc = (UINT32)(r_hevc < lo_hevc ? lo_hevc : (r_hevc > hi_hevc ? hi_hevc : r_hevc));
-    enc.custom_bps_h264 = (UINT32)(r_h264 < lo_h264 ? lo_h264 : (r_h264 > hi_h264 ? hi_h264 : r_h264));
+    // Quality tiers: 0=Original (high-bitrate transcode), 1=High, 2=Balanced, 3=Compact
+    static const double kBppHevc[4] = {0.095, 0.068, 0.040, 0.020};
+    static const double kBppH264[4] = {0.140, 0.100, 0.060, 0.032};
+    static const double kLoHevc[4]  = {1200000.0, 800000.0, 450000.0, 250000.0};
+    static const double kHiHevc[4]  = {22000000.0, 12000000.0, 5500000.0, 2200000.0};
+    static const double kLoH264[4]  = {1500000.0, 1000000.0, 650000.0, 350000.0};
+    static const double kHiH264[4]  = {30000000.0, 16000000.0, 7500000.0, 3200000.0};
+    int qi = quality < 0 ? 2 : (quality > 3 ? 3 : quality);
+    double r_hevc = (double)out_w * out_h * src_fps * kBppHevc[qi];
+    double r_h264 = (double)out_w * out_h * src_fps * kBppH264[qi];
+    enc.custom_bps_hevc = (UINT32)(r_hevc < kLoHevc[qi] ? kLoHevc[qi] : (r_hevc > kHiHevc[qi] ? kHiHevc[qi] : r_hevc));
+    enc.custom_bps_h264 = (UINT32)(r_h264 < kLoH264[qi] ? kLoH264[qi] : (r_h264 > kHiH264[qi] ? kHiH264[qi] : r_h264));
 
     if (!enc.open(gpu_dec ? dev.Get() : NULL, gpu_dec ? mgr.Get() : NULL, dst, out_w, out_h, src_fps, has_src_audio,
-                  NULL)) {
+                  NULL, want_hevc)) {
       reader.Reset();
       InterlockedExchange(&R.exporting, 0);
       if (SUCCEEDED(co)) CoUninitialize();
@@ -2328,11 +2340,9 @@ static DWORD WINAPI export_worker(LPVOID) {
     return 0;
   }
 
-  // Modes 3 & 4: GIF export (Mode 3 = 15fps <=1080px, Mode 4 = 10fps <=720px)
-  int gif_fps = (mode == 3) ? 15 : 10;
-  int max_side = (mode == 3) ? 1080 : 720;
+  // GIF export (fmt == 2)
   int gif_w = src_w, gif_h = src_h;
-  if (gif_w > max_side || gif_h > max_side) {
+  if (max_side > 0 && (gif_w > max_side || gif_h > max_side)) {
     double k = (double)max_side / (double)(gif_w > gif_h ? gif_w : gif_h);
     gif_w = std::max(16, ((int)(gif_w * k + 0.5)) & ~1);
     gif_h = std::max(16, ((int)(gif_h * k + 0.5)) & ~1);
@@ -2554,7 +2564,7 @@ void ps_rec_stop(int32_t cancel) {
   if (R.wake_ev) SetEvent(R.wake_ev);
 }
 
-int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t mode) {
+int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, int32_t max_side, int32_t gif_fps) {
   if (R.master_path.empty() || InterlockedCompareExchange(&R.exporting, 0, 0) != 0) return 0;
   if (R.exp_thread) {
     WaitForSingleObject(R.exp_thread, 3000);
@@ -2564,7 +2574,10 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t mode) {
   int len = (int)Moonbit_array_length(dest_path);
   R.exp_dest = utf8_to_wide((const char *)dest_path, len);
   if (R.exp_dest.empty()) return 0;
-  R.exp_mode = mode;
+  R.exp_fmt = fmt;
+  R.exp_quality = quality;
+  R.exp_max_side = max_side;
+  R.exp_gif_fps = gif_fps;
   InterlockedExchange(&R.exp_cancel, 0);
   InterlockedExchange(&R.exporting, 1);
   R.exp_thread = CreateThread(NULL, 0, export_worker, NULL, 0, NULL);

@@ -483,8 +483,8 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
 }
 void ps_rec_pause(int32_t on) { (void)on; }
 void ps_rec_stop(int32_t cancel) { (void)cancel; }
-int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t mode) {
-  (void)dest_path, (void)mode;
+int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, int32_t max_side, int32_t gif_fps) {
+  (void)dest_path, (void)fmt, (void)quality, (void)max_side, (void)gif_fps;
   return 0;
 }
 void ps_rec_end(void) {}
