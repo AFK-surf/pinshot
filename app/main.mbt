@@ -99,7 +99,7 @@ fn main {
   if again == 1 {
     started_with_settings.val = true
   }
-  @ui.run("PinShot", fn(c) {
+  @ui.run_legacy_ctx("PinShot", fn(c) {
     c.set_clear(0x000000L)
     // (said each frame: a window's tree let go lets go of what was said)
     @ui.set_tree_theme(app_theme)

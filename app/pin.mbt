@@ -2,7 +2,7 @@
 // window of this run beside the overlay (mbui's window_open_here: the same program, no start of its own), with no
 // frame, at its picture's own pixels. Dragged anywhere to move it; dragged by an edge (8 points of it) to stretch it
 // that way alone, by a corner to make it bigger or smaller as it is (Shift: freely), the opposite side staying where it
-// was; the wheel zooms it about the pointer; Ctrl and the wheel make it fainter or clearer; a double click or Esc closes
+// was; the wheel zooms it about the pointer; Ctrl and the wheel make it fainter or clearer; Esc closes
 // it; its right click is its menu (copy, save, over the others or not, turned a quarter either way, flipped either way,
 // at its own pixels' size, put back as it was pinned, how clear, close).
 
@@ -113,7 +113,11 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom? : Double = 1.
   } else {
     (dmax(16.0, (w.to_double() * zoom).round()).to_int(), dmax(16.0, (h.to_double() * zoom).round()).to_int())
   }
-  ps_place(wid, x, y, pw, ph, 1, 1)
+  let cloaked = @ui.env("PINSHOT_TEST_CLOAKED") != ""
+  if cloaked {
+    ps_cloak(wid, 1)
+  }
+  ps_place(wid, x, y, pw, ph, 1, if cloaked { 0 } else { 1 })
   if s.pin_alpha < 255 {
     ps_opacity(wid, s.pin_alpha)
   }
@@ -718,9 +722,6 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
       match p.sizing.val {
         Some(s) if d.kind != Down => {
           if d.kind == Moved {
-            // (a press that sized it is no first press of a double click: by its top or left edge the window moves
-            // under it, so where it is in the window stays put; the review, #1)
-            pin_last_down.val = (0, 0.0, 0.0, 0.0)
             size_pin(p, s)
           } else {
             p.sizing.val = None
@@ -732,16 +733,6 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
       }
       if d.kind == Down {
         p.sizing.val = None
-        // (the second press of a double click closes it: told here, mbui's double press is not told of a node that
-        // drags)
-        let t = ps_now_ms()
-        let (lw, lt, lx, ly) = pin_last_down.val
-        if lw == wid && t - lt <= 500.0 && (d.x - lx).abs() <= 4.0 && (d.y - ly).abs() <= 4.0 {
-          pin_last_down.val = (0, 0.0, 0.0, 0.0)
-          close_pin(wid)
-          return
-        }
-        pin_last_down.val = (wid, t, d.x, d.y)
         let e = pin_edge(p)
         p.edge.set(e)
         if e != 0 {
@@ -929,7 +920,3 @@ fn pin_active(wid : Int, on : Bool) -> Unit {
     advance()
   }
 }
-
-///|
-/// The last press on a pin: its window, when, where (points): the first of a double click.
-let pin_last_down : Ref[(Int, Double, Double, Double)] = Ref((0, 0.0, 0.0, 0.0))
