@@ -28,6 +28,7 @@
 #include <mfreadwrite.h>
 #include <mferror.h>
 #include <codecapi.h>
+#include <icodecapi.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <mmreg.h>
@@ -952,6 +953,13 @@ struct Mp4Encoder {
   ComPtr<ID3D11VideoProcessor> vp;
   int vp_in_w = 0, vp_in_h = 0;
   bool vp_in_yuv = false;
+  int gop_secs = 2;
+  bool export_mode = false;
+
+  static const int POOL_N = 8;
+  ComPtr<ID3D11Texture2D> nv12_pool[POOL_N];
+  ComPtr<ID3D11VideoProcessorOutputView> ov_pool[POOL_N];
+  int pool_cursor = 0;
 
   CRITICAL_SECTION write_lock = {};
   bool lock_init = false;
@@ -963,13 +971,17 @@ struct Mp4Encoder {
     mt->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
   }
 
+  static double eff_fps(int f) {
+    return (f > 30) ? (30.0 + (double)(f - 30) * 0.35) : (double)f;
+  }
+
   UINT32 pick_bitrate(bool hevc) const {
     if (hevc && custom_bps_hevc > 0) return custom_bps_hevc;
     if (!hevc && custom_bps_h264 > 0) return custom_bps_h264;
-    double bpp = hevc ? 0.095 : 0.14;
-    double raw = (double)out_w * (double)out_h * (double)fps * bpp;
-    double lo = hevc ? 1200000.0 : 1500000.0;
-    double hi = hevc ? 22000000.0 : 30000000.0;
+    double bpp = hevc ? 0.075 : 0.115;
+    double raw = (double)out_w * (double)out_h * eff_fps(fps) * bpp;
+    double lo = hevc ? 1000000.0 : 1400000.0;
+    double hi = hevc ? 18000000.0 : 26000000.0;
     if (raw < lo) raw = lo;
     if (raw > hi) raw = hi;
     return (UINT32)raw;
@@ -1073,23 +1085,26 @@ struct Mp4Encoder {
     MFSetAttributeRatio(in_mt.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
     set_sdr_color(in_mt.Get());
 
-    // Same PeakConstrainedVBR + GOP policy proven in ScreenReplay (replay_export.cpp):
-    // quiet screens use minimal bits while motion stays bounded by the target bitrate.
+    // High-efficiency PeakConstrainedVBR: 1s VBV buffer + tight peak cap lets quiet screen frames compress to
+    // near-zero bits while keeping scrolling/motion crisp at high hardware NVENC/QSV/AMF throughput.
     UINT32 bps = pick_bitrate(try_hevc);
+    UINT32 max_bps = (UINT32)std::min<uint64_t>((uint64_t)bps * (export_mode ? 125ULL : 140ULL) / 100ULL, 40000000ULL);
+    UINT32 gop = (UINT32)(fps * (gop_secs > 0 ? gop_secs : 2));
+    UINT32 qvs = export_mode ? 38 : 25;
     ComPtr<IMFAttributes> enc_params;
     if (SUCCEEDED(MFCreateAttributes(&enc_params, 7))) {
       enc_params->SetUINT32(CODECAPI_AVEncCommonMeanBitRate, bps);
-      enc_params->SetUINT32(CODECAPI_AVEncMPVGOPSize, (UINT32)(fps * 2));
+      enc_params->SetUINT32(CODECAPI_AVEncMPVGOPSize, gop);
       enc_params->SetUINT32(CODECAPI_AVEncMPVDefaultBPictureCount, 0);
       enc_params->SetUINT32(CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_PeakConstrainedVBR);
-      enc_params->SetUINT32(CODECAPI_AVEncCommonMaxBitRate, bps);
-      enc_params->SetUINT32(CODECAPI_AVEncCommonBufferSize, (UINT32)((uint64_t)bps * 250ULL / 1000ULL));
-      enc_params->SetUINT32(CODECAPI_AVEncCommonQualityVsSpeed, 70);
+      enc_params->SetUINT32(CODECAPI_AVEncCommonMaxBitRate, max_bps);
+      enc_params->SetUINT32(CODECAPI_AVEncCommonBufferSize, max_bps);
+      enc_params->SetUINT32(CODECAPI_AVEncCommonQualityVsSpeed, qvs);
     }
     if (FAILED(writer->SetInputMediaType(video_stream, in_mt.Get(), enc_params.Get()))) {
       ComPtr<IMFAttributes> basic_params;
       if (SUCCEEDED(MFCreateAttributes(&basic_params, 2))) {
-        basic_params->SetUINT32(CODECAPI_AVEncMPVGOPSize, (UINT32)(fps * 2));
+        basic_params->SetUINT32(CODECAPI_AVEncMPVGOPSize, gop);
         basic_params->SetUINT32(CODECAPI_AVEncMPVDefaultBPictureCount, 0);
       }
       if (FAILED(writer->SetInputMediaType(video_stream, in_mt.Get(), basic_params.Get())) &&
@@ -1097,6 +1112,25 @@ struct Mp4Encoder {
         writer.Reset();
         return false;
       }
+    }
+
+    // Apply rate control & quality/speed parameters directly on the hardware MFT's ICodecAPI so NVENC/QSV/AMF
+    // enforce the target bitrate and GOP size reliably.
+    ComPtr<ICodecAPI> codec_api;
+    if (SUCCEEDED(writer->GetServiceForStream(video_stream, GUID_NULL, IID_PPV_ARGS(&codec_api)))) {
+      auto set_u32 = [&](const GUID &key, UINT32 val) {
+        VARIANT v;
+        VariantInit(&v);
+        v.vt = VT_UI4;
+        v.ulVal = val;
+        codec_api->SetValue(&key, &v);
+      };
+      set_u32(CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_PeakConstrainedVBR);
+      set_u32(CODECAPI_AVEncCommonMeanBitRate, bps);
+      set_u32(CODECAPI_AVEncCommonMaxBitRate, max_bps);
+      set_u32(CODECAPI_AVEncCommonBufferSize, max_bps);
+      set_u32(CODECAPI_AVEncMPVGOPSize, gop);
+      set_u32(CODECAPI_AVEncCommonQualityVsSpeed, qvs);
     }
 
     if (want_audio) add_aac_stream(passthrough_audio);
@@ -1117,6 +1151,10 @@ struct Mp4Encoder {
 
   bool ensure_vp(ID3D11Device *dev, ID3D11DeviceContext *ctx, int in_w, int in_h, bool in_yuv) {
     if (vp && vp_in_w == in_w && vp_in_h == in_h && vp_in_yuv == in_yuv) return true;
+    for (int i = 0; i < POOL_N; i++) {
+      ov_pool[i].Reset();
+      nv12_pool[i].Reset();
+    }
     vp.Reset();
     vpenum.Reset();
     if (!vdev && FAILED(dev->QueryInterface(IID_PPV_ARGS(&vdev)))) return false;
@@ -1179,12 +1217,8 @@ struct Mp4Encoder {
     return false;
   }
 
-  bool write_gpu_frame(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *src_tex, UINT src_sub,
-                       bool src_is_yuv, int sx, int sy, int sw, int sh, LONGLONG pts, LONGLONG dur) {
-    D3D11_TEXTURE2D_DESC sd = {};
-    src_tex->GetDesc(&sd);
-    if (!ensure_vp(dev, ctx, (int)sd.Width, (int)sd.Height, src_is_yuv)) return false;
-
+  bool acquire_nv12(ID3D11Device *dev, bool need_ov, ComPtr<ID3D11Texture2D> &out_tex,
+                    ComPtr<ID3D11VideoProcessorOutputView> &out_ov) {
     D3D11_TEXTURE2D_DESC nd = {};
     nd.Width = (UINT)out_w;
     nd.Height = (UINT)out_h;
@@ -1194,37 +1228,42 @@ struct Mp4Encoder {
     nd.SampleDesc.Count = 1;
     nd.Usage = D3D11_USAGE_DEFAULT;
     nd.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    ComPtr<ID3D11Texture2D> nv12;
-    if (FAILED(dev->CreateTexture2D(&nd, NULL, &nv12))) return false;
 
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {};
-    ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    ivd.Texture2D.ArraySlice = src_sub;
-    ComPtr<ID3D11VideoProcessorInputView> in_view;
-    if (FAILED(vdev->CreateVideoProcessorInputView(src_tex, vpenum.Get(), &ivd, &in_view))) return false;
+    for (int k = 0; k < POOL_N; k++) {
+      int idx = (pool_cursor + k) % POOL_N;
+      if (!nv12_pool[idx]) {
+        if (FAILED(dev->CreateTexture2D(&nd, NULL, &nv12_pool[idx]))) return false;
+      }
+      ID3D11Texture2D *raw = nv12_pool[idx].Get();
+      raw->AddRef();
+      ULONG rc = raw->Release();
+      if (rc == 1) {
+        pool_cursor = (idx + 1) % POOL_N;
+        out_tex = nv12_pool[idx];
+        if (need_ov) {
+          if (!ov_pool[idx]) {
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {};
+            ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+            if (FAILED(vdev->CreateVideoProcessorOutputView(raw, vpenum.Get(), &ovd, &ov_pool[idx]))) return false;
+          }
+          out_ov = ov_pool[idx];
+        }
+        return true;
+      }
+    }
+    // All pooled slots still held by async encoder: allocate a fresh texture so we never overwrite in-flight frames.
+    if (FAILED(dev->CreateTexture2D(&nd, NULL, &out_tex))) return false;
+    if (need_ov) {
+      D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {};
+      ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+      if (FAILED(vdev->CreateVideoProcessorOutputView(out_tex.Get(), vpenum.Get(), &ovd, &out_ov))) return false;
+    }
+    return true;
+  }
 
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {};
-    ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-    ComPtr<ID3D11VideoProcessorOutputView> out_view;
-    if (FAILED(vdev->CreateVideoProcessorOutputView(nv12.Get(), vpenum.Get(), &ovd, &out_view))) return false;
-
-    RECT srect = {sx, sy, sx + sw, sy + sh};
-    RECT drect = {0, 0, out_w, out_h};
-    vctx->VideoProcessorSetStreamSourceRect(vp.Get(), 0, TRUE, &srect);
-    vctx->VideoProcessorSetStreamDestRect(vp.Get(), 0, TRUE, &drect);
-    vctx->VideoProcessorSetOutputTargetRect(vp.Get(), TRUE, &drect);
-
-    D3D11_VIDEO_PROCESSOR_STREAM stream = {};
-    stream.Enable = TRUE;
-    stream.pInputSurface = in_view.Get();
-    HRESULT hr = vctx->VideoProcessorBlt(vp.Get(), out_view.Get(), 0, 1, &stream);
-    in_view.Reset();
-    out_view.Reset();
-    if (FAILED(hr)) return false;
-    ctx->Flush();
-
+  bool submit_nv12_sample(ID3D11Texture2D *nv12, LONGLONG pts, LONGLONG dur) {
     ComPtr<IMFMediaBuffer> buf;
-    if (FAILED(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), nv12.Get(), 0, FALSE, &buf))) return false;
+    if (FAILED(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), nv12, 0, FALSE, &buf))) return false;
     ComPtr<IMF2DBuffer> buf2d;
     DWORD len = (DWORD)((size_t)out_w * out_h * 3 / 2);
     if (SUCCEEDED(buf.As(&buf2d))) buf2d->GetContiguousLength(&len);
@@ -1239,6 +1278,48 @@ struct Mp4Encoder {
     HRESULT whr = writer->WriteSample(video_stream, sample.Get());
     LeaveCriticalSection(&write_lock);
     return SUCCEEDED(whr);
+  }
+
+  bool write_gpu_nv12_direct(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *src_nv12, UINT src_sub,
+                             LONGLONG pts, LONGLONG dur) {
+    ComPtr<ID3D11Texture2D> nv12;
+    ComPtr<ID3D11VideoProcessorOutputView> unused_ov;
+    if (!acquire_nv12(dev, false, nv12, unused_ov)) return false;
+    D3D11_BOX cbox = {0, 0, 0, (UINT)out_w, (UINT)out_h, 1};
+    ctx->CopySubresourceRegion(nv12.Get(), 0, 0, 0, 0, src_nv12, src_sub, &cbox);
+    return submit_nv12_sample(nv12.Get(), pts, dur);
+  }
+
+  bool write_gpu_frame(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *src_tex, UINT src_sub,
+                       bool src_is_yuv, int sx, int sy, int sw, int sh, LONGLONG pts, LONGLONG dur) {
+    D3D11_TEXTURE2D_DESC sd = {};
+    src_tex->GetDesc(&sd);
+    if (!ensure_vp(dev, ctx, (int)sd.Width, (int)sd.Height, src_is_yuv)) return false;
+
+    ComPtr<ID3D11Texture2D> nv12;
+    ComPtr<ID3D11VideoProcessorOutputView> out_view;
+    if (!acquire_nv12(dev, true, nv12, out_view)) return false;
+
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {};
+    ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    ivd.Texture2D.ArraySlice = src_sub;
+    ComPtr<ID3D11VideoProcessorInputView> in_view;
+    if (FAILED(vdev->CreateVideoProcessorInputView(src_tex, vpenum.Get(), &ivd, &in_view))) return false;
+
+    RECT srect = {sx, sy, sx + sw, sy + sh};
+    RECT drect = {0, 0, out_w, out_h};
+    vctx->VideoProcessorSetStreamSourceRect(vp.Get(), 0, TRUE, &srect);
+    vctx->VideoProcessorSetStreamDestRect(vp.Get(), 0, TRUE, &drect);
+    vctx->VideoProcessorSetOutputTargetRect(vp.Get(), TRUE, &drect);
+
+    D3D11_VIDEO_PROCESSOR_STREAM stream = {};
+    stream.Enable = TRUE;
+    stream.pInputSurface = in_view.Get();
+    HRESULT hr = vctx->VideoProcessorBlt(vp.Get(), out_view.Get(), 0, 1, &stream);
+    in_view.Reset();
+    out_view.Reset();
+    if (FAILED(hr)) return false;
+    return submit_nv12_sample(nv12.Get(), pts, dur);
   }
 
   bool write_cpu_frame(const uint8_t *rgb, int pitch, bool is_bgra, LONGLONG pts, LONGLONG dur) {
@@ -1297,6 +1378,10 @@ struct Mp4Encoder {
     if (writer) {
       if (!cancel) hr = writer->Finalize();
       writer.Reset();
+    }
+    for (int i = 0; i < POOL_N; i++) {
+      ov_pool[i].Reset();
+      nv12_pool[i].Reset();
     }
     vp.Reset();
     vpenum.Reset();
@@ -2182,16 +2267,19 @@ static DWORD WINAPI export_worker(LPVOID) {
     }
 
     Mp4Encoder enc;
+    enc.gop_secs = 5;  // 5s GOP + 2 B-frames on offline export: cuts keyframe overhead & improves HEVC/H.264 efficiency
+    enc.export_mode = true;
     // Quality tiers: 0=Original (high-bitrate transcode), 1=High, 2=Balanced, 3=Compact
-    static const double kBppHevc[4] = {0.095, 0.068, 0.040, 0.020};
-    static const double kBppH264[4] = {0.140, 0.100, 0.060, 0.032};
-    static const double kLoHevc[4]  = {1200000.0, 800000.0, 450000.0, 250000.0};
-    static const double kHiHevc[4]  = {22000000.0, 12000000.0, 5500000.0, 2200000.0};
-    static const double kLoH264[4]  = {1500000.0, 1000000.0, 650000.0, 350000.0};
-    static const double kHiH264[4]  = {30000000.0, 16000000.0, 7500000.0, 3200000.0};
+    static const double kBppHevc[4] = {0.075, 0.048, 0.024, 0.011};
+    static const double kBppH264[4] = {0.115, 0.072, 0.038, 0.018};
+    static const double kLoHevc[4]  = {900000.0, 550000.0, 280000.0, 150000.0};
+    static const double kHiHevc[4]  = {16000000.0, 8000000.0, 3500000.0, 1500000.0};
+    static const double kLoH264[4]  = {1300000.0, 800000.0, 420000.0, 220000.0};
+    static const double kHiH264[4]  = {24000000.0, 12000000.0, 5200000.0, 2200000.0};
     int qi = quality < 0 ? 2 : (quality > 3 ? 3 : quality);
-    double r_hevc = (double)out_w * out_h * src_fps * kBppHevc[qi];
-    double r_h264 = (double)out_w * out_h * src_fps * kBppH264[qi];
+    double ef = Mp4Encoder::eff_fps(src_fps);
+    double r_hevc = (double)out_w * out_h * ef * kBppHevc[qi];
+    double r_h264 = (double)out_w * out_h * ef * kBppH264[qi];
     enc.custom_bps_hevc = (UINT32)(r_hevc < kLoHevc[qi] ? kLoHevc[qi] : (r_hevc > kHiHevc[qi] ? kHiHevc[qi] : r_hevc));
     enc.custom_bps_h264 = (UINT32)(r_h264 < kLoH264[qi] ? kLoH264[qi] : (r_h264 > kHiH264[qi] ? kHiH264[qi] : r_h264));
 
@@ -2248,27 +2336,32 @@ static DWORD WINAPI export_worker(LPVOID) {
             dxgi_buf->GetSubresourceIndex(&sub);
             D3D11_TEXTURE2D_DESC sd = {};
             dtex->GetDesc(&sd);
-            // Copy decoder array slice into a single-slice NV12 texture (exact ScreenReplay replay_export.cpp pattern).
-            if (!single_nv12 || single_w != sd.Width || single_h != sd.Height) {
-              single_nv12.Reset();
-              D3D11_TEXTURE2D_DESC td = {};
-              td.Width = sd.Width;
-              td.Height = sd.Height;
-              td.MipLevels = 1;
-              td.ArraySize = 1;
-              td.Format = DXGI_FORMAT_NV12;
-              td.SampleDesc.Count = 1;
-              td.Usage = D3D11_USAGE_DEFAULT;
-              td.BindFlags = D3D11_BIND_DECODER;
-              if (SUCCEEDED(dev->CreateTexture2D(&td, NULL, &single_nv12))) {
-                single_w = sd.Width;
-                single_h = sd.Height;
+            if (out_w == src_w && out_h == src_h && (int)sd.Width >= out_w && (int)sd.Height >= out_h) {
+              // Zero-VideoProcessor fast path: direct GPU copy from decoder slice to pooled NV12 encoder surface.
+              enc.write_gpu_nv12_direct(dev.Get(), ctx.Get(), dtex.Get(), sub, ts, dur);
+            } else {
+              // Scaled export: copy decoder array slice into single-slice NV12 texture, then GPU VideoProcessor resize.
+              if (!single_nv12 || single_w != sd.Width || single_h != sd.Height) {
+                single_nv12.Reset();
+                D3D11_TEXTURE2D_DESC td = {};
+                td.Width = sd.Width;
+                td.Height = sd.Height;
+                td.MipLevels = 1;
+                td.ArraySize = 1;
+                td.Format = DXGI_FORMAT_NV12;
+                td.SampleDesc.Count = 1;
+                td.Usage = D3D11_USAGE_DEFAULT;
+                td.BindFlags = D3D11_BIND_DECODER;
+                if (SUCCEEDED(dev->CreateTexture2D(&td, NULL, &single_nv12))) {
+                  single_w = sd.Width;
+                  single_h = sd.Height;
+                }
               }
-            }
-            if (single_nv12) {
-              D3D11_BOX cbox = {0, 0, 0, sd.Width, sd.Height, 1};
-              ctx->CopySubresourceRegion(single_nv12.Get(), 0, 0, 0, 0, dtex.Get(), sub, &cbox);
-              enc.write_gpu_frame(dev.Get(), ctx.Get(), single_nv12.Get(), 0, true, 0, 0, src_w, src_h, ts, dur);
+              if (single_nv12) {
+                D3D11_BOX cbox = {0, 0, 0, sd.Width, sd.Height, 1};
+                ctx->CopySubresourceRegion(single_nv12.Get(), 0, 0, 0, 0, dtex.Get(), sub, &cbox);
+                enc.write_gpu_frame(dev.Get(), ctx.Get(), single_nv12.Get(), 0, true, 0, 0, src_w, src_h, ts, dur);
+              }
             }
           }
         } else {
@@ -2349,8 +2442,9 @@ static DWORD WINAPI export_worker(LPVOID) {
   }
 
   ComPtr<IMFAttributes> rattr;
-  MFCreateAttributes(&rattr, 1);
+  MFCreateAttributes(&rattr, 2);
   rattr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+  rattr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
   ComPtr<IMFSourceReader> reader;
   if (FAILED(MFCreateSourceReaderFromURL(src.c_str(), rattr.Get(), &reader))) {
     InterlockedExchange(&R.exporting, 0);
@@ -2620,11 +2714,20 @@ void ps_rec_end(void) {
   R.prepared = 0;
 }
 
+extern void mb_app_next_clear(void);
+
+void ps_next_win_clear(void) {
+  mb_app_next_clear();
+}
+
 void ps_rec_exclude(int32_t wid) {
   HWND h = (HWND)mb_app_hwnd_of(wid);
   if (!h) return;
-  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+  SetPropW(h, L"PinShot.Clear", (HANDLE)1);
+  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
   DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
+  COLORREF no_border = 0xFFFFFFFEu;  // DWMWA_COLOR_NONE
+  DwmSetWindowAttribute(h, 34 /* DWMWA_BORDER_COLOR */, &no_border, sizeof no_border);
   rec_exclude_hwnd(h);
 }
 

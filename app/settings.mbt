@@ -217,6 +217,36 @@ fn load_settings() -> Unit {
     }
     _ => d
   }
+  // Restore persisted screen-recording & export preferences
+  match json_of(text_of(ps_read_file(cstr(settings_path())))) {
+    Some(Json::Object(o)) => {
+      let rnum = fn(name : String, dflt : Int) {
+        match o.get(name) {
+          Some(Number(v, ..)) => v.to_int()
+          _ => dflt
+        }
+      }
+      let rflag = fn(name : String, dflt : Bool) {
+        match o.get(name) {
+          Some(True) => true
+          Some(False) => false
+          _ => dflt
+        }
+      }
+      let rf = rnum("rec_fps", 30)
+      rec_fps.set(if rf == 60 { 60 } else { 30 })
+      rec_cursor.set(rflag("rec_cursor", true))
+      rec_audio.set(rflag("rec_audio", false))
+      rec_input.set(rflag("rec_input", false))
+      rec_exp_fmt.set(clampi(rnum("rec_exp_fmt", 0), 0, 2))
+      rec_exp_qual.set(clampi(rnum("rec_exp_qual", 2), 0, 3))
+      let rs = rnum("rec_exp_scale", 0)
+      rec_exp_scale.set(if rs == 1920 || rs == 1280 || rs == 854 { rs } else { 0 })
+      let rg = rnum("rec_exp_gif_fps", 15)
+      rec_exp_gif_fps.set(if rg == 10 || rg == 20 { rg } else { 15 })
+    }
+    _ => ()
+  }
   settings.set(s)
   apply_language(s.language)
   ps_set_capture_keep(if s.capture_keep { 1 } else { 0 })
@@ -245,6 +275,14 @@ fn save_settings() -> Unit {
   o["sound"] = Json::boolean(s.sound)
   o["auto_update"] = Json::boolean(s.auto_update)
   o["language"] = Json::string(["system", "zh", "en"][s.language])
+  o["rec_fps"] = Json::number(rec_fps.untracked().to_double())
+  o["rec_cursor"] = Json::boolean(rec_cursor.untracked())
+  o["rec_audio"] = Json::boolean(rec_audio.untracked())
+  o["rec_input"] = Json::boolean(rec_input.untracked())
+  o["rec_exp_fmt"] = Json::number(rec_exp_fmt.untracked().to_double())
+  o["rec_exp_qual"] = Json::number(rec_exp_qual.untracked().to_double())
+  o["rec_exp_scale"] = Json::number(rec_exp_scale.untracked().to_double())
+  o["rec_exp_gif_fps"] = Json::number(rec_exp_gif_fps.untracked().to_double())
   ps_write_file(cstr(settings_path()), @utf8.encode(Json::object(o).stringify(indent=2))) |> ignore
 }
 

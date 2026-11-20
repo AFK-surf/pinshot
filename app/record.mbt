@@ -1,13 +1,13 @@
 // Lightweight area screen recorder & post-recording exporter (Windows):
 // - Captures a selected region into a temporary high-quality MP4 via WGC + optimal GPU hardware cascade
-//   (HEVC hvc1 -> H.264 HW -> H.264 SW) with optional WASAPI system audio (AAC), cursor capture, mouse-click ripples +
-//   keycap overlay, and live transparent GDI+ annotations (rect, arrow, pen, number, undo, clear).
-// - Adaptive content-fitted floating control bar (no hardcoded width, no dead gaps in EN or ZH).
-// - After stopping, opens a compact post-recording encoding panel with explicit controls for:
-//     * Format / Codec: MP4 (H.265), MP4 (H.264), GIF
-//     * Video Quality: Original (zero re-encode when codec/size match), High, Balanced, Compact (or GIF 10/15/20 fps)
-//     * Resolution: Original, 1080p, 720p (+ 480p for GIF)
-// - Saves into the screenshots folder (or Save As) and copies the exported file (CF_HDROP) to clipboard.
+//   (HEVC hvc1 -> H.264 HW -> H.264 SW) with optional WASAPI system audio (AAC), cursor capture, and optional
+//   mouse-click ripples + keycap overlay.
+// - True DirectComposition transparent window with PinShot's concentric mbui superellipse corners & soft shadow,
+//   content-adaptive width/height (zero dead space, zero clipping in EN or ZH).
+// - All recording & export preferences (FPS, audio, cursor, clicks/keys, format, quality, resolution, GIF fps)
+//   are persisted in settings.json across runs.
+// - Post-recording encoding panel with explicit Format (MP4 H.265 / MP4 H.264 / GIF), Quality (Original / High /
+//   Balanced / Compact with live estimated file sizes on every option), and Size (Original / 1080p / 720p / 480p).
 
 ///|
 extern "C" fn ps_rec_prepare(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_rec_prepare"
@@ -35,16 +35,7 @@ extern "C" fn ps_rec_end() -> Unit = "ps_rec_end"
 extern "C" fn ps_rec_exclude(wid : Int) -> Unit = "ps_rec_exclude"
 
 ///|
-extern "C" fn ps_rec_draw_tool(tool : Int) -> Unit = "ps_rec_draw_tool"
-
-///|
-extern "C" fn ps_rec_draw_color(rgb : Int) -> Unit = "ps_rec_draw_color"
-
-///|
-extern "C" fn ps_rec_draw_undo() -> Unit = "ps_rec_draw_undo"
-
-///|
-extern "C" fn ps_rec_draw_clear() -> Unit = "ps_rec_draw_clear"
+extern "C" fn ps_next_win_clear() -> Unit = "ps_next_win_clear"
 
 ///|
 extern "C" fn ps_rec_input_show(on : Int) -> Unit = "ps_rec_input_show"
@@ -80,7 +71,7 @@ let rec_scale : Ref[Double] = Ref(1.0)
 let rec_phase : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
-/// Recording options (remembered for the session).
+/// Recording & export preferences (persisted in settings.json via load_settings / save_settings).
 let rec_fps : @signals.Signal[Int] = @signals.signal(30)
 
 ///|
@@ -93,25 +84,6 @@ let rec_audio : @signals.Signal[Bool] = @signals.signal(false)
 let rec_input : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
-/// Live annotation state: 0 passthrough, 1 rect, 2 arrow, 3 pen, 4 number.
-let rec_draw : @signals.Signal[Int] = @signals.signal(0)
-
-///|
-let rec_marks_n : @signals.Signal[Int] = @signals.signal(0)
-
-///|
-let rec_draw_colors : Array[(Int, Int64)] = [
-  (0xD84A2F, 0xD84A2FFFL),
-  (0xF5A524, 0xF5A524FFL),
-  (0x2F9BFF, 0x2F9BFFFFL),
-  (0x4CC38A, 0x4CC38AFFL),
-]
-
-///|
-let rec_color_i : @signals.Signal[Int] = @signals.signal(0)
-
-///|
-/// Export options (remembered across recordings):
 /// fmt: 0 = MP4 H.265, 1 = MP4 H.264, 2 = GIF
 let rec_exp_fmt : @signals.Signal[Int] = @signals.signal(0)
 
@@ -156,18 +128,17 @@ let rec_path : @signals.Signal[String] = @signals.signal("")
 let rec_err : @signals.Signal[String] = @signals.signal("")
 
 ///|
-fn rec_pick_draw(t : Int) -> Unit {
-  let next = if rec_draw.untracked() == t { 0 } else { t }
-  rec_draw.set(next)
-  ps_rec_draw_tool(next)
-}
+/// Transparent shadow halo around the floating superellipse card (L, T, R, B points).
+let rec_pad_l : Double = 22.0
 
 ///|
-fn rec_cycle_color() -> Unit {
-  let next = (rec_color_i.untracked() + 1) % rec_draw_colors.length()
-  rec_color_i.set(next)
-  ps_rec_draw_color(rec_draw_colors[next].0)
-}
+let rec_pad_t : Double = 14.0
+
+///|
+let rec_pad_r : Double = 22.0
+
+///|
+let rec_pad_b : Double = 26.0
 
 ///|
 fn rec_out_dims(max_side : Int) -> (Int, Int) {
@@ -185,14 +156,73 @@ fn rec_out_dims(max_side : Int) -> (Int, Int) {
 }
 
 ///|
-fn rec_is_direct_copy() -> Bool {
-  let fmt = rec_exp_fmt.get()
-  let q = rec_exp_qual.get()
-  let ms = rec_exp_scale.get()
-  let (ow, oh) = rec_out_dims(ms)
+fn rec_eff_fps(f : Int) -> Double {
+  if f > 30 {
+    30.0 + (f - 30).to_double() * 0.35
+  } else {
+    f.to_double()
+  }
+}
+
+///|
+fn rec_target_bps(hevc : Bool, qual : Int, w : Int, h : Int, fps : Int) -> Double {
+  let ef = rec_eff_fps(fps)
+  let px = w.to_double() * h.to_double() * ef
+  if hevc {
+    let bpp = [0.075, 0.048, 0.024, 0.011][clampi(qual, 0, 3)]
+    let lo = [900000.0, 550000.0, 280000.0, 150000.0][clampi(qual, 0, 3)]
+    let hi = [16000000.0, 8000000.0, 3500000.0, 1500000.0][clampi(qual, 0, 3)]
+    clamp(px * bpp, lo, hi)
+  } else {
+    let bpp = [0.115, 0.072, 0.038, 0.018][clampi(qual, 0, 3)]
+    let lo = [1300000.0, 800000.0, 420000.0, 220000.0][clampi(qual, 0, 3)]
+    let hi = [24000000.0, 12000000.0, 5200000.0, 2200000.0][clampi(qual, 0, 3)]
+    clamp(px * bpp, lo, hi)
+  }
+}
+
+///|
+fn rec_is_direct_copy_for(fmt : Int, qual : Int, max_side : Int) -> Bool {
+  let (ow, oh) = rec_out_dims(max_side)
   let same_dim = ow == rec_part.val.w && oh == rec_part.val.h
   let master_hevc = rec_codec.get().has_prefix("HEVC")
-  (fmt == 0 || fmt == 1) && q == 0 && same_dim && ((fmt == 0) == master_hevc)
+  (fmt == 0 || fmt == 1) && qual == 0 && same_dim && ((fmt == 0) == master_hevc)
+}
+
+///|
+/// Estimated output size (bytes) for any (fmt, quality, max_side, gif_fps), anchored to the actual recorded master's
+/// scene complexity so PeakConstrainedVBR estimates stay realistic on both static and high-motion captures.
+fn rec_est_bytes(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> Double {
+  let master = rec_master_bytes.get()
+  if master <= 0.0 {
+    return 0.0
+  }
+  if rec_is_direct_copy_for(fmt, qual, max_side) {
+    return master
+  }
+  let dur_s = dmax(0.2, rec_ms.get().to_double() / 1000.0)
+  let audio_b = if rec_master_audio.get() { dur_s * 16000.0 } else { 0.0 }
+  let master_vid = dmax(4096.0, master - audio_b)
+  let sw = if rec_part.val.w > 0 { rec_part.val.w } else { 1280 }
+  let sh = if rec_part.val.h > 0 { rec_part.val.h } else { 720 }
+  let fps = rec_fps.get()
+  let master_hevc = rec_codec.get().has_prefix("HEVC")
+  let master_bps = rec_target_bps(master_hevc, 0, sw, sh, fps)
+  let (ow, oh) = rec_out_dims(max_side)
+  if fmt == 2 {
+    // GIF: scales with output pixel area, gif_fps, duration, and observed screen motion ratio
+    let master_cap = dmax(1.0, master_bps * dur_s / 8.0)
+    let activity = clamp(master_vid / master_cap, 0.12, 1.0)
+    let raw_gif = ow.to_double() * oh.to_double() * gif_fps.to_double() * dur_s * (0.045 + 0.14 * activity)
+    dmax(16384.0, raw_gif)
+  } else {
+    let out_bps = rec_target_bps(fmt == 0, qual, ow, oh, fps)
+    let ratio = out_bps / dmax(1.0, master_bps)
+    let out_cap = out_bps * dur_s / 8.0
+    let scaled = master_vid * (0.22 + 0.78 * ratio)
+    let est_vid = dmin(out_cap * 1.15, dmax(out_cap * 0.20, scaled))
+    est_vid + audio_b
+  }
 }
 
 ///|
@@ -223,8 +253,6 @@ fn rec_out() -> Unit {
   rec_placed_size.val = (0, 0)
   @signals.start_batch()
   rec_phase.set(0)
-  rec_draw.set(0)
-  rec_marks_n.set(0)
   rec_ms.set(0)
   rec_frames.set(0)
   rec_master_bytes.set(0.0)
@@ -235,8 +263,8 @@ fn rec_out() -> Unit {
   rec_path.set("")
   rec_err.set("")
   @signals.end_batch()
-  ps_rec_draw_color(rec_draw_colors[rec_color_i.untracked()].0)
   ps_rec_input_show(if rec_input.untracked() { 1 } else { 0 })
+  ps_next_win_clear()
   let wid = @ui.window_open_here("rec")
   if wid <= 0 {
     log("rec: no window")
@@ -246,36 +274,37 @@ fn rec_out() -> Unit {
   }
   rec_wid.val = wid
   ps_own(wid, 1) |> ignore
-  ps_shadow(wid)
   ps_rec_exclude(wid)
-  rec_place_initial(560.0, 46.0, true)
+  rec_place_initial(360.0 + rec_pad_l + rec_pad_r, bar_height + rec_pad_t + rec_pad_b, true)
   rec_schedule_fit(true)
   log("rec: ready \{part.w}x\{part.h} at \{part.x},\{part.y}")
 }
 
 ///|
-/// Initial placement under (or over, or centered on) the selected region.
+/// Initial placement under (or over, or centered on) the selected region, accounting for the transparent shadow halo.
 fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
   let m = rec_mon.val
   let k = rec_scale.val
   let p = rec_part.val
   let w = (pt_w * k).round().to_int()
   let h = (pt_h * k).round().to_int()
-  let gap = (10.0 * k).round().to_int()
-  let x = clampi(p.x + (p.w - w) / 2, m.x + gap, m.right() - gap - w)
-  let y = if p.bottom() + gap + h <= m.bottom() - gap {
-    p.bottom() + gap
-  } else if p.y - gap - h >= m.y + gap {
-    p.y - gap - h
+  let gap = (8.0 * k).round().to_int()
+  let pad_t = (rec_pad_t * k).round().to_int()
+  let pad_b = (rec_pad_b * k).round().to_int()
+  let x = clampi(p.x + (p.w - w) / 2, m.x, m.right() - w)
+  let y = if p.bottom() + gap - pad_t + h <= m.bottom() {
+    p.bottom() + gap - pad_t
+  } else if p.y - gap + pad_b - h >= m.y {
+    p.y - gap + pad_b - h
   } else {
-    clampi(p.y + (p.h - h) / 2, m.y + gap, m.bottom() - gap - h)
+    clampi(p.y + (p.h - h) / 2, m.y, m.bottom() - h)
   }
   rec_placed_size.val = (w, h)
   ps_place(rec_wid.val, x, y, w, h, 1, if focus { 1 } else { 0 })
 }
 
 ///|
-/// Measure the inner content box and resize the window snugly around its current horizontal center.
+/// Measure the inner content box (including its transparent shadow halo) and resize snugly around its center.
 fn rec_fit_window(focus : Bool) -> Unit {
   if rec_wid.val == 0 {
     return
@@ -287,23 +316,21 @@ fn rec_fit_window(focus : Bool) -> Unit {
   }
   let m = rec_mon.val
   let k = rec_scale.val
-  // +2 pt accounts for the 1 pt border on each side of `page`
-  let w = ((cw + 2.0) * k).ceil().to_int()
-  let h = ((ch + 2.0) * k).ceil().to_int()
+  let w = (cw * k).ceil().to_int()
+  let h = (ch * k).ceil().to_int()
   let (pw, ph) = rec_placed_size.val
   if (w - pw).abs() <= 1 && (h - ph).abs() <= 1 && !focus {
     return
   }
-  let gap = (10.0 * k).round().to_int()
   let r = numbers_of(text_of(ps_window_rect(rec_wid.val)))
   let (cx, top) = if r.length() >= 4 && r[2] > 0.0 && r[3] > 0.0 {
     ((r[0] + r[2] / 2.0).round().to_int(), r[1].round().to_int())
   } else {
     let p = rec_part.val
-    (p.x + p.w / 2, p.bottom() + gap)
+    (p.x + p.w / 2, p.bottom())
   }
-  let x = clampi(cx - w / 2, m.x + gap, m.right() - gap - w)
-  let y = clampi(top, m.y + gap, m.bottom() - gap - h)
+  let x = clampi(cx - w / 2, m.x, m.right() - w)
+  let y = clampi(top, m.y, m.bottom() - h)
   rec_placed_size.val = (w, h)
   ps_place(rec_wid.val, x, y, w, h, 1, if focus { 1 } else { 0 })
 }
@@ -359,7 +386,6 @@ fn rec_finish_capture() -> Unit {
   if ph != 1 && ph != 2 {
     return
   }
-  rec_draw.set(0)
   rec_phase.set(3)
   ps_rec_stop(0)
 }
@@ -412,7 +438,6 @@ fn rec_run_export(ask_dialog : Bool) -> Unit {
 fn rec_cancel() -> Unit {
   let ph = rec_phase.untracked()
   if ph == 1 || ph == 2 {
-    rec_draw.set(0)
     rec_phase.set(3)
     ps_rec_stop(1)
   } else if ph != 3 {
@@ -447,14 +472,9 @@ fn rec_gone() -> Unit {
 }
 
 ///|
-fn rec_draw_told(tool : Int, count : Int) -> Unit {
-  if rec_wid.val == 0 {
-    return
-  }
-  @signals.start_batch()
-  rec_draw.set(tool)
-  rec_marks_n.set(count)
-  @signals.end_batch()
+/// Kept for protocol compatibility with native messages (no-op now that live annotations were removed).
+fn rec_draw_told(_tool : Int, _count : Int) -> Unit {
+  ()
 }
 
 ///|
@@ -586,6 +606,18 @@ fn rec_fmt_size(bytes : Double) -> String {
 }
 
 ///|
+fn rec_est_label(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> String {
+  let b = rec_est_bytes(fmt, qual, max_side, gif_fps)
+  if b <= 0.0 {
+    ""
+  } else if rec_is_direct_copy_for(fmt, qual, max_side) {
+    rec_fmt_size(b)
+  } else {
+    "~" + rec_fmt_size(b)
+  }
+}
+
+///|
 fn rec_short_codec() -> String {
   let c = rec_codec.get()
   if c.has_prefix("HEVC") {
@@ -620,21 +652,19 @@ fn rec_saved_pct_tag() -> String {
 ///|
 fn rec_spec_summary() -> String {
   let fmt = rec_exp_fmt.get()
-  let (ow, oh) = rec_out_dims(rec_exp_scale.get())
+  let qual = rec_exp_qual.get()
+  let ms = rec_exp_scale.get()
+  let gfps = rec_exp_gif_fps.get()
+  let (ow, oh) = rec_out_dims(ms)
+  let est = rec_est_label(fmt, qual, ms, gfps)
   if fmt == 2 {
-    "\{ow}×\{oh} · \{rec_exp_gif_fps.get()}fps · GIF"
-  } else if rec_is_direct_copy() {
+    "\{ow}×\{oh} · \{gfps}fps · \{est}"
+  } else if rec_is_direct_copy_for(fmt, qual, ms) {
     let tag = if fmt == 0 { "H.265" } else { "H.264" }
-    tr("零重编码直出") + " · \{tag} · " + rec_fmt_size(rec_master_bytes.get())
+    tr("零重编码直出") + " · \{tag} · \{est}"
   } else {
     let tag = if fmt == 0 { "H.265" } else { "H.264" }
-    let q_lbl = match rec_exp_qual.get() {
-      0 => tr("原画")
-      1 => tr("高画质")
-      2 => tr("标准")
-      _ => tr("小体积")
-    }
-    "\{ow}×\{oh} · \{tag} · \{q_lbl}"
+    "\{ow}×\{oh} · \{tag} · \{est}"
   }
 }
 
@@ -651,22 +681,25 @@ fn rec_keys() -> @view.Keymap {
 }
 
 ///|
+/// Concentric superellipse icon button (32x32pt, r=11pt on main bar; 28x28pt, r=9pt on export header).
 fn rec_icon_btn(
   row : @view.View,
   glyph_fn : () -> String,
   label_fn : () -> String,
   lit : () -> Bool,
   press : () -> Unit,
+  size? : Double = bar_button,
+  rad? : Double = bar_btn_corner,
   dim? : () -> Bool = fn() { false },
   tint_lit? : Int64 = 0x88C8FFFFL,
   bg_lit? : Int64 = 0x2F9BFF29L,
 ) -> Unit {
   row.box(fn(b) {
     b
-    .width(Is(Some(28.0)))
-    .height(Is(Some(28.0)))
+    .width(Is(Some(size)))
+    .height(Is(Some(size)))
     .shrink(Is(0.0))
-    .radius(Is(8.0))
+    .radius(Is(rad))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
@@ -689,8 +722,8 @@ fn rec_icon_btn(
     |> ignore
     b.box(fn(g) {
       g
-      .width(Is(Some(15.0)))
-      .height(Is(Some(15.0)))
+      .width(Is(Some(16.0)))
+      .height(Is(Some(16.0)))
       .picture(By(fn() { Some(glyph(glyph_fn())) }))
       .tint(By(fn() {
         if dim() {
@@ -720,16 +753,18 @@ fn rec_action_btn(
   bg_hover : Int64,
   bg_press : Int64,
   press : () -> Unit,
+  height? : Double = bar_button,
+  rad? : Double = bar_btn_corner,
   dim? : () -> Bool = fn() { false },
 ) -> Unit {
   row.box(fn(b) {
     b
     .row(Is(true))
     .gap(Is(6.0))
-    .height(Is(Some(30.0)))
+    .height(Is(Some(height)))
     .shrink(Is(0.0))
-    .padding(Is((11.0, 0.0, 12.0, 0.0)))
-    .radius(Is(9.0))
+    .padding(Is((12.0, 0.0, 12.0, 0.0)))
+    .radius(Is(rad))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
@@ -783,31 +818,33 @@ fn rec_seg_pill(
   label_fn : () -> String,
   active : () -> Bool,
   press : () -> Unit,
-  dim? : () -> Bool = fn() { false },
+  sub_fn? : (() -> String)? = None,
 ) -> Unit {
+  let has_sub = sub_fn is Some(_)
   row.box(fn(b) {
     b
-    .height(Is(Some(28.0)))
+    .height(Is(Some(if has_sub { 42.0 } else { 28.0 })))
+    .min_width(Is(if has_sub { Some(78.0) } else { None }))
     .shrink(Is(0.0))
     .padding(Is((10.0, 0.0, 10.0, 0.0)))
-    .radius(Is(7.0))
+    .gap(Is(1.0))
+    .radius(Is(style_btn_corner))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
-    .cursor(By(fn() { if dim() { None } else { Some(Hand) } }))
+    .cursor(Is(Some(Hand)))
     .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
     .on_press(fn() {
-      if !dim() && rec_phase.untracked() != 5 {
+      if rec_phase.untracked() != 5 {
         if rec_phase.untracked() == 6 {
           rec_phase.set(4)
         }
         press()
+        save_settings()
       }
     })
     .ground(By(fn() {
-      if dim() {
-        0xFFFFFF05L
-      } else if active() {
+      if active() {
         0x2F9BFF28L
       } else if b.pointed() {
         0xFFFFFF16L
@@ -815,30 +852,28 @@ fn rec_seg_pill(
         0xFFFFFF0AL
       }
     }))
-    .edge(By(fn() {
-      if active() && !dim() {
-        (1.2, 0x2F9BFFCCL)
-      } else {
-        (1.0, 0xFFFFFF14L)
-      }
-    }))
+    .edge(By(fn() { if active() { (1.2, 0x2F9BFFCCL) } else { (1.0, 0xFFFFFF14L) } }))
     |> ignore
     b.box(fn(t) {
       t
       .shrink(Is(0.0))
-      .words(By(label_fn), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-      .ink(By(fn() {
-        if dim() {
-          0xFFFFFF3AL
-        } else if active() {
-          0xFFFFFFFFL
-        } else {
-          0xD0D4DCFFL
-        }
-      }))
+      .words(By(label_fn), look={ ..@view.words_plain, size: 12.0, weight: 600, line: 16.0, wrap: false })
+      .ink(By(fn() { if active() { 0xFFFFFFFFL } else { 0xD0D4DCFFL } }))
       |> ignore
     })
     |> ignore
+    match sub_fn {
+      Some(sf) =>
+        b.box(fn(s) {
+          s
+          .shrink(Is(0.0))
+          .words(By(sf), look={ ..@view.words_plain, size: 10.5, weight: 500, line: 13.0, wrap: false })
+          .ink(By(fn() { if active() { 0x88C8FFFFL } else { 0x8E949EFFL } }))
+          |> ignore
+        })
+        |> ignore
+      None => ()
+    }
   })
   |> ignore
 }
@@ -846,9 +881,9 @@ fn rec_seg_pill(
 ///|
 fn rec_form_row(parent : @view.View, label_key : String, build : (@view.View) -> Unit) -> Unit {
   parent.box(fn(r) {
-    r.row(Is(true)).gap(Is(8.0)).height(Is(Some(28.0))).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+    r.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
     r.box(fn(lbl) {
-      lbl.min_width(Is(Some(56.0))).shrink(Is(0.0)).lines_up(Is(Some(Start))) |> ignore
+      lbl.min_width(Is(Some(52.0))).shrink(Is(0.0)).lines_up(Is(Some(Start))) |> ignore
       lbl.box(fn(t) {
         t
         .shrink(Is(0.0))
@@ -919,33 +954,40 @@ fn rec_window(root : @view.View) -> Unit {
     )
   }, fn(_) { rec_schedule_fit(false) })
 
+  // Transparent page over DirectComposition so the inner superellipse bar/panel + soft shadow float natively
   root.box(fn(page) {
-    page
-    .over(Is(true))
-    .ground(Is(0x1E1F23FFL))
-    .edge(Is((1.0, 0xFFFFFF18L)))
-    .lines_up(Is(Some(Start)))
-    |> ignore
+    page.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
 
-    // Content container whose intrinsic laid_size() drives adaptive window sizing
+    // Content wrapper including transparent shadow halo whose laid_size() drives exact window size
     page.box(fn(content) {
       rec_content.val = Some(content)
-      content.shrink(Is(0.0)).lines_up(Is(Some(Start))) |> ignore
+      content
+      .shrink(Is(0.0))
+      .padding(Is((rec_pad_l, rec_pad_t, rec_pad_r, rec_pad_b)))
+      .lines_up(Is(Some(Start)))
+      |> ignore
 
-      // ---- Phases 0..3: Compact content-fitted single-row live control bar ----
+      // ---- Phases 0..3: Concentric superellipse floating recording bar (matches toolbar.mbt) ----
       content.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
+        bar_panel(bar, bar_corner)
         bar
         .row(Is(true))
-        .gap(Is(3.0))
-        .height(Is(Some(44.0)))
+        .gap(Is(bar_gap))
+        .height(Is(Some(bar_height)))
         .shrink(Is(0.0))
-        .padding(Is((10.0, 0.0, 8.0, 0.0)))
+        .padding(Is((10.0, bar_pad, bar_pad, bar_pad)))
         .lines_up(Is(Some(Middle)))
         |> ignore
 
         // Phase 3: Finalizing master
         bar.show(fn() { rec_phase.get() == 3 }, fn(r) {
-          r.row(Is(true)).min_width(Is(Some(200.0))).shrink(Is(0.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
+          r
+          .row(Is(true))
+          .min_width(Is(Some(180.0)))
+          .padding(Is((6.0, 0.0, 10.0, 0.0)))
+          .shrink(Is(0.0))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
           |> ignore
           r.box(fn(w) {
             w
@@ -965,14 +1007,14 @@ fn rec_window(root : @view.View) -> Unit {
 
         // Phases 0, 1, 2: Ready / Recording / Paused
         bar.show(fn() { rec_phase.get() <= 2 }, fn(r) {
-          r.row(Is(true)).gap(Is(3.0)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+          r.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
 
           // Draggable left status + tabular timer
           r.box(fn(drag) {
             drag
             .row(Is(true))
             .gap(Is(7.0))
-            .height(Is(Some(32.0)))
+            .height(Is(Some(bar_button)))
             .shrink(Is(0.0))
             .padding(Is((0.0, 0.0, 4.0, 0.0)))
             .lines_up(Is(Some(Middle)))
@@ -1022,13 +1064,13 @@ fn rec_window(root : @view.View) -> Unit {
           })
           |> ignore
 
-          // FPS / codec pill (clickable in Ready to switch 30 / 60fps)
+          // FPS / codec pill (clickable in Ready to switch 30 / 60fps; persisted in settings.json)
           r.box(fn(fps_b) {
             fps_b
-            .height(Is(Some(24.0)))
+            .height(Is(Some(26.0)))
             .shrink(Is(0.0))
-            .padding(Is((7.0, 0.0, 7.0, 0.0)))
-            .radius(Is(6.0))
+            .padding(Is((8.0, 0.0, 8.0, 0.0)))
+            .radius(Is(style_btn_corner))
             .lines_up(Is(Some(Middle)))
             .lies_along(Is(Middle))
             .presses(Is(true))
@@ -1037,6 +1079,7 @@ fn rec_window(root : @view.View) -> Unit {
             .on_press(fn() {
               if rec_phase.untracked() == 0 {
                 rec_fps.set(if rec_fps.untracked() == 30 { 60 } else { 30 })
+                save_settings()
               }
             })
             .ground(By(fn() {
@@ -1060,7 +1103,7 @@ fn rec_window(root : @view.View) -> Unit {
                     "\{rec_fps.get()}fps"
                   }
                 }),
-                look={ ..@view.words_plain, size: 11.0, weight: 500, line: 14.0, wrap: false },
+                look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false },
               )
               .ink(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0xB8BDC6FFL } }))
               |> ignore
@@ -1069,22 +1112,28 @@ fn rec_window(root : @view.View) -> Unit {
           })
           |> ignore
 
-          // Pre-recording capture switches (System audio, Cursor, Click & keycap overlay): hidden once recording starts
+          // Pre-recording switches (System audio, Cursor, Click & keycap overlay): hidden once recording starts
           r.show(fn() { rec_phase.get() == 0 }, fn(opts) {
-            opts.row(Is(true)).gap(Is(3.0)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+            opts.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
             rec_icon_btn(
               opts,
               fn() { if rec_audio.get() { "speaker" } else { "speaker-off" } },
               fn() { if rec_audio.get() { tr("系统声音：开") } else { tr("系统声音：关") } },
               fn() { rec_audio.get() },
-              fn() { rec_audio.set(!rec_audio.untracked()) },
+              fn() {
+                rec_audio.set(!rec_audio.untracked())
+                save_settings()
+              },
             )
             rec_icon_btn(
               opts,
               fn() { "select" },
               fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
               fn() { rec_cursor.get() },
-              fn() { rec_cursor.set(!rec_cursor.untracked()) },
+              fn() {
+                rec_cursor.set(!rec_cursor.untracked())
+                save_settings()
+              },
             )
             rec_icon_btn(
               opts,
@@ -1095,60 +1144,10 @@ fn rec_window(root : @view.View) -> Unit {
                 let next = !rec_input.untracked()
                 rec_input.set(next)
                 ps_rec_input_show(if next { 1 } else { 0 })
+                save_settings()
               },
             )
           }, at_once=true)
-
-          bar_rule_node(r)
-
-          // Live annotation tools (rect, arrow, pen, number, color swatch, undo, clear)
-          rec_icon_btn(r, fn() { "box" }, fn() { tr("矩形") }, fn() { rec_draw.get() == 1 }, fn() { rec_pick_draw(1) })
-          rec_icon_btn(r, fn() { "arrow" }, fn() { tr("箭头") }, fn() { rec_draw.get() == 2 }, fn() { rec_pick_draw(2) })
-          rec_icon_btn(r, fn() { "pen" }, fn() { tr("画笔") }, fn() { rec_draw.get() == 3 }, fn() { rec_pick_draw(3) })
-          rec_icon_btn(r, fn() { "number" }, fn() { tr("序号") }, fn() { rec_draw.get() == 4 }, fn() { rec_pick_draw(4) })
-          // Color swatch dot
-          r.box(fn(cb) {
-            cb
-            .width(Is(Some(24.0)))
-            .height(Is(Some(28.0)))
-            .shrink(Is(0.0))
-            .radius(Is(8.0))
-            .lines_up(Is(Some(Middle)))
-            .lies_along(Is(Middle))
-            .presses(Is(true))
-            .cursor(Is(Some(Hand)))
-            .says(By(fn() { Some(@view.said(Button, label=tr("切换标注颜色"))) }))
-            .on_press(rec_cycle_color)
-            .ground(By(fn() { if cb.pointed() { 0xFFFFFF17L } else { 0L } }))
-            |> ignore
-            cb.box(fn(sw) {
-              sw
-              .width(Is(Some(12.0)))
-              .height(Is(Some(12.0)))
-              .radius(Is(6.0))
-              .ground(By(fn() { rec_draw_colors[rec_color_i.get()].1 }))
-              .edge(Is((1.5, 0xFFFFFF66L)))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-          rec_icon_btn(
-            r,
-            fn() { "undo" },
-            fn() { tr("撤销标注") },
-            fn() { false },
-            ps_rec_draw_undo,
-            dim=fn() { rec_marks_n.get() == 0 },
-          )
-          rec_icon_btn(
-            r,
-            fn() { "eraser" },
-            fn() { tr("清空标注") },
-            fn() { false },
-            ps_rec_draw_clear,
-            dim=fn() { rec_marks_n.get() == 0 },
-          )
 
           bar_rule_node(r)
 
@@ -1196,24 +1195,28 @@ fn rec_window(root : @view.View) -> Unit {
         }, at_once=true)
       }, at_once=true)
 
-      // ---- Phases 4..7: Post-recording encoding & quality panel (content-fitted) ----
+      // ---- Phases 4..7: Superellipse post-recording encoding & quality panel ----
       content.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
         exp
-        .min_width(Is(Some(470.0)))
+        .min_width(Is(Some(456.0)))
         .shrink(Is(0.0))
         .padding(Is((14.0, 12.0, 14.0, 12.0)))
         .gap(Is(10.0))
+        .radius(Is(16.0))
+        .ground(Is(0x1E1F23F7L))
+        .edge(Is((1.0, 0xFFFFFF1FL)))
+        .shadow(Is((20.0, 5.0, 0x00000078L)))
         |> ignore
 
         // 1. Draggable header: recorded summary + audio badge + close
         exp.box(fn(hd) {
-          hd.row(Is(true)).gap(Is(10.0)).height(Is(Some(26.0))).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+          hd.row(Is(true)).gap(Is(10.0)).height(Is(Some(28.0))).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
           hd.box(fn(drag) {
             drag
             .row(Is(true))
             .gap(Is(8.0))
             .grow(Is(1.0))
-            .height(Is(Some(26.0)))
+            .height(Is(Some(28.0)))
             .lines_up(Is(Some(Middle)))
             .presses(Is(true))
             .cursor(Is(Some(Grab)))
@@ -1252,8 +1255,8 @@ fn rec_window(root : @view.View) -> Unit {
               ab
               .height(Is(Some(18.0)))
               .shrink(Is(0.0))
-              .padding(Is((5.0, 0.0, 5.0, 0.0)))
-              .radius(Is(5.0))
+              .padding(Is((6.0, 0.0, 6.0, 0.0)))
+              .radius(Is(6.0))
               .ground(Is(0x2F9BFF24L))
               .lines_up(Is(Some(Middle)))
               .lies_along(Is(Middle))
@@ -1275,13 +1278,13 @@ fn rec_window(root : @view.View) -> Unit {
             }, at_once=true)
           })
           |> ignore
-          rec_icon_btn(hd, fn() { "close" }, fn() { tr("关闭 Esc") }, fn() { false }, rec_close)
+          rec_icon_btn(hd, fn() { "close" }, fn() { tr("关闭 Esc") }, fn() { false }, rec_close, size=28.0, rad=style_btn_corner)
         })
         |> ignore
 
         rec_hrule(exp)
 
-        // 2. Explicit export settings: Format / Quality (or GIF FPS) / Resolution
+        // 2. Explicit export settings: Format / Quality (with live size estimate on EVERY tier!) / Size
         exp.box(fn(form) {
           form.gap(Is(8.0)).lines_up(Is(Some(Start))).shrink(Is(0.0)) |> ignore
 
@@ -1307,24 +1310,66 @@ fn rec_window(root : @view.View) -> Unit {
             })
           })
 
-          // Quality row (MP4)
+          // Quality row (MP4): EVERY option displays its estimated file size!
           form.show(fn() { rec_exp_fmt.get() != 2 }, fn(qwrap) {
             qwrap.shrink(Is(0.0)) |> ignore
             rec_form_row(qwrap, "质量", fn(opts) {
-              rec_seg_pill(opts, fn() { tr("原画") }, fn() { rec_exp_qual.get() == 0 }, fn() { rec_exp_qual.set(0) })
-              rec_seg_pill(opts, fn() { tr("高画质") }, fn() { rec_exp_qual.get() == 1 }, fn() { rec_exp_qual.set(1) })
-              rec_seg_pill(opts, fn() { tr("标准") }, fn() { rec_exp_qual.get() == 2 }, fn() { rec_exp_qual.set(2) })
-              rec_seg_pill(opts, fn() { tr("小体积") }, fn() { rec_exp_qual.get() == 3 }, fn() { rec_exp_qual.set(3) })
+              rec_seg_pill(
+                opts,
+                fn() { tr("原画") },
+                fn() { rec_exp_qual.get() == 0 },
+                fn() { rec_exp_qual.set(0) },
+                sub_fn=Some(fn() { rec_est_label(rec_exp_fmt.get(), 0, rec_exp_scale.get(), rec_exp_gif_fps.get()) }),
+              )
+              rec_seg_pill(
+                opts,
+                fn() { tr("高画质") },
+                fn() { rec_exp_qual.get() == 1 },
+                fn() { rec_exp_qual.set(1) },
+                sub_fn=Some(fn() { rec_est_label(rec_exp_fmt.get(), 1, rec_exp_scale.get(), rec_exp_gif_fps.get()) }),
+              )
+              rec_seg_pill(
+                opts,
+                fn() { tr("标准") },
+                fn() { rec_exp_qual.get() == 2 },
+                fn() { rec_exp_qual.set(2) },
+                sub_fn=Some(fn() { rec_est_label(rec_exp_fmt.get(), 2, rec_exp_scale.get(), rec_exp_gif_fps.get()) }),
+              )
+              rec_seg_pill(
+                opts,
+                fn() { tr("小体积") },
+                fn() { rec_exp_qual.get() == 3 },
+                fn() { rec_exp_qual.set(3) },
+                sub_fn=Some(fn() { rec_est_label(rec_exp_fmt.get(), 3, rec_exp_scale.get(), rec_exp_gif_fps.get()) }),
+              )
             })
           }, at_once=true)
 
-          // FPS row (GIF)
+          // FPS row (GIF): each FPS option also shows estimated GIF size!
           form.show(fn() { rec_exp_fmt.get() == 2 }, fn(fwrap) {
             fwrap.shrink(Is(0.0)) |> ignore
             rec_form_row(fwrap, "帧率", fn(opts) {
-              rec_seg_pill(opts, fn() { "10 fps" }, fn() { rec_exp_gif_fps.get() == 10 }, fn() { rec_exp_gif_fps.set(10) })
-              rec_seg_pill(opts, fn() { "15 fps" }, fn() { rec_exp_gif_fps.get() == 15 }, fn() { rec_exp_gif_fps.set(15) })
-              rec_seg_pill(opts, fn() { "20 fps" }, fn() { rec_exp_gif_fps.get() == 20 }, fn() { rec_exp_gif_fps.set(20) })
+              rec_seg_pill(
+                opts,
+                fn() { "10 fps" },
+                fn() { rec_exp_gif_fps.get() == 10 },
+                fn() { rec_exp_gif_fps.set(10) },
+                sub_fn=Some(fn() { rec_est_label(2, 0, rec_exp_scale.get(), 10) }),
+              )
+              rec_seg_pill(
+                opts,
+                fn() { "15 fps" },
+                fn() { rec_exp_gif_fps.get() == 15 },
+                fn() { rec_exp_gif_fps.set(15) },
+                sub_fn=Some(fn() { rec_est_label(2, 0, rec_exp_scale.get(), 15) }),
+              )
+              rec_seg_pill(
+                opts,
+                fn() { "20 fps" },
+                fn() { rec_exp_gif_fps.get() == 20 },
+                fn() { rec_exp_gif_fps.set(20) },
+                sub_fn=Some(fn() { rec_est_label(2, 0, rec_exp_scale.get(), 20) }),
+              )
             })
           }, at_once=true)
 
@@ -1343,7 +1388,7 @@ fn rec_window(root : @view.View) -> Unit {
 
         rec_hrule(exp)
 
-        // 3. Bottom status/spec/progress + Save As / Save & Copy
+        // 3. Bottom live spec/estimate/progress + Save As / Save & Copy
         exp.box(fn(foot) {
           foot.row(Is(true)).gap(Is(10.0)).height(Is(Some(32.0))).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
 
@@ -1379,7 +1424,7 @@ fn rec_window(root : @view.View) -> Unit {
               .height(Is(Some(24.0)))
               .shrink(Is(0.0))
               .padding(Is((8.0, 0.0, 8.0, 0.0)))
-              .radius(Is(6.0))
+              .radius(Is(7.0))
               .lines_up(Is(Some(Middle)))
               .lies_along(Is(Middle))
               .presses(Is(true))
@@ -1420,6 +1465,8 @@ fn rec_window(root : @view.View) -> Unit {
             0xFFFFFF24L,
             0xFFFFFF30L,
             fn() { rec_run_export(true) },
+            height=30.0,
+            rad=10.0,
             dim=fn() { rec_phase.get() == 5 },
           )
           rec_action_btn(
@@ -1431,6 +1478,8 @@ fn rec_window(root : @view.View) -> Unit {
             0x48A8FFFFL,
             0x1F7FDDFFL,
             fn() { rec_run_export(false) },
+            height=30.0,
+            rad=10.0,
             dim=fn() { rec_phase.get() == 5 },
           )
         })

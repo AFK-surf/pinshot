@@ -1,11 +1,56 @@
-PinShot's patches to mbui's Windows host, applied by scripts/fetch-stillfail.sh:
-- win_image.cpp: a picture handed over that is an uncompressed top-down 32-bit BMP, or pixels named by their address
-  (MBRAWPTR), becomes a texture as it is: no WIC conversion, no mips, no copy (a 4K screen frozen: a few ms, not ~40).
-- win_render.cpp: the glyphs' atlas 1024 x 1024 (its size and the shader's divisor together): 4 MB of the GPU's, not
-  4096's 64 MB held from the first word drawn.
-
+diff --git a/libs/mbui/src/host/win_app.c b/libs/mbui/src/host/win_app.c
+index 93f14f04..0fb78423 100644
+--- a/libs/mbui/src/host/win_app.c
++++ b/libs/mbui/src/host/win_app.c
+@@ -1236,6 +1236,12 @@ static void wins_close_beside(void) {
+ // A window of this run (@hostapi.window_open_id): its id, 0 where none. As large as the first is now, down and to the
+ // right of it, its title the first's, its top row the app's as the first's; out of sight (cloaked) till its first
+ // frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
++#ifndef WS_EX_NOREDIRECTIONBITMAP
++#define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
++#endif
++static int next_win_clear;
++void mb_app_next_clear(void) { next_win_clear = 1; }
++
+ static int win_open(void) {
+   if (!hwnd || !*win_class) return 0;
+   int wid = 0;
+@@ -1252,25 +1258,30 @@ static int win_open(void) {
+   WCHAR title[256];
+   if (!GetWindowTextW(hwnd, title, 256)) title[0] = 0;
+   int off = (int)lround(32 * wid * (GetDpiForWindow(hwnd) / 96.0));
++  int clear = next_win_clear;
++  next_win_clear = 0;
++  DWORD ex = clear ? (WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW) : 0;
++  DWORD st = clear ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+   win_making = wid;
+-  HWND h = CreateWindowExW(0, win_class, title, WS_OVERLAPPEDWINDOW, fr.left + off, fr.top + off, fr.right - fr.left,
++  HWND h = CreateWindowExW(ex, win_class, title, st, fr.left + off, fr.top + off, fr.right - fr.left,
+                            fr.bottom - fr.top, NULL, NULL, GetModuleHandleW(NULL), NULL);
+   win_making = -1;
+   if (!h) {
+     win_slot_fresh(w);
+     return 0;
+   }
++  if (clear) SetPropW(h, L"PinShot.Clear", (HANDLE)1);
+   w->h = h;
+   w->scale = GetDpiForWindow(h) / 96.0;
+   // (an inset window's frame without the title bar, as the first's: WM_NCCALCSIZE)
+-  SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
++  if (!clear) SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+   ImmAssociateContextEx(h, NULL, 0);
+   if (!mb_render_open(wid, h)) {
+     win_slot_fresh(w);
+     DestroyWindow(h);
+     return 0;
+   }
+-  title_dark_of(h);
++  if (!clear) title_dark_of(h);
+   w->held = cloak(h, TRUE) ? 1 : 0;
+   ShowWindow(h, SW_SHOW);
+   w->want_frame = 1;
 diff --git a/libs/mbui/src/host/win_image.cpp b/libs/mbui/src/host/win_image.cpp
-index c37f4f6..b8b733b 100644
+index c37f4f6c..b8b733be 100644
 --- a/libs/mbui/src/host/win_image.cpp
 +++ b/libs/mbui/src/host/win_image.cpp
 @@ -235,6 +235,75 @@ done:
@@ -95,7 +140,7 @@ index c37f4f6..b8b733b 100644
        if (SUCCEEDED(wic->CreateStream(&stream)) &&
            SUCCEEDED(stream->InitializeFromMemory(j->data, (DWORD)j->len)))
 diff --git a/libs/mbui/src/host/win_render.cpp b/libs/mbui/src/host/win_render.cpp
-index 5fd6949..bb8135c 100644
+index d13a63c2..8605d44c 100644
 --- a/libs/mbui/src/host/win_render.cpp
 +++ b/libs/mbui/src/host/win_render.cpp
 @@ -35,7 +35,8 @@
@@ -108,7 +153,23 @@ index 5fd6949..bb8135c 100644
  
  static ID3D11Device *dev;
  static ID3D11DeviceContext *ctx;
-@@ -305,7 +306,7 @@ static const char *shader_src =
+@@ -79,6 +80,7 @@ static ID3D11ShaderResourceView *rsrv;
+ // into and what of it is said to differ (partial redraw, below). Put in place for a window by mb_render_use.
+ #define MB_PARTS 8
+ struct RenderWin {
++  HWND target_hwnd;
+   IDXGISwapChain1 *chain;
+   ID3D11RenderTargetView *rtv;
+   IDCompositionTarget *dtarget;
+@@ -108,6 +110,7 @@ static struct RenderWinsMade {
+     for (int k = 0; k < MB_WINS; k++) render_win_fresh(&render_wins[k]);
+   }
+ } render_wins_made;
++#define target_hwnd (rw->target_hwnd)
+ #define chain (rw->chain)
+ #define rtv (rw->rtv)
+ #define dtarget (rw->dtarget)
+@@ -316,7 +319,7 @@ static const char *shader_src =
      "    float2 r0 = I.rect.xy * scale, r0i = floor(r0 + 0.5);\n"
      "    bool exact = kind == 1 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05 && I.prm.x == 0.0;\n"
      "    float2 tex = exact ? floor(p * scale - r0i) + 0.5 : (p - I.rect.xy) / I.rect.zw * I.c2.zw;\n"
@@ -117,3 +178,118 @@ index 5fd6949..bb8135c 100644
      "    float4 t = atlas.SampleLevel(samp, uv, 0);\n"
      "    if (kind == 1) {\n"
      "      // (a mask drawn in gray has its three the same as its alpha: as before; a glyph drawn larger or smaller than\n"
+@@ -795,6 +798,7 @@ int mb_render_init(void *hwnd) {
+   xdev->GetAdapter(&adapter);
+   adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&dxgi_factory);
+   flip_chain = 1;
++  target_hwnd = (HWND)hwnd;
+   if (make_composed(xdev, (HWND)hwnd)) {
+     // the composition's swap chain, made at the window's size (its first buffers' view: at the first frame's size)
+     fb_w = fb_h = 0;
+@@ -815,6 +819,7 @@ int mb_render_open(int wid, void *hwnd) {
+   RenderWin *back = rw;
+   rw = &render_wins[wid];
+   render_win_fresh(rw);
++  target_hwnd = (HWND)hwnd;
+   int ok;
+   if (dcomp) {
+     ok = make_composed(NULL, (HWND)hwnd);
+@@ -1370,8 +1375,9 @@ static void draw_banded(const float *f, int32_t start, int32_t end, int32_t coun
+ // `part`: only that part of the target drawn again, over what it holds (the frame's ground first: the instance after
+ // the frame's in the vertex buffer, submit's); NULL, all of it, cleared to the ground.
+ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count, const float *bg,
+-                   const float *f, const D3D11_RECT *part = NULL) {
+-  float clear[4] = {bg[0], bg[1], bg[2], 1};
++                   const float *f, const D3D11_RECT *part = NULL, int allow_clear = 1) {
++  int clear_win = allow_clear && target_hwnd && GetPropW(target_hwnd, L"PinShot.Clear") != NULL;
++  float clear[4] = {clear_win ? 0.0f : bg[0], clear_win ? 0.0f : bg[1], clear_win ? 0.0f : bg[2], clear_win ? 0.0f : 1.0f};
+   encode_missing = 0;
+   ctx->OMSetRenderTargets(1, &target, NULL);
+   cut_on = part != NULL;
+@@ -1474,8 +1480,9 @@ static int submit(const double *inst, int32_t count, double r, double g, double
+   memcpy(f, last_inst, (size_t)n * sizeof(float));
+   float *gr = f + n;
+   memset(gr, 0, MB_INST * sizeof(float));
++  int clear_win = target_hwnd && GetPropW(target_hwnd, L"PinShot.Clear") != NULL;
+   gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
+-  gr[8] = (float)r; gr[9] = (float)g; gr[10] = (float)b; gr[11] = 1.0f;
++  gr[8] = clear_win ? 0.0f : (float)r; gr[9] = clear_win ? 0.0f : (float)g; gr[10] = clear_win ? 0.0f : (float)b; gr[11] = clear_win ? 0.0f : 1.0f;
+   gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
+   ctx->Unmap(vbuf, 0);
+   last_count = count;
+@@ -1700,7 +1707,7 @@ static int write_png(const wchar_t *path, const uint8_t *bgra, int w, int h, int
+ // Instances `f` (`count` of them) drawn on the ground `bg` into a texture of their own, `w` × `h`, and copied where the
+ // CPU reads it (a staging texture, to Map; NULL where it could not be made). What the vertex buffer holds is drawn: the
+ // caller has put `f` there.
+-static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg, const float *f) {
++static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg, const float *f, int allow_clear = 0) {
+   D3D11_TEXTURE2D_DESC td = {};
+   td.Width = (UINT)w;
+   td.Height = (UINT)h;
+@@ -1716,7 +1723,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
+     tex->Release();
+     return NULL;
+   }
+-  encode(view, w, h, count, bg, f);
++  encode(view, w, h, count, bg, f, NULL, allow_clear);
+   td.Usage = D3D11_USAGE_STAGING;
+   td.BindFlags = 0;
+   td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+@@ -1729,7 +1736,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
+ 
+ // The last presented frame drawn again (its instances are what the vertex buffer holds), as redrawn_of draws.
+ static ID3D11Texture2D *redrawn(int w, int h) {
+-  return redrawn_of(w, h, last_count, last_bg, last_inst);
++  return redrawn_of(w, h, last_count, last_bg, last_inst, 1);
+ }
+ 
+ // `count` instances of `f` into the vertex buffer, grown to hold them: 0 where it could not be written.
+@@ -1845,6 +1852,28 @@ int mb_render_snapshot(const wchar_t *path) {
+       }
+       px = out;
+       stride = w * 4;
++    } else if (target_hwnd && GetPropW(target_hwnd, L"PinShot.Clear") != NULL) {
++      out = (uint8_t *)calloc((size_t)w * h, 4);
++      for (int y = 0; y < h; y++) {
++        const uint8_t *s = px + (size_t)y * stride;
++        uint8_t *d = out + (size_t)y * w * 4;
++        for (int x = 0; x < w; x++, s += 4, d += 4) {
++          uint8_t a = s[3];
++          d[3] = a;
++          if (a == 0) {
++            d[0] = d[1] = d[2] = 0;
++          } else if (a == 255) {
++            d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
++          } else {
++            for (int c = 0; c < 3; c++) {
++              int v = ((int)s[c] * 255 + (a / 2)) / a;
++              d[c] = (uint8_t)(v > 255 ? 255 : v);
++            }
++          }
++        }
++      }
++      px = out;
++      stride = w * 4;
+     }
+     ok = write_png(path, px, w, h, stride);
+     free(out);
+@@ -1854,6 +1883,19 @@ int mb_render_snapshot(const wchar_t *path) {
+   return ok;
+ }
+ 
++extern "C" int mb_render_snap_win(int wid, const wchar_t *path) {
++  if (wid < 0 || wid >= MB_WINS || !dev || !path) return 0;
++  RenderWin *back = rw;
++  rw = &render_wins[wid];
++  int ok = 0;
++  if (last_inst && fb_w > 0 && fb_h > 0 && fill_vbuf(last_inst, last_count)) {
++    ok = mb_render_snapshot(path);
++  }
++  rw = back;
++  if (last_inst) fill_vbuf(last_inst, last_count);
++  return ok;
++}
++
+ // The offscreen target as its frames left it (not the last frame drawn again: what drawing only the parts that differ
+ // made of it, mbui-render's MBUI_DL_FROM), as a PNG.
+ extern "C" int mb_render_snapshot_drawn(const wchar_t *path) {
