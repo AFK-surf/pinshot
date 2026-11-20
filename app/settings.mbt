@@ -264,7 +264,7 @@ fn load_settings() -> Unit {
       rec_exp_fmt.set(clampi(rnum("rec_exp_fmt", 0), 0, 3))
       rec_exp_qual.set(clampi(rnum("rec_exp_qual", 2), 0, 3))
       let rs = rnum("rec_exp_scale", 0)
-      rec_exp_scale.set(if rs == 1920 || rs == 1280 || rs == 854 { rs } else { 0 })
+      rec_exp_scale.set(if rs == 75 || rs == 50 { rs } else { 0 })
       let rg = rnum("rec_exp_gif_fps", 15)
       rec_exp_gif_fps.set(if rg == 10 || rg == 20 { rg } else { 15 })
     }

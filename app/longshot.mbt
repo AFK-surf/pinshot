@@ -713,7 +713,6 @@ fn long_window(root : @view.View) -> Unit {
       .width(Is(Some(long_box_w())))
       .lines_up(Is(Some(Middle)))
       .presses(Is(true))
-      .cursor(Is(Some(Grab)))
       .on_drag(fn(d) {
         if d.kind == Down && long_wid.val != 0 {
           ps_move_window(long_wid.val)
@@ -902,15 +901,6 @@ fn long_preview_viewport(page : @view.View) -> Unit {
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Start))
       .presses(Is(true))
-      .cursor(By(fn() {
-        if long_max_scroll(long_h.get()) <= 0 {
-          None
-        } else if long_panning.get() {
-          Some(Grabbing)
-        } else {
-          Some(Grab)
-        }
-      }))
       .on_drag(fn(d) {
         if long_max_scroll(long_h.untracked()) <= 0 {
           return

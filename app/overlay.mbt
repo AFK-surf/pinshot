@@ -62,7 +62,7 @@ fn handle_at(r : Rect, x : Double, y : Double) -> (Int, Int)? {
 ///|
 fn side_cursor(side : (Int, Int)) -> @view.Cursor {
   match side {
-    (0, 0) => Grab
+    (0, 0) => Arrow
     (0, _) => ResizeY
     (_, 0) => ResizeX
     (-1, -1) | (1, 1) => ResizeNWSE
@@ -75,7 +75,7 @@ fn side_cursor(side : (Int, Int)) -> @view.Cursor {
 fn overlay_cursor() -> @view.Cursor? {
   match hand.get() {
     Drawing(_, _) | Marking | Erasing(_, _, _, _) => return Some(Crosshair)
-    Moving(_, _, _) | Dragging(_, _, _, _, _, -1, _) => return Some(Grabbing)
+    Moving(_, _, _) | Dragging(_, _, _, _, _, -1, _) => return Some(Arrow)
     Dragging(_, _, _, _, _, _, _) => return Some(Crosshair)
     Sizing(hx, hy, _) => return Some(side_cursor((hx, hy)))
     Free => ()
@@ -93,7 +93,7 @@ fn overlay_cursor() -> @view.Cursor? {
           if t == Pen || t == Eraser {
             Some(Crosshair)
           } else if t == Move || mark_at(x, y, false) is Some(_) {
-            Some(Grab)
+            Some(Arrow)
           } else {
             Some(Crosshair)
           }

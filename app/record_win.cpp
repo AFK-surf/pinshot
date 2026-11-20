@@ -261,23 +261,29 @@ static struct {
   std::wstring exp_dest;
   int exp_fmt;       // 0=MP4 H.265, 1=MP4 H.264, 2=GIF, 3=MP4 AV1
   int exp_quality;   // 0=Original, 1=High, 2=Balanced, 3=Compact
-  int exp_max_side;  // 0=Original, else max long edge (1920/1280/854)
+  int exp_max_side;  // 0=100% Original, 1..99=percent scale (75/50), >100=max long edge
   int exp_gif_fps;   // 10 / 15 / 20
 } R;
 
 static const GUID PS_MFVideoFormat_AV1 = {
     0x31305641, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
-// Build a compact top-down 32-bit BGRX BMP (<= 720px long edge) for the export card hero preview.
+// Build a 2x cover-cropped 32-bit BGRX BMP (316x368 for the 158x184pt landscape Studio HUD preview card)
+// with a silky bottom dark vignette scrim composited directly into the pixels so white overlay metadata
+// stays razor-sharp over any bright light-mode desktop capture.
 static void build_preview_bmp(const uint8_t *px, int w, int h, int pitch, bool is_bgra, std::vector<uint8_t> &out) {
   out.clear();
   if (!px || w <= 0 || h <= 0 || pitch < w * 4) return;
-  int pw = w, ph = h;
-  int big = w > h ? w : h;
-  if (big > 720) {
-    double k = 720.0 / (double)big;
-    pw = std::max(16, (int)(w * k + 0.5));
-    ph = std::max(16, (int)(h * k + 0.5));
+  const int pw = 316, ph = 368;
+  double src_asp = (double)w / (double)h;
+  double dst_asp = (double)pw / (double)ph;
+  int cx0 = 0, cy0 = 0, cw = w, ch = h;
+  if (src_asp > dst_asp) {
+    cw = std::max(1, std::min(w, (int)(h * dst_asp + 0.5)));
+    cx0 = (w - cw) / 2;
+  } else {
+    ch = std::max(1, std::min(h, (int)(w / dst_asp + 0.5)));
+    cy0 = (h - ch) / 2;
   }
   size_t pix_bytes = (size_t)pw * (size_t)ph * 4;
   out.resize(54 + pix_bytes, 0);
@@ -297,41 +303,59 @@ static void build_preview_bmp(const uint8_t *px, int w, int h, int pitch, bool i
   memcpy(hdr + 28, &bits, 2);
   uint8_t *dst = hdr + 54;
   int bo = is_bgra ? 0 : 2, go = 1, ro = is_bgra ? 2 : 0;
-  if (pw == w && ph == h) {
-    for (int y = 0; y < ph; y++) {
-      const uint8_t *s = px + (size_t)y * (size_t)pitch;
-      uint8_t *d = dst + (size_t)y * (size_t)pw * 4;
-      for (int x = 0; x < pw; x++) {
-        d[x * 4 + 0] = s[x * 4 + bo];
-        d[x * 4 + 1] = s[x * 4 + go];
-        d[x * 4 + 2] = s[x * 4 + ro];
-        d[x * 4 + 3] = 255;
-      }
+  for (int y = 0; y < ph; y++) {
+    double t = (double)y / (double)(ph - 1);
+    double scrim = 0.0;
+    if (t < 0.22) {
+      scrim = 0.06 * (1.0 - t / 0.22);
+    } else if (t > 0.42) {
+      double u = (t - 0.42) / 0.58;
+      scrim = 0.88 * u * u * (1.45 - 0.45 * u);
     }
-  } else {
-    for (int y = 0; y < ph; y++) {
-      int y0 = y * h / ph, y1 = std::max(y0 + 1, (y + 1) * h / ph);
-      if (y1 > h) y1 = h;
-      uint8_t *d = dst + (size_t)y * (size_t)pw * 4;
-      for (int x = 0; x < pw; x++) {
-        int x0 = x * w / pw, x1 = std::max(x0 + 1, (x + 1) * w / pw);
-        if (x1 > w) x1 = w;
-        uint32_t sb = 0, sg = 0, sr = 0, cnt = 0;
-        for (int yy = y0; yy < y1; yy++) {
-          const uint8_t *s = px + (size_t)yy * (size_t)pitch;
-          for (int xx = x0; xx < x1; xx++) {
-            sb += s[xx * 4 + bo];
-            sg += s[xx * 4 + go];
-            sr += s[xx * 4 + ro];
-            cnt++;
-          }
+    double keep = 1.0 - scrim;
+    double add_b = 17.0 * scrim, add_g = 13.0 * scrim, add_r = 12.0 * scrim;
+    int y0 = cy0 + y * ch / ph;
+    int y1 = cy0 + (y + 1) * ch / ph;
+    if (y1 <= y0) y1 = y0 + 1;
+    if (y1 > h) y1 = h;
+    uint8_t *d = dst + (size_t)y * (size_t)pw * 4;
+    for (int x = 0; x < pw; x++) {
+      int x0 = cx0 + x * cw / pw;
+      int x1 = cx0 + (x + 1) * cw / pw;
+      if (x1 <= x0) x1 = x0 + 1;
+      if (x1 > w) x1 = w;
+      uint32_t sb = 0, sg = 0, sr = 0, cnt = 0;
+      for (int yy = y0; yy < y1; yy++) {
+        const uint8_t *s = px + (size_t)yy * (size_t)pitch;
+        for (int xx = x0; xx < x1; xx++) {
+          sb += s[xx * 4 + bo];
+          sg += s[xx * 4 + go];
+          sr += s[xx * 4 + ro];
+          cnt++;
         }
-        d[x * 4 + 0] = (uint8_t)(sb / cnt);
-        d[x * 4 + 1] = (uint8_t)(sg / cnt);
-        d[x * 4 + 2] = (uint8_t)(sr / cnt);
-        d[x * 4 + 3] = 255;
       }
+      double b = (double)sb / (double)cnt;
+      double g = (double)sg / (double)cnt;
+      double r = (double)sr / (double)cnt;
+      d[x * 4 + 0] = (uint8_t)(b * keep + add_b + 0.5);
+      d[x * 4 + 1] = (uint8_t)(g * keep + add_g + 0.5);
+      d[x * 4 + 2] = (uint8_t)(r * keep + add_r + 0.5);
+      d[x * 4 + 3] = 255;
     }
+  }
+}
+
+static void compute_scaled_dims(int src_w, int src_h, int scale_param, int &out_w, int &out_h) {
+  out_w = src_w;
+  out_h = src_h;
+  if (scale_param > 0 && scale_param < 100) {
+    double k = (double)scale_param / 100.0;
+    out_w = std::max(16, std::min(src_w, ((int)(src_w * k + 0.5)) & ~1));
+    out_h = std::max(16, std::min(src_h, ((int)(src_h * k + 0.5)) & ~1));
+  } else if (scale_param > 100 && (src_w > scale_param || src_h > scale_param)) {
+    double k = (double)scale_param / (double)(src_w > src_h ? src_w : src_h);
+    out_w = std::max(16, ((int)(src_w * k + 0.5)) & ~1);
+    out_h = std::max(16, ((int)(src_h * k + 0.5)) & ~1);
   }
 }
 
@@ -2266,7 +2290,9 @@ static DWORD WINAPI export_worker(LPVOID) {
 
   rec_make_dirs(dst);
 
-  bool need_resize = (max_side > 0) && (src_w > max_side || src_h > max_side);
+  int out_w = src_w, out_h = src_h;
+  compute_scaled_dims(src_w, src_h, max_side, out_w, out_h);
+  bool need_resize = (out_w != src_w || out_h != src_h);
   bool master_is_hevc = (R.master_codec.rfind("HEVC", 0) == 0);
   bool want_hevc = (fmt == 0);
   bool direct_copy = (fmt == 0 || fmt == 1) && quality == 0 && !need_resize && (want_hevc == master_is_hevc);
@@ -2296,12 +2322,6 @@ static DWORD WINAPI export_worker(LPVOID) {
 
   // MP4 transcode / compress (fmt 0 = H.265 preferred, fmt 1 = H.264, fmt 3 = AV1)
   if (fmt == 0 || fmt == 1 || fmt == 3) {
-    int out_w = src_w, out_h = src_h;
-    if (need_resize) {
-      double k = (double)max_side / (double)(out_w > out_h ? out_w : out_h);
-      out_w = std::max(16, ((int)(out_w * k + 0.5)) & ~1);
-      out_h = std::max(16, ((int)(out_h * k + 0.5)) & ~1);
-    }
 
     ComPtr<ID3D11Device> dev;
     ComPtr<ID3D11DeviceContext> ctx;
@@ -2556,12 +2576,7 @@ static DWORD WINAPI export_worker(LPVOID) {
   }
 
   // GIF export (fmt == 2)
-  int gif_w = src_w, gif_h = src_h;
-  if (max_side > 0 && (gif_w > max_side || gif_h > max_side)) {
-    double k = (double)max_side / (double)(gif_w > gif_h ? gif_w : gif_h);
-    gif_w = std::max(16, ((int)(gif_w * k + 0.5)) & ~1);
-    gif_h = std::max(16, ((int)(gif_h * k + 0.5)) & ~1);
-  }
+  int gif_w = out_w, gif_h = out_h;
 
   ComPtr<IMFAttributes> rattr;
   MFCreateAttributes(&rattr, 2);

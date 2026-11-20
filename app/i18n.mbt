@@ -85,6 +85,7 @@ let en_words : Map[String, String] = {
   "帧率": "FPS",
   "尺寸": "Size",
   "原画": "Original",
+  "高": "High",
   "高画质": "High",
   "标准": "Balanced",
   "小体积": "Compact",

@@ -232,22 +232,6 @@ fn rec_load_preview() -> Unit {
 }
 
 ///|
-fn rec_preview_frame_size() -> (Double, Double) {
-  rec_preview_key.get() |> ignore
-  let rw = rec_part.val.w.to_double()
-  let rh = rec_part.val.h.to_double()
-  if rw <= 0.0 || rh <= 0.0 {
-    return (246.0, 118.0)
-  }
-  let kw = 280.0 / rw
-  let kh = 118.0 / rh
-  let k = if kw < kh { kw } else { kh }
-  let fw = (rw * k).round()
-  let fh = (rh * k).round()
-  (if fw < 52.0 { 52.0 } else { fw }, if fh < 52.0 { 52.0 } else { fh })
-}
-
-///|
 fn rec_clear_exports() -> Unit {
   rec_exports.clear()
   rec_exporting_key.val = ""
@@ -282,14 +266,21 @@ fn rec_sync_combo_state() -> Unit {
 }
 
 ///|
-fn rec_out_dims(max_side : Int) -> (Int, Int) {
+fn rec_out_dims(scale_param : Int) -> (Int, Int) {
   let sw = rec_part.val.w
   let sh = rec_part.val.h
-  if max_side <= 0 || (sw <= max_side && sh <= max_side) {
+  if scale_param <= 0 || scale_param == 100 || sw <= 0 || sh <= 0 {
+    (sw, sh)
+  } else if scale_param < 100 {
+    let k = scale_param.to_double() / 100.0
+    let ow = clampi(((sw.to_double() * k + 0.5).to_int()) & -2, 16, sw)
+    let oh = clampi(((sh.to_double() * k + 0.5).to_int()) & -2, 16, sh)
+    (ow, oh)
+  } else if sw <= scale_param && sh <= scale_param {
     (sw, sh)
   } else {
     let long = if sw > sh { sw } else { sh }
-    let k = max_side.to_double() / long.to_double()
+    let k = scale_param.to_double() / long.to_double()
     let ow = clampi(((sw.to_double() * k + 0.5).to_int()) & -2, 16, sw)
     let oh = clampi(((sh.to_double() * k + 0.5).to_int()) & -2, 16, sh)
     (ow, oh)
@@ -870,15 +861,6 @@ fn rec_est_saved_pct() -> Int {
 }
 
 ///|
-fn rec_scale_disabled(max_side : Int) -> Bool {
-  if max_side <= 0 {
-    return false
-  }
-  let long = if rec_part.val.w > rec_part.val.h { rec_part.val.w } else { rec_part.val.h }
-  long > 0 && long <= max_side
-}
-
-///|
 fn rec_short_codec() -> String {
   let c = rec_codec.get()
   if c.has_prefix("HEVC") {
@@ -1037,30 +1019,29 @@ fn rec_action_btn(
 }
 
 ///|
-/// Monochrome Apple/CleanShot elevated segment inside a recessed track.
-fn rec_seg_item(
+/// Crisp white-thumb format tab inside the Studio HUD top strip.
+fn rec_tab_item(
   track : @view.View,
   label_fn : () -> String,
   active : () -> Bool,
   press : () -> Unit,
   done_dot? : () -> Bool = fn() { false },
-  disabled? : () -> Bool = fn() { false },
 ) -> Unit {
   track.box(fn(b) {
     b
     .row(Is(true))
-    .grow(Is(1.0))
-    .height(Is(Some(27.0)))
+    .height(Is(Some(24.0)))
     .gap(Is(4.0))
-    .padding(Is((6.0, 0.0, 6.0, 0.0)))
+    .padding(Is((9.0, 0.0, 9.0, 0.0)))
+    .shrink(Is(0.0))
     .radius(Is(6.5))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
-    .presses(By(fn() { !disabled() }))
-    .cursor(By(fn() { if disabled() || rec_phase.get() == 5 { None } else { Some(Hand) } }))
+    .presses(Is(true))
+    .cursor(By(fn() { if rec_phase.get() == 5 { None } else { Some(Hand) } }))
     .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
     .on_press(fn() {
-      if !disabled() && rec_phase.untracked() != 5 {
+      if rec_phase.untracked() != 5 {
         press()
         rec_sync_combo_state()
         save_settings()
@@ -1068,68 +1049,122 @@ fn rec_seg_item(
     })
     .ground(By(fn() {
       if active() {
-        0x31343CFFL
-      } else if !disabled() && b.pointed() {
-        0xFFFFFF0AL
+        0xF2F3F6FFL
+      } else if b.pointed() {
+        0xFFFFFF0FL
       } else {
         0L
       }
     }))
-    .edge(By(fn() { if active() { (0.8, 0xFFFFFF1EL) } else { (0.0, 0L) } }))
     |> ignore
     b.box(fn(t) {
       t
       .shrink(Is(0.0))
-      .words(By(label_fn), look={ ..@view.words_plain, size: 11.5, weight: 600, line: 15.0, wrap: false })
+      .words(By(label_fn), look={ ..@view.words_plain, size: 11.0, weight: 600, line: 14.0, wrap: false })
       .ink(By(fn() {
         if active() {
-          0xF7F8FAFFL
-        } else if disabled() {
-          0x474C56FFL
+          0x121317FFL
         } else if b.pointed() {
-          0xCFD4DEFFL
+          0xD5DAE4FFL
         } else {
-          0x8C92A0FFL
+          0x838998FFL
         }
       }))
       |> ignore
     })
     |> ignore
     b.show(done_dot, fn(d) {
-      d.width(Is(Some(4.5))).height(Is(Some(4.5))).shrink(Is(0.0)).radius(Is(2.25)).ground(Is(0x3DD68CFFL)) |> ignore
+      d
+      .width(Is(Some(4.5)))
+      .height(Is(Some(4.5)))
+      .shrink(Is(0.0))
+      .radius(Is(2.25))
+      .ground(By(fn() { if active() { 0x10B981FFL } else { 0x34D399FFL } }))
+      |> ignore
     }, at_once=true)
   })
   |> ignore
 }
 
 ///|
-/// Clean horizontal Inspector row: quiet muted label on left + unified recessed segmented track on right.
-fn rec_form_row(parent : @view.View, label_key : String, build : (@view.View) -> Unit) -> Unit {
-  parent.box(fn(r) {
-    r.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
-    r.box(fn(lbl) {
-      lbl.width(Is(Some(36.0))).shrink(Is(0.0)).lines_up(Is(Some(Start))) |> ignore
-      lbl.box(fn(t) {
-        t
-        .shrink(Is(0.0))
-        .words(By(fn() { tr(label_key) }), look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
-        .ink(Is(0x7C8290FFL))
-        |> ignore
-      })
+/// Borderless lightweight inline option pill (no heavy recessed track around rows).
+fn rec_inline_opt(
+  row : @view.View,
+  label_fn : () -> String,
+  active : () -> Bool,
+  press : () -> Unit,
+  done_dot? : () -> Bool = fn() { false },
+) -> Unit {
+  row.box(fn(b) {
+    b
+    .row(Is(true))
+    .height(Is(Some(24.0)))
+    .gap(Is(4.0))
+    .padding(Is((8.5, 0.0, 8.5, 0.0)))
+    .shrink(Is(0.0))
+    .radius(Is(6.5))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .presses(Is(true))
+    .cursor(By(fn() { if rec_phase.get() == 5 { None } else { Some(Hand) } }))
+    .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
+    .on_press(fn() {
+      if rec_phase.untracked() != 5 {
+        press()
+        rec_sync_combo_state()
+        save_settings()
+      }
+    })
+    .ground(By(fn() {
+      if active() {
+        0xFFFFFF1CL
+      } else if b.pointed() {
+        0xFFFFFF0CL
+      } else {
+        0L
+      }
+    }))
+    |> ignore
+    b.box(fn(t) {
+      t
+      .shrink(Is(0.0))
+      .words(By(label_fn), look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+      .ink(By(fn() {
+        if active() {
+          0xF4F6FAFFL
+        } else if b.pointed() {
+          0xCFD4DEFFL
+        } else {
+          0x838998FFL
+        }
+      }))
       |> ignore
     })
     |> ignore
-    r.box(fn(track) {
-      track
-      .row(Is(true))
-      .grow(Is(1.0))
-      .gap(Is(2.0))
-      .padding(Is((3.0, 3.0, 3.0, 3.0)))
-      .radius(Is(9.0))
-      .ground(Is(0xFFFFFF0EL))
-      .lines_up(Is(Some(Middle)))
+    b.show(done_dot, fn(d) {
+      d.width(Is(Some(4.5))).height(Is(Some(4.5))).shrink(Is(0.0)).radius(Is(2.25)).ground(Is(0x34D399FFL)) |> ignore
+    }, at_once=true)
+  })
+  |> ignore
+}
+
+///|
+/// Airy horizontal property row: muted label left, lightweight borderless inline pills right.
+fn rec_prop_row(parent : @view.View, label_key : String, build : (@view.View) -> Unit) -> Unit {
+  parent.box(fn(r) {
+    r.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+    r.box(fn(t) {
+      t
+      .shrink(Is(0.0))
+      .words(By(fn() { tr(label_key) }), look={ ..@view.words_plain, size: 11.5, weight: 400, line: 15.0, wrap: false })
+      .ink(Is(0x727888FFL))
       |> ignore
-      build(track)
+    })
+    |> ignore
+    r.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
+    r.box(fn(opts) {
+      opts.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+      build(opts)
     })
     |> ignore
   })
@@ -1250,7 +1285,6 @@ fn rec_window(root : @view.View) -> Unit {
             .padding(Is((0.0, 0.0, 4.0, 0.0)))
             .lines_up(Is(Some(Middle)))
             .presses(Is(true))
-            .cursor(Is(Some(Grab)))
             .on_drag(fn(d) {
               if d.kind == Down && rec_wid.val != 0 {
                 ps_move_window(rec_wid.val)
@@ -1426,179 +1460,231 @@ fn rec_window(root : @view.View) -> Unit {
         }, at_once=true)
       }, at_once=true)
 
-      // ---- Phases 4..7: CleanShot X-style top-preview dark export card (380pt) ----
+      // ---- Phases 4..7: Landscape Studio HUD floating export card (456 x ~204pt) ----
       content.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
         exp
-        .width(Is(Some(380.0)))
+        .row(Is(true))
+        .gap(Is(12.0))
+        .width(Is(Some(456.0)))
         .shrink(Is(0.0))
-        .radius(Is(16.0))
-        .ground(Is(0x17181CF7L))
-        .edge(Is((1.0, 0xFFFFFF18L)))
-        .shadow(Is((12.0, 4.0, 0x00000072L)))
+        .padding(Is((10.0, 10.0, 10.0, 10.0)))
+        .radius(Is(18.0))
+        .ground(Is(0x141519F8L))
+        .edge(Is((1.0, 0xFFFFFF17L)))
+        .shadow(Is((11.0, 4.0, 0x0000007AL)))
+        .lines_up(Is(Some(Middle)))
         |> ignore
 
-        // Inner clip wrapper preserves outer drop shadow while clipping top hero cleanly to r=16
-        exp.box(fn(clip) {
-          clip.radius(Is(16.0)).clips(Is(true)).shrink(Is(0.0)) |> ignore
+        // 1. Left: Rounded full-bleed first-frame clip card (158 x 184pt, draggable)
+        exp.box(fn(left) {
+          left
+          .width(Is(Some(158.0)))
+          .height(Is(Some(184.0)))
+          .shrink(Is(0.0))
+          .radius(Is(11.0))
+          .clips(Is(true))
+          .ground(Is(0x0E1015FFL))
+          .edge(Is((1.0, 0xFFFFFF14L)))
+          .presses(Is(true))
+          .on_drag(fn(d) {
+            if d.kind == Down && rec_wid.val != 0 {
+              ps_move_window(rec_wid.val)
+            }
+          }, whole=true)
+          |> ignore
 
-          // 1. Top hero first-frame preview banner (146pt, draggable)
-          clip.box(fn(hero) {
-            hero
-            .height(Is(Some(146.0)))
-            .shrink(Is(0.0))
-            .ground(Is(0x13151BFFL))
-            .lines_up(Is(Some(Middle)))
-            .lies_along(Is(Middle))
-            .presses(Is(true))
-            .cursor(Is(Some(Grab)))
-            .on_drag(fn(d) {
-              if d.kind == Down && rec_wid.val != 0 {
-                ps_move_window(rec_wid.val)
-              }
-            }, whole=true)
+          // Full-bleed cover preview (with silky bottom dark scrim composited in build_preview_bmp)
+          left.box(fn(pic) {
+            pic
+            .over(Is(true))
+            .presses(Is(false))
+            .image(By(fn() {
+              let k = rec_preview_key.get()
+              if k != "" { Some((k, "", 384)) } else { None }
+            }))
+            .image_contains(Is(false))
+            .image_fades(Is(false))
+            |> ignore
+          })
+          |> ignore
+
+          // Crisp bottom metadata overlay: timecode + audio + source size, and live dimensions
+          left.box(fn(ov) {
+            ov
+            .over(Is(true))
+            .lies_along(Is(End))
+            .padding(Is((10.0, 8.0, 10.0, 9.0)))
+            .gap(Is(2.0))
+            .presses(Is(false))
             |> ignore
 
-            // Centered rounded first-frame thumbnail (aspect-matched to recording)
-            hero.box(fn(frame) {
-              frame
-              .width(By(fn() { Some(rec_preview_frame_size().0) }))
-              .height(By(fn() { Some(rec_preview_frame_size().1) }))
-              .radius(Is(8.0))
-              .clips(Is(true))
-              .ground(Is(0x0F131AFFL))
-              .edge(Is((1.0, 0xFFFFFF1EL)))
-              .shadow(Is((8.0, 3.0, 0x00000066L)))
-              .presses(Is(false))
+            ov.box(fn(r1) {
+              r1.row(Is(true)).gap(Is(5.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)).presses(Is(false)) |> ignore
+              r1.box(fn(tm) {
+                tm
+                .shrink(Is(0.0))
+                .words(By(fn() { rec_fmt_time(rec_ms.get()) }), look={
+                  ..@view.words_plain,
+                  size: 12.0,
+                  weight: 600,
+                  line: 15.0,
+                  wrap: false,
+                })
+                .ink(Is(0xFFFFFFFFL))
+                |> ignore
+              })
               |> ignore
-              frame.box(fn(pic) {
-                pic
-                .over(Is(true))
-                .presses(Is(false))
-                .image(By(fn() {
-                  let k = rec_preview_key.get()
-                  if k != "" { Some((k, "", 720)) } else { None }
-                }))
-                .image_contains(Is(true))
-                .image_fades(Is(false))
+              r1.show(fn() { rec_master_audio.get() }, fn(sp_icon) {
+                sp_icon
+                .width(Is(Some(11.0)))
+                .height(Is(Some(11.0)))
+                .shrink(Is(0.0))
+                .picture(Is(Some(glyph("speaker"))))
+                .tint(Is(0x93C5FDFFL))
+                |> ignore
+              }, at_once=true)
+              r1.box(fn(sp) { sp.grow(Is(1.0)).presses(Is(false)) |> ignore }) |> ignore
+              r1.box(fn(sz) {
+                sz
+                .shrink(Is(0.0))
+                .words(By(fn() { rec_fmt_size(rec_master_bytes.get()) }), look={
+                  ..@view.words_plain,
+                  size: 10.0,
+                  weight: 500,
+                  line: 13.0,
+                  wrap: false,
+                })
+                .ink(Is(0xFFFFFFC0L))
                 |> ignore
               })
               |> ignore
             })
             |> ignore
 
-            // Floating overlay chrome (top-right close + bottom timecode & dims/size pills)
-            hero.box(fn(ov) {
-              ov.over(Is(true)).padding(Is((12.0, 10.0, 12.0, 10.0))).presses(Is(false)) |> ignore
-
-              // Top row: right-aligned translucent circular close button
-              ov.box(fn(top_r) {
-                top_r.row(Is(true)).lies_along(Is(End)).shrink(Is(0.0)).presses(Is(false)) |> ignore
-                top_r.box(fn(cb) {
-                  cb
-                  .width(Is(Some(24.0)))
-                  .height(Is(Some(24.0)))
-                  .shrink(Is(0.0))
-                  .radius(Is(12.0))
-                  .lines_up(Is(Some(Middle)))
-                  .lies_along(Is(Middle))
-                  .presses(Is(true))
-                  .cursor(Is(Some(Hand)))
-                  .says(By(fn() { Some(@view.said(Button, label=tr("关闭 Esc"))) }))
-                  .on_press(rec_close)
-                  .ground(By(fn() {
-                    if cb.pressed() {
-                      0x000000C0L
-                    } else if cb.pointed() {
-                      0x000000A6L
-                    } else {
-                      0x0000007AL
-                    }
-                  }))
-                  .edge(Is((1.0, 0xFFFFFF1EL)))
-                  |> ignore
-                  cb.box(fn(g) {
-                    g
-                    .width(Is(Some(12.0)))
-                    .height(Is(Some(12.0)))
-                    .picture(Is(Some(glyph("close"))))
-                    .tint(By(fn() { if cb.pointed() { 0xFFFFFFFFL } else { 0xC7CDD8FFL } }))
-                    |> ignore
-                  })
-                  |> ignore
-                })
-                |> ignore
-              })
+            ov.box(fn(dm) {
+              dm
+              .shrink(Is(0.0))
+              .words(
+                By(fn() {
+                  let sw = rec_part.val.w
+                  let sh = rec_part.val.h
+                  let (ow, oh) = rec_out_dims(rec_exp_scale.get())
+                  if ow != sw || oh != sh {
+                    "\{sw}×\{sh} → \{ow}×\{oh}"
+                  } else {
+                    "\{sw}×\{sh}"
+                  }
+                }),
+                look={ ..@view.words_plain, size: 10.0, weight: 400, line: 13.0, wrap: false },
+              )
+              .ink(Is(0xFFFFFFB8L))
               |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
 
-              // Flexible spacer
-              ov.box(fn(sp) { sp.grow(Is(1.0)).presses(Is(false)) |> ignore }) |> ignore
+        // 2. Right: Airy controls column (format tabs, borderless property rows, crisp footer)
+        exp.box(fn(right) {
+          right
+          .grow(Is(1.0))
+          .height(Is(Some(184.0)))
+          .padding(Is((0.0, 2.0, 2.0, 1.0)))
+          .gap(Is(8.0))
+          |> ignore
 
-              // Bottom row: timecode (+ audio indicator) left, dimensions · source size right
-              ov.box(fn(bot_r) {
-                bot_r.row(Is(true)).lines_up(Is(Some(Middle))).shrink(Is(0.0)).presses(Is(false)) |> ignore
+          // 2a. Top row: Format pill strip (white active thumb) + draggable gap + subtle close button
+          right.box(fn(top) {
+            top.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
 
-                bot_r.box(fn(tm) {
-                  tm
-                  .row(Is(true))
-                  .gap(Is(5.0))
-                  .shrink(Is(0.0))
-                  .padding(Is((7.0, 2.5, 7.0, 2.5)))
-                  .radius(Is(6.0))
-                  .ground(Is(0x0000008CL))
-                  .edge(Is((1.0, 0xFFFFFF1AL)))
-                  .lines_up(Is(Some(Middle)))
-                  |> ignore
-                  tm.box(fn(t) {
-                    t
-                    .shrink(Is(0.0))
-                    .words(By(fn() { rec_fmt_time(rec_ms.get()) }), look={
-                      ..@view.words_plain,
-                      size: 11.0,
-                      weight: 600,
-                      line: 14.0,
-                      wrap: false,
-                    })
-                    .ink(Is(0xF2F4F8FFL))
-                    |> ignore
-                  })
-                  |> ignore
-                  tm.show(fn() { rec_master_audio.get() }, fn(sp_icon) {
-                    sp_icon
-                    .width(Is(Some(11.0)))
-                    .height(Is(Some(11.0)))
-                    .shrink(Is(0.0))
-                    .picture(Is(Some(glyph("speaker"))))
-                    .tint(Is(0x88C8FFFFL))
-                    |> ignore
-                  }, at_once=true)
-                })
-                |> ignore
+            top.box(fn(tabs) {
+              tabs
+              .row(Is(true))
+              .gap(Is(2.0))
+              .padding(Is((2.5, 2.5, 2.5, 2.5)))
+              .radius(Is(8.5))
+              .ground(Is(0xFFFFFF0CL))
+              .lines_up(Is(Some(Middle)))
+              .shrink(Is(0.0))
+              |> ignore
+              rec_tab_item(
+                tabs,
+                fn() { "H.265" },
+                fn() { rec_exp_fmt.get() == 0 },
+                fn() { rec_exp_fmt.set(0) },
+                done_dot=fn() { rec_has_exported_fmt(0) },
+              )
+              rec_tab_item(
+                tabs,
+                fn() { "H.264" },
+                fn() { rec_exp_fmt.get() == 1 },
+                fn() { rec_exp_fmt.set(1) },
+                done_dot=fn() { rec_has_exported_fmt(1) },
+              )
+              tabs.show(fn() { rec_has_av1.get() }, fn(av1_slot) {
+                av1_slot.row(Is(true)).shrink(Is(0.0)) |> ignore
+                rec_tab_item(
+                  av1_slot,
+                  fn() { "AV1" },
+                  fn() { rec_exp_fmt.get() == 3 },
+                  fn() { rec_exp_fmt.set(3) },
+                  done_dot=fn() { rec_has_exported_fmt(3) },
+                )
+              }, at_once=true)
+              rec_tab_item(
+                tabs,
+                fn() { "GIF" },
+                fn() { rec_exp_fmt.get() == 2 },
+                fn() { rec_exp_fmt.set(2) },
+                done_dot=fn() { rec_has_exported_fmt(2) },
+              )
+            })
+            |> ignore
 
-                bot_r.box(fn(sp) { sp.grow(Is(1.0)).presses(Is(false)) |> ignore }) |> ignore
+            top.box(fn(sp) {
+              sp
+              .grow(Is(1.0))
+              .height(Is(Some(24.0)))
+              .presses(Is(true))
+              .on_drag(fn(d) {
+                if d.kind == Down && rec_wid.val != 0 {
+                  ps_move_window(rec_wid.val)
+                }
+              }, whole=true)
+              |> ignore
+            })
+            |> ignore
 
-                bot_r.box(fn(dm) {
-                  dm
-                  .shrink(Is(0.0))
-                  .padding(Is((7.0, 2.5, 7.0, 2.5)))
-                  .radius(Is(6.0))
-                  .ground(Is(0x0000008CL))
-                  .edge(Is((1.0, 0xFFFFFF14L)))
-                  |> ignore
-                  dm.box(fn(t) {
-                    t
-                    .shrink(Is(0.0))
-                    .words(
-                      By(fn() {
-                        let sz = rec_fmt_size(rec_master_bytes.get())
-                        "\{rec_part.val.w}×\{rec_part.val.h} · \{sz}"
-                      }),
-                      look={ ..@view.words_plain, size: 10.5, weight: 500, line: 14.0, wrap: false },
-                    )
-                    .ink(Is(0xADB4C2FFL))
-                    |> ignore
-                  })
-                  |> ignore
-                })
+            top.box(fn(cb) {
+              cb
+              .width(Is(Some(24.0)))
+              .height(Is(Some(24.0)))
+              .shrink(Is(0.0))
+              .radius(Is(12.0))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .presses(Is(true))
+              .cursor(Is(Some(Hand)))
+              .says(By(fn() { Some(@view.said(Button, label=tr("关闭 Esc"))) }))
+              .on_press(rec_close)
+              .ground(By(fn() {
+                if cb.pressed() {
+                  0xFFFFFF1EL
+                } else if cb.pointed() {
+                  0xFFFFFF12L
+                } else {
+                  0L
+                }
+              }))
+              |> ignore
+              cb.box(fn(g) {
+                g
+                .width(Is(Some(11.5)))
+                .height(Is(Some(11.5)))
+                .picture(Is(Some(glyph("close"))))
+                .tint(By(fn() { if cb.pointed() { 0xFFFFFFFFL } else { 0x737988FFL } }))
                 |> ignore
               })
               |> ignore
@@ -1607,95 +1693,37 @@ fn rec_window(root : @view.View) -> Unit {
           })
           |> ignore
 
-          // Subtle divider below hero
-          clip.box(fn(ln) { ln.height(Is(Some(1.0))).ground(Is(0xFFFFFF12L)) |> ignore }) |> ignore
-
-          // 2. Body: Clean horizontal segmented controls + crisp bottom readout & CTA
-          clip.box(fn(body) {
-            body.padding(Is((16.0, 14.0, 16.0, 15.0))).gap(Is(9.0)).shrink(Is(0.0)) |> ignore
-
-            // Format row: H.265 | H.264 | (AV1) | GIF
-            rec_form_row(body, "格式", fn(track) {
-              rec_seg_item(
-                track,
-                fn() { "H.265" },
-                fn() { rec_exp_fmt.get() == 0 },
-                fn() {
-                  rec_exp_fmt.set(0)
-                  if rec_exp_scale.untracked() == 854 {
-                    rec_exp_scale.set(0)
-                  }
-                },
-                done_dot=fn() { rec_has_exported_fmt(0) },
-              )
-              rec_seg_item(
-                track,
-                fn() { "H.264" },
-                fn() { rec_exp_fmt.get() == 1 },
-                fn() {
-                  rec_exp_fmt.set(1)
-                  if rec_exp_scale.untracked() == 854 {
-                    rec_exp_scale.set(0)
-                  }
-                },
-                done_dot=fn() { rec_has_exported_fmt(1) },
-              )
-              track.show(fn() { rec_has_av1.get() }, fn(av1_slot) {
-                av1_slot.row(Is(true)).grow(Is(1.0)) |> ignore
-                rec_seg_item(
-                  av1_slot,
-                  fn() { "AV1" },
-                  fn() { rec_exp_fmt.get() == 3 },
-                  fn() {
-                    rec_exp_fmt.set(3)
-                    if rec_exp_scale.untracked() == 854 {
-                      rec_exp_scale.set(0)
-                    }
-                  },
-                  done_dot=fn() { rec_has_exported_fmt(3) },
-                )
-              }, at_once=true)
-              rec_seg_item(
-                track,
-                fn() { "GIF" },
-                fn() { rec_exp_fmt.get() == 2 },
-                fn() {
-                  rec_exp_fmt.set(2)
-                  if rec_exp_scale.untracked() == 0 && !rec_scale_disabled(1280) {
-                    rec_exp_scale.set(1280)
-                  }
-                },
-                done_dot=fn() { rec_has_exported_fmt(2) },
-              )
-            })
+          // 2b. Middle: Airy borderless property rows (Quality/FPS + Percentage Size)
+          right.box(fn(rows) {
+            rows.grow(Is(1.0)).lies_along(Is(Middle)).gap(Is(8.0)) |> ignore
 
             // Quality row (MP4: H.265 / H.264 / AV1)
-            body.show(fn() { rec_exp_fmt.get() != 2 }, fn(qwrap) {
+            rows.show(fn() { rec_exp_fmt.get() != 2 }, fn(qwrap) {
               qwrap.shrink(Is(0.0)) |> ignore
-              rec_form_row(qwrap, "画质", fn(track) {
-                rec_seg_item(
-                  track,
+              rec_prop_row(qwrap, "画质", fn(opts) {
+                rec_inline_opt(
+                  opts,
                   fn() { tr("原画") },
                   fn() { rec_exp_qual.get() == 0 },
                   fn() { rec_exp_qual.set(0) },
                   done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), 0, rec_exp_scale.get(), rec_exp_gif_fps.get()) },
                 )
-                rec_seg_item(
-                  track,
-                  fn() { tr("高画质") },
+                rec_inline_opt(
+                  opts,
+                  fn() { tr("高") },
                   fn() { rec_exp_qual.get() == 1 },
                   fn() { rec_exp_qual.set(1) },
                   done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), 1, rec_exp_scale.get(), rec_exp_gif_fps.get()) },
                 )
-                rec_seg_item(
-                  track,
+                rec_inline_opt(
+                  opts,
                   fn() { tr("标准") },
                   fn() { rec_exp_qual.get() == 2 },
                   fn() { rec_exp_qual.set(2) },
                   done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), 2, rec_exp_scale.get(), rec_exp_gif_fps.get()) },
                 )
-                rec_seg_item(
-                  track,
+                rec_inline_opt(
+                  opts,
                   fn() { tr("小体积") },
                   fn() { rec_exp_qual.get() == 3 },
                   fn() { rec_exp_qual.set(3) },
@@ -1705,25 +1733,25 @@ fn rec_window(root : @view.View) -> Unit {
             }, at_once=true)
 
             // FPS row (GIF)
-            body.show(fn() { rec_exp_fmt.get() == 2 }, fn(fwrap) {
+            rows.show(fn() { rec_exp_fmt.get() == 2 }, fn(fwrap) {
               fwrap.shrink(Is(0.0)) |> ignore
-              rec_form_row(fwrap, "帧率", fn(track) {
-                rec_seg_item(
-                  track,
+              rec_prop_row(fwrap, "帧率", fn(opts) {
+                rec_inline_opt(
+                  opts,
                   fn() { "10 fps" },
                   fn() { rec_exp_gif_fps.get() == 10 },
                   fn() { rec_exp_gif_fps.set(10) },
                   done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_scale.get(), 10) },
                 )
-                rec_seg_item(
-                  track,
+                rec_inline_opt(
+                  opts,
                   fn() { "15 fps" },
                   fn() { rec_exp_gif_fps.get() == 15 },
                   fn() { rec_exp_gif_fps.set(15) },
                   done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_scale.get(), 15) },
                 )
-                rec_seg_item(
-                  track,
+                rec_inline_opt(
+                  opts,
                   fn() { "20 fps" },
                   fn() { rec_exp_gif_fps.get() == 20 },
                   fn() { rec_exp_gif_fps.set(20) },
@@ -1732,337 +1760,344 @@ fn rec_window(root : @view.View) -> Unit {
               })
             }, at_once=true)
 
-            // Size row: 原始 | 1080p | 720p (+ 480p for GIF)
-            rec_form_row(body, "尺寸", fn(track) {
-              rec_seg_item(
-                track,
-                fn() { tr("原始") },
+            // Size row: Proportional scaling (100% / 75% / 50%) — always clickable on every recording!
+            rec_prop_row(rows, "尺寸", fn(opts) {
+              rec_inline_opt(
+                opts,
+                fn() { "100%" },
                 fn() { rec_exp_scale.get() == 0 },
                 fn() { rec_exp_scale.set(0) },
+                done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 0, rec_exp_gif_fps.get()) },
               )
-              rec_seg_item(
-                track,
-                fn() { "1080p" },
-                fn() { rec_exp_scale.get() == 1920 },
-                fn() { rec_exp_scale.set(1920) },
-                disabled=fn() { rec_scale_disabled(1920) },
+              rec_inline_opt(
+                opts,
+                fn() { "75%" },
+                fn() { rec_exp_scale.get() == 75 },
+                fn() { rec_exp_scale.set(75) },
+                done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 75, rec_exp_gif_fps.get()) },
               )
-              rec_seg_item(
-                track,
-                fn() { "720p" },
-                fn() { rec_exp_scale.get() == 1280 },
-                fn() { rec_exp_scale.set(1280) },
-                disabled=fn() { rec_scale_disabled(1280) },
+              rec_inline_opt(
+                opts,
+                fn() { "50%" },
+                fn() { rec_exp_scale.get() == 50 },
+                fn() { rec_exp_scale.set(50) },
+                done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 50, rec_exp_gif_fps.get()) },
               )
-              track.show(fn() { rec_exp_fmt.get() == 2 }, fn(g480) {
-                g480.row(Is(true)).grow(Is(1.0)) |> ignore
-                rec_seg_item(
-                  g480,
-                  fn() { "480p" },
-                  fn() { rec_exp_scale.get() == 854 },
-                  fn() { rec_exp_scale.set(854) },
-                  disabled=fn() { rec_scale_disabled(854) },
-                )
-              }, at_once=true)
             })
+          })
+          |> ignore
 
-            // Footer divider + big size readout & actions
-            body.box(fn(ln) { ln.height(Is(Some(1.0))).ground(Is(0xFFFFFF12L)) |> ignore }) |> ignore
+          // 2c. Subtle hairline + Footer (tabular size readout left, Save As icon + White/Emerald CTA right)
+          right.box(fn(ln) { ln.height(Is(Some(1.0))).ground(Is(0xFFFFFF10L)) |> ignore }) |> ignore
 
-            body.box(fn(foot) {
-              foot.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 0.0))).shrink(Is(0.0))
-              |> ignore
+          right.box(fn(foot) {
+            foot.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 0.0))).shrink(Is(0.0))
+            |> ignore
 
-              // Left: prominent tabular size readout + quiet subtitle (or encoding progress / reveal link)
-              foot.box(fn(st) {
-                st.grow(Is(1.0)).gap(Is(2.0)).lines_up(Is(Some(Start))) |> ignore
+            // Left: Size / progress / exported status
+            foot.box(fn(st) {
+              st.grow(Is(1.0)).gap(Is(1.5)).lines_up(Is(Some(Start))) |> ignore
 
-                // Phase 4 (Ready): big estimated size + saved % / direct copy subtitle
-                st.show(fn() { rec_phase.get() == 4 }, fn(rdy) {
-                  rdy.gap(Is(2.0)).lines_up(Is(Some(Start))) |> ignore
-                  rdy.box(fn(big) {
-                    big
-                    .shrink(Is(0.0))
-                    .words(By(rec_current_est_str), look={
-                      ..@view.words_plain,
-                      size: 15.0,
-                      weight: 700,
-                      line: 18.0,
-                      wrap: false,
-                    })
-                    .ink(Is(0xF5F6F8FFL))
-                    |> ignore
-                  })
-                  |> ignore
-                  rdy.box(fn(sub) {
-                    sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))) |> ignore
-                    sub.box(fn(t1) {
-                      t1
-                      .shrink(Is(0.0))
-                      .words(
-                        By(fn() {
-                          let fmt = rec_exp_fmt.get()
-                          let pct = rec_est_saved_pct()
-                          if rec_is_direct_copy_for(fmt, rec_exp_qual.get(), rec_exp_scale.get()) {
-                            tr("零重编码直出")
-                          } else if pct > 0 {
-                            tr("较原文件 ")
-                          } else if fmt == 2 {
-                            tr("GIF 动画")
-                          } else if fmt == 3 {
-                            "MP4 · AV1"
-                          } else if fmt == 0 {
-                            "MP4 · H.265"
-                          } else {
-                            "MP4 · H.264"
-                          }
-                        }),
-                        look={ ..@view.words_plain, size: 10.5, weight: 500, line: 13.0, wrap: false },
-                      )
-                      .ink(Is(0x7D8492FFL))
-                      |> ignore
-                    })
-                    |> ignore
-                    sub.show(
-                      fn() {
-                        !rec_is_direct_copy_for(rec_exp_fmt.get(), rec_exp_qual.get(), rec_exp_scale.get()) &&
-                        rec_est_saved_pct() > 0
-                      },
-                      fn(pc) {
-                        pc
-                        .shrink(Is(0.0))
-                        .words(By(fn() { "-\{rec_est_saved_pct()}%" }), look={
-                          ..@view.words_plain,
-                          size: 10.5,
-                          weight: 600,
-                          line: 13.0,
-                          wrap: false,
-                        })
-                        .ink(Is(0x3DD68CFFL))
-                        |> ignore
-                      },
-                      at_once=true,
-                    )
-                  })
-                  |> ignore
-                }, at_once=true)
-
-                // Phase 5 (Encoding): percentage + slim progress bar
-                st.show(fn() { rec_phase.get() == 5 }, fn(enc) {
-                  enc.gap(Is(5.0)).lines_up(Is(Some(Start))) |> ignore
-                  enc.box(fn(t) {
-                    t
-                    .shrink(Is(0.0))
-                    .words(By(fn() { tr("正在编码 ") + rec_exp_pct.get().to_string() + "%" }), look={
-                      ..@view.words_plain,
-                      size: 12.5,
-                      weight: 600,
-                      line: 16.0,
-                      wrap: false,
-                    })
-                    .ink(Is(0x88C8FFFFL))
-                    |> ignore
-                  })
-                  |> ignore
-                  enc.box(fn(bar_bg) {
-                    bar_bg.width(Is(Some(124.0))).height(Is(Some(4.0))).radius(Is(2.0)).ground(Is(0xFFFFFF16L)).clips(Is(true))
-                    |> ignore
-                    bar_bg.box(fn(bar_fg) {
-                      bar_fg
-                      .height(Is(Some(4.0)))
-                      .width(By(fn() { Some(dmax(4.0, 124.0 * rec_exp_pct.get().to_double() / 100.0)) }))
-                      .radius(Is(2.0))
-                      .ground(Is(0x0A84FFFFL))
-                      |> ignore
-                    })
-                    |> ignore
-                  })
-                  |> ignore
-                }, at_once=true)
-
-                // Phase 6 (Already Exported / Saved): emerald actual size + inline Reveal link
-                st.show(fn() { rec_phase.get() == 6 }, fn(done_v) {
-                  done_v.gap(Is(2.0)).lines_up(Is(Some(Start))) |> ignore
-                  done_v.box(fn(big) {
-                    big
-                    .shrink(Is(0.0))
-                    .words(By(fn() { rec_fmt_size(rec_exp_bytes.get()) }), look={
-                      ..@view.words_plain,
-                      size: 15.0,
-                      weight: 700,
-                      line: 18.0,
-                      wrap: false,
-                    })
-                    .ink(Is(0x3DD68CFFL))
-                    |> ignore
-                  })
-                  |> ignore
-                  done_v.box(fn(sub) {
-                    sub.row(Is(true)).gap(Is(4.0)).lines_up(Is(Some(Middle))) |> ignore
-                    sub.box(fn(t) {
-                      t
-                      .shrink(Is(0.0))
-                      .words(
-                        By(fn() { if rec_copied_note.get() { tr("已复制 · ") } else { tr("已导出 · ") } }),
-                        look={ ..@view.words_plain, size: 10.5, weight: 500, line: 13.0, wrap: false },
-                      )
-                      .ink(Is(0x7D8492FFL))
-                      |> ignore
-                    })
-                    |> ignore
-                    sub.box(fn(op) {
-                      op
-                      .shrink(Is(0.0))
-                      .presses(Is(true))
-                      .cursor(Is(Some(Hand)))
-                      .says(By(fn() { Some(@view.said(Button, label=tr("打开位置"))) }))
-                      .on_press(fn() {
-                        let p = rec_path.untracked()
-                        if p != "" {
-                          ps_reveal(cstr(p))
-                        }
-                      })
-                      |> ignore
-                      op.box(fn(t) {
-                        t
-                        .shrink(Is(0.0))
-                        .words(By(fn() { tr("打开位置") }), look={
-                          ..@view.words_plain,
-                          size: 10.5,
-                          weight: 500,
-                          line: 13.0,
-                          wrap: false,
-                        })
-                        .ink(By(fn() { if op.pointed() { 0xFFFFFFFFL } else { 0xC4CAD6FFL } }))
-                        |> ignore
-                      })
-                      |> ignore
-                    })
-                    |> ignore
-                  })
-                  |> ignore
-                }, at_once=true)
-
-                // Phase 7 (Error)
-                st.show(fn() { rec_phase.get() == 7 }, fn(err_v) {
-                  err_v
+              // Phase 4 (Ready)
+              st.show(fn() { rec_phase.get() == 4 }, fn(rdy) {
+                rdy.gap(Is(1.5)).lines_up(Is(Some(Start))) |> ignore
+                rdy.box(fn(big) {
+                  big
                   .shrink(Is(0.0))
-                  .words(By(fn() { rec_err.get() }), look={
+                  .words(By(rec_current_est_str), look={
                     ..@view.words_plain,
-                    size: 11.5,
+                    size: 13.5,
+                    weight: 600,
+                    line: 17.0,
+                    wrap: false,
+                  })
+                  .ink(Is(0xF2F4F8FFL))
+                  |> ignore
+                })
+                |> ignore
+                rdy.box(fn(sub) {
+                  sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))) |> ignore
+                  sub.box(fn(t1) {
+                    t1
+                    .shrink(Is(0.0))
+                    .words(
+                      By(fn() {
+                        let fmt = rec_exp_fmt.get()
+                        let pct = rec_est_saved_pct()
+                        if rec_is_direct_copy_for(fmt, rec_exp_qual.get(), rec_exp_scale.get()) {
+                          tr("零重编码直出")
+                        } else if pct > 0 {
+                          tr("较原文件 ")
+                        } else if fmt == 2 {
+                          tr("GIF 动画")
+                        } else if fmt == 3 {
+                          "MP4 · AV1"
+                        } else if fmt == 0 {
+                          "MP4 · H.265"
+                        } else {
+                          "MP4 · H.264"
+                        }
+                      }),
+                      look={ ..@view.words_plain, size: 10.5, weight: 400, line: 13.0, wrap: false },
+                    )
+                    .ink(Is(0x6E7484FFL))
+                    |> ignore
+                  })
+                  |> ignore
+                  sub.show(
+                    fn() {
+                      !rec_is_direct_copy_for(rec_exp_fmt.get(), rec_exp_qual.get(), rec_exp_scale.get()) &&
+                      rec_est_saved_pct() > 0
+                    },
+                    fn(pc) {
+                      pc
+                      .shrink(Is(0.0))
+                      .words(By(fn() { "-\{rec_est_saved_pct()}%" }), look={
+                        ..@view.words_plain,
+                        size: 10.5,
+                        weight: 500,
+                        line: 13.0,
+                        wrap: false,
+                      })
+                      .ink(Is(0x34D399FFL))
+                      |> ignore
+                    },
+                    at_once=true,
+                  )
+                })
+                |> ignore
+              }, at_once=true)
+
+              // Phase 5 (Encoding)
+              st.show(fn() { rec_phase.get() == 5 }, fn(enc) {
+                enc.gap(Is(5.0)).lines_up(Is(Some(Start))) |> ignore
+                enc.box(fn(t) {
+                  t
+                  .shrink(Is(0.0))
+                  .words(By(fn() { tr("正在编码 ") + rec_exp_pct.get().to_string() + "%" }), look={
+                    ..@view.words_plain,
+                    size: 12.0,
                     weight: 500,
                     line: 15.0,
                     wrap: false,
                   })
-                  .ink(Is(0xF5A524FFL))
+                  .ink(Is(0xE8ECF4FFL))
                   |> ignore
-                }, at_once=true)
-              })
-              |> ignore
-
-              // Right: Save As (ghost) + Save & Copy (Apple Blue) / Copy File (crisp white)
-              foot.box(fn(btns) {
-                btns.row(Is(true)).gap(Is(7.0)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
-
-                btns.box(fn(sa) {
-                  sa
-                  .height(Is(Some(32.0)))
-                  .shrink(Is(0.0))
-                  .padding(Is((11.0, 0.0, 11.0, 0.0)))
-                  .radius(Is(8.5))
-                  .lines_up(Is(Some(Middle)))
-                  .lies_along(Is(Middle))
-                  .presses(Is(true))
-                  .cursor(By(fn() { if rec_phase.get() == 5 { None } else { Some(Hand) } }))
-                  .says(By(fn() { Some(@view.said(Button, label=tr("另存为"))) }))
-                  .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(true) } })
-                  .ground(By(fn() {
-                    if rec_phase.get() == 5 {
-                      0xFFFFFF0AL
-                    } else if sa.pressed() {
-                      0xFFFFFF26L
-                    } else if sa.pointed() {
-                      0xFFFFFF1CL
-                    } else {
-                      0xFFFFFF12L
-                    }
-                  }))
+                })
+                |> ignore
+                enc.box(fn(bar_bg) {
+                  bar_bg.width(Is(Some(104.0))).height(Is(Some(3.5))).radius(Is(1.75)).ground(Is(0xFFFFFF16L)).clips(Is(true))
                   |> ignore
-                  sa.box(fn(t) {
-                    t
-                    .shrink(Is(0.0))
-                    .words(By(fn() { tr("另存为") }), look={
-                      ..@view.words_plain,
-                      size: 11.5,
-                      weight: 600,
-                      line: 15.0,
-                      wrap: false,
-                    })
-                    .ink(By(fn() { if rec_phase.get() == 5 { 0xFFFFFF4DL } else { 0xD5D9E2FFL } }))
+                  bar_bg.box(fn(bar_fg) {
+                    bar_fg
+                    .height(Is(Some(3.5)))
+                    .width(By(fn() { Some(dmax(4.0, 104.0 * rec_exp_pct.get().to_double() / 100.0)) }))
+                    .radius(Is(1.75))
+                    .ground(Is(0xF2F3F6FFL))
                     |> ignore
                   })
                   |> ignore
                 })
                 |> ignore
+              }, at_once=true)
 
-                btns.box(fn(pri) {
-                  pri
-                  .height(Is(Some(32.0)))
+              // Phase 6 (Exported / Reused)
+              st.show(fn() { rec_phase.get() == 6 }, fn(done_v) {
+                done_v.gap(Is(1.5)).lines_up(Is(Some(Start))) |> ignore
+                done_v.box(fn(big) {
+                  big
                   .shrink(Is(0.0))
-                  .padding(Is((14.0, 0.0, 14.0, 0.0)))
-                  .radius(Is(8.5))
-                  .lines_up(Is(Some(Middle)))
-                  .lies_along(Is(Middle))
-                  .presses(Is(true))
-                  .cursor(By(fn() { if rec_phase.get() == 5 { None } else { Some(Hand) } }))
-                  .says(By(fn() {
-                    Some(@view.said(Button, label=if rec_phase.get() == 6 { tr("复制文件") } else { tr("保存并复制") }))
-                  }))
-                  .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(false) } })
-                  .ground(By(fn() {
-                    match rec_phase.get() {
-                      5 => 0xFFFFFF14L
-                      6 =>
-                        if pri.pressed() {
-                          0xDDE1E8FFL
-                        } else if pri.pointed() {
-                          0xFFFFFFFFL
-                        } else {
-                          0xF2F4F7FFL
-                        }
-                      _ =>
-                        if pri.pressed() {
-                          0x006CE0FFL
-                        } else if pri.pointed() {
-                          0x2292FFFFL
-                        } else {
-                          0x0A84FFFFL
-                        }
-                    }
-                  }))
+                  .words(By(fn() { rec_fmt_size(rec_exp_bytes.get()) }), look={
+                    ..@view.words_plain,
+                    size: 13.5,
+                    weight: 600,
+                    line: 17.0,
+                    wrap: false,
+                  })
+                  .ink(Is(0x4ADE80FFL))
                   |> ignore
-                  pri.box(fn(t) {
+                })
+                |> ignore
+                done_v.box(fn(sub) {
+                  sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))) |> ignore
+                  sub.box(fn(t) {
                     t
                     .shrink(Is(0.0))
                     .words(
-                      By(fn() {
-                        match rec_phase.get() {
-                          5 => tr("编码中…")
-                          6 => tr("复制文件")
-                          _ => tr("保存并复制")
-                        }
-                      }),
-                      look={ ..@view.words_plain, size: 12.0, weight: 600, line: 15.0, wrap: false },
+                      By(fn() { if rec_copied_note.get() { tr("已复制 · ") } else { tr("已导出 · ") } }),
+                      look={ ..@view.words_plain, size: 10.5, weight: 400, line: 13.0, wrap: false },
                     )
-                    .ink(By(fn() {
-                      match rec_phase.get() {
-                        5 => 0xFFFFFF59L
-                        6 => 0x121316FFL
-                        _ => 0xFFFFFFFFL
-                      }
-                    }))
+                    .ink(Is(0x6E7484FFL))
                     |> ignore
                   })
+                  |> ignore
+                  sub.box(fn(op) {
+                    op
+                    .shrink(Is(0.0))
+                    .presses(Is(true))
+                    .cursor(Is(Some(Hand)))
+                    .says(By(fn() { Some(@view.said(Button, label=tr("打开位置"))) }))
+                    .on_press(fn() {
+                      let p = rec_path.untracked()
+                      if p != "" {
+                        ps_reveal(cstr(p))
+                      }
+                    })
+                    |> ignore
+                    op.box(fn(t) {
+                      t
+                      .shrink(Is(0.0))
+                      .words(By(fn() { tr("打开位置") + " ↗" }), look={
+                        ..@view.words_plain,
+                        size: 10.5,
+                        weight: 500,
+                        line: 13.0,
+                        wrap: false,
+                      })
+                      .ink(By(fn() { if op.pointed() { 0xFFFFFFFFL } else { 0xA6AEBEFFL } }))
+                      |> ignore
+                    })
+                    |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+              }, at_once=true)
+
+              // Phase 7 (Error)
+              st.show(fn() { rec_phase.get() == 7 }, fn(err_v) {
+                err_v
+                .shrink(Is(0.0))
+                .words(By(fn() { rec_err.get() }), look={
+                  ..@view.words_plain,
+                  size: 11.0,
+                  weight: 500,
+                  line: 15.0,
+                  wrap: false,
+                })
+                .ink(Is(0xF87171FFL))
+                |> ignore
+              }, at_once=true)
+            })
+            |> ignore
+
+            // Right: Square icon Save As button + Crisp alabaster white (or translucent emerald) primary CTA
+            foot.box(fn(btns) {
+              btns.row(Is(true)).gap(Is(6.0)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+
+              btns.box(fn(sa) {
+                sa
+                .width(Is(Some(32.0)))
+                .height(Is(Some(32.0)))
+                .shrink(Is(0.0))
+                .radius(Is(9.0))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .presses(Is(true))
+                .cursor(By(fn() { if rec_phase.get() == 5 { None } else { Some(Hand) } }))
+                .says(By(fn() { Some(@view.said(Button, label=tr("另存为"))) }))
+                .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(true) } })
+                .ground(By(fn() {
+                  if rec_phase.get() == 5 {
+                    0xFFFFFF08L
+                  } else if sa.pressed() {
+                    0xFFFFFF22L
+                  } else if sa.pointed() {
+                    0xFFFFFF18L
+                  } else {
+                    0xFFFFFF0FL
+                  }
+                }))
+                .edge(Is((1.0, 0xFFFFFF12L)))
+                |> ignore
+                sa.box(fn(g) {
+                  g
+                  .width(Is(Some(14.5)))
+                  .height(Is(Some(14.5)))
+                  .picture(Is(Some(glyph("save"))))
+                  .tint(By(fn() {
+                    if rec_phase.get() == 5 {
+                      0xFFFFFF40L
+                    } else if sa.pointed() {
+                      0xFFFFFFFFL
+                    } else {
+                      0xC4CAD8FFL
+                    }
+                  }))
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+
+              btns.box(fn(pri) {
+                pri
+                .row(Is(true))
+                .gap(Is(5.5))
+                .height(Is(Some(32.0)))
+                .shrink(Is(0.0))
+                .padding(Is((13.0, 0.0, 13.0, 0.0)))
+                .radius(Is(9.0))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .presses(Is(true))
+                .cursor(By(fn() { if rec_phase.get() == 5 { None } else { Some(Hand) } }))
+                .says(By(fn() {
+                  Some(@view.said(Button, label=if rec_phase.get() == 6 { tr("复制文件") } else { tr("保存并复制") }))
+                }))
+                .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(false) } })
+                .ground(By(fn() {
+                  match rec_phase.get() {
+                    5 => 0xFFFFFF12L
+                    6 =>
+                      if pri.pressed() {
+                        0x34D39944L
+                      } else if pri.pointed() {
+                        0x34D39933L
+                      } else {
+                        0x34D39924L
+                      }
+                    _ =>
+                      if pri.pressed() {
+                        0xDDE0E6FFL
+                      } else if pri.pointed() {
+                        0xFFFFFFFFL
+                      } else {
+                        0xF3F4F6FFL
+                      }
+                  }
+                }))
+                .edge(By(fn() { if rec_phase.get() == 6 { (1.0, 0x34D39948L) } else { (0.0, 0L) } }))
+                |> ignore
+                pri.show(fn() { rec_phase.get() != 5 }, fn(ic) {
+                  ic
+                  .width(Is(Some(13.0)))
+                  .height(Is(Some(13.0)))
+                  .shrink(Is(0.0))
+                  .picture(Is(Some(glyph("copy"))))
+                  .tint(By(fn() { if rec_phase.get() == 6 { 0x6EE7B7FFL } else { 0x111216FFL } }))
+                  |> ignore
+                }, at_once=true)
+                pri.box(fn(t) {
+                  t
+                  .shrink(Is(0.0))
+                  .words(
+                    By(fn() {
+                      match rec_phase.get() {
+                        5 => tr("编码中…")
+                        6 => tr("复制文件")
+                        _ => tr("保存并复制")
+                      }
+                    }),
+                    look={ ..@view.words_plain, size: 12.0, weight: 600, line: 15.0, wrap: false },
+                  )
+                  .ink(By(fn() {
+                    match rec_phase.get() {
+                      5 => 0xFFFFFF55L
+                      6 => 0x6EE7B7FFL
+                      _ => 0x111216FFL
+                    }
+                  }))
                   |> ignore
                 })
                 |> ignore
