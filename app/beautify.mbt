@@ -33,7 +33,12 @@ let beauty_backs : Array[(Int, Int, Int)] = [
 ]
 
 ///|
-let beauty_back_names : Array[String] = ["晚霞", "海洋", "薄荷", "夜空", "浅灰", "纯白"]
+/// (and the last, the desktop's own wallpaper: `beauty_wall`)
+let beauty_back_names : Array[String] = ["晚霞", "海洋", "薄荷", "夜空", "浅灰", "纯白", "桌面壁纸"]
+
+///|
+/// The background that is the desktop's wallpaper (the user, 2026-11-20: 「背景是不是可以选用用户自己的背景」).
+let beauty_wall : Int = 6
 
 ///|
 /// The room round the part (points), small to large.
@@ -66,7 +71,7 @@ fn beauty_load() -> Unit {
     }
   }
   beauty.set({
-    back: n("back", 0, beauty_backs.length() - 1),
+    back: n("back", 0, beauty_back_names.length() - 1),
     room: n("room", 1, beauty_rooms.length() - 1),
     shadow: !(o.get("shadow") is Some(False)),
   })
@@ -94,6 +99,109 @@ fn beauty_toggle() -> Unit {
   }
   beauty_load()
   beauty_on.set(!beauty_on.untracked())
+  if beauty_on.untracked() {
+    wallpaper_read()
+  }
+}
+
+// ---- the desktop's wallpaper as a background ----
+
+///|
+/// The wallpaper as it was read as the background was last turned on: its picture's key and its size (pixels), None
+/// where there is none PinShot can show (a colour alone, a file it cannot tell the size of).
+let wallpaper : @signals.Signal[(String, Double, Double)?] = @signals.signal(None)
+
+///|
+let wallpaper_n : Ref[Int] = Ref(0)
+
+///|
+/// The desktop's wallpaper read again (it may have changed since), the one read before let go.
+fn wallpaper_read() -> Unit {
+  wallpaper_let_go()
+  let path = text_of(ps_wallpaper())
+  if path == "" {
+    return
+  }
+  let bytes = ps_read_file(cstr(path))
+  guard picture_size(bytes) is Some((w, h)) else {
+    log("background: the wallpaper \{path} is not a picture PinShot reads")
+    return
+  }
+  wallpaper_n.val += 1
+  let key = "mem:beauty/wall/\{wallpaper_n.val}"
+  @ui.add_image(key, bytes)
+  wallpaper.set(Some((key, w.to_double(), h.to_double())))
+}
+
+///|
+/// The wallpaper's picture let go (the capture closed): nothing of it kept between captures.
+fn wallpaper_let_go() -> Unit {
+  match wallpaper.untracked() {
+    Some((key, _, _)) => {
+      @ui.forget_image(key)
+      wallpaper.set(None)
+    }
+    None => ()
+  }
+}
+
+///|
+/// A PNG's, JPEG's or BMP's size (pixels) as its head says it.
+fn picture_size(b : Bytes) -> (Int, Int)? {
+  let n = b.length()
+  let u = fn(i : Int) { if i < n { b[i].to_int() } else { 0 } }
+  let be16 = fn(i : Int) { (u(i) << 8) | u(i + 1) }
+  let be32 = fn(i : Int) { (u(i) << 24) | (u(i + 1) << 16) | (u(i + 2) << 8) | u(i + 3) }
+  let le32 = fn(i : Int) { u(i) | (u(i + 1) << 8) | (u(i + 2) << 16) | (u(i + 3) << 24) }
+  if n > 24 && u(0) == 0x89 && u(1) == 0x50 && u(2) == 0x4E && u(3) == 0x47 {
+    return Some((be32(16), be32(20)))
+  }
+  if n > 26 && u(0) == 0x42 && u(1) == 0x4D {
+    let h = le32(22)
+    return Some((le32(18), if h < 0 { -h } else { h }))
+  }
+  if n > 4 && u(0) == 0xFF && u(1) == 0xD8 {
+    // (the segments walked to the frame's head: SOF0-SOF15, not DHT C4, JPG C8 or DAC CC)
+    let mut i = 2
+    while i + 9 < n {
+      if u(i) != 0xFF {
+        i += 1
+        continue
+      }
+      let m = u(i + 1)
+      if m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC {
+        return Some((be16(i + 7), be16(i + 5)))
+      }
+      if m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7) || m == 0xFF {
+        i += if m == 0xFF { 1 } else { 2 }
+        continue
+      }
+      i += 2 + be16(i + 2)
+    }
+  }
+  None
+}
+
+///|
+/// A picture `pw` × `ph` (pixels) laid in `box` to cover all of it (`w` × `h`, points), as large as it must be and
+/// centred: none of the box left bare, the picture never stretched.
+fn covered(box : @view.View, key : String, pw : Double, ph : Double, w : Double, h : Double) -> Unit {
+  let k = dmax(w / pw, h / ph)
+  let (cw, ch) = (pw * k, ph * k)
+  box.box(fn(o) {
+    o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
+    o.box(fn(g) {
+      g
+      .width(Is(Some(cw)))
+      .height(Is(Some(ch)))
+      .shrink(Is(0.0))
+      .offset(Is(((w - cw) / 2.0, (h - ch) / 2.0)))
+      .image(Is(Some((key, "", 2560))))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
 }
 
 ///|
@@ -118,6 +226,9 @@ fn beauty_frame() -> Rect? {
 ///|
 /// The background `i`'s picture (made as it is first asked for: a small gradient the GPU stretches), "" none.
 fn beauty_back_key(i : Int) -> String {
+  if i >= beauty_backs.length() {
+    return ""
+  }
   let (a, b, c) = beauty_backs[i]
   if a < 0 {
     return ""
@@ -156,13 +267,19 @@ let beauty_made : Map[String, Bool] = Map([])
 fn beauty_drawn(b : @view.View, w : Double, h : Double, part : (@view.View) -> Unit, overlay~ : Bool) -> Unit {
   let s = beauty.untracked()
   let room = beauty_rooms[s.room]
-  let key = beauty_back_key(s.back)
+  let wall = if s.back == beauty_wall { wallpaper.untracked() } else { None }
+  // (the wallpaper chosen and none to be had: the first gradient)
+  let key = beauty_back_key(if s.back == beauty_wall { 0 } else { s.back })
   b.box(fn(back) {
     back.over(Is(true)).clips(Is(true)) |> ignore
-    if key != "" {
-      back.box(fn(g) { g.over(Is(true)).image(Is(Some((key, "", 96)))) |> ignore }) |> ignore
-    } else if overlay {
-      back.ground(Is(0x2A2B30FFL)) |> ignore
+    match wall {
+      Some((wk, pw, ph)) => covered(back, wk, pw, ph, w + 2.0 * room, h + 2.0 * room)
+      None =>
+        if key != "" {
+          back.box(fn(g) { g.over(Is(true)).image(Is(Some((key, "", 96)))) |> ignore }) |> ignore
+        } else if overlay {
+          back.ground(Is(0x2A2B30FFL)) |> ignore
+        }
     }
   })
   |> ignore
@@ -209,11 +326,11 @@ fn beauty_layer(stage : @view.View) -> Unit {
     o.over(Is(true)).presses(Is(false)).lines_up(Is(Some(Start))) |> ignore
     o.pick(fn() {
       match beauty_frame() {
-        Some(f) => Some((f, sel.get(), beauty.get(), frozen_key.get()))
+        Some(f) => Some((f, sel.get(), beauty.get(), frozen_key.get(), wallpaper.get()))
         None => None
       }
     }, fn(b, now) {
-      guard now is Some((f, Some(r), _, key)) else { return }
+      guard now is Some((f, Some(r), _, key, _)) else { return }
       let k = mon_scale.untracked()
       let (mw, mh) = (mon.val.w.to_double() / k, mon.val.h.to_double() / k)
       let px = dmax(mon.val.w.to_double(), mon.val.h.to_double()).to_int()
@@ -247,6 +364,8 @@ fn beauty_row(row : @view.View) -> Unit {
   for i, name in beauty_back_names {
     row.box(fn(b) {
       b
+      // (the wallpaper's only where there is one to be had)
+      .laid_nowhere(By(fn() { i == beauty_wall && wallpaper.get() is None }))
       .width(Is(Some(28.0)))
       .height(Is(Some(28.0)))
       .radius(Is(style_btn_corner))
@@ -271,9 +390,15 @@ fn beauty_row(row : @view.View) -> Unit {
       tip_follows(b, fn() { name }, @view.Bottom)
       b.box(fn(sw) {
         sw.width(Is(Some(18.0))).height(Is(Some(18.0))).radius(Is(6.0)).clips(Is(true)).edge(Is((1.0, 0xFFFFFF33L))) |> ignore
-        if beauty_backs[i].0 < 0 {
-          // (none: a slash across)
-          sw.picture(Is(Some({ w: 18.0, h: 18.0, layers: [stroke_layer("M4 14 14 4", 0xFFFFFFB3L, 1.4)] }))) |> ignore
+        if i == beauty_wall {
+          // (the wallpaper as it was read this capture, a little of it)
+          sw.pick(fn() { wallpaper.get() }, fn(c, wall) {
+            c.width(Is(Some(18.0))).height(Is(Some(18.0))) |> ignore
+            match wall {
+              Some((key, pw, ph)) => covered(c, key, pw, ph, 18.0, 18.0)
+              None => ()
+            }
+          }, at_once=true)
         } else {
           sw.box(fn(g) {
             g.over(Is(true)).image(By(fn() { Some((beauty_back_key(i), "", 96)) })) |> ignore

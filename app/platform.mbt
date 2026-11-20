@@ -199,6 +199,10 @@ extern "C" fn ps_data_dir() -> Bytes = "ps_data_dir"
 extern "C" fn ps_pictures_dir() -> Bytes = "ps_pictures_dir"
 
 ///|
+/// The desktop's wallpaper, its file ("" none).
+extern "C" fn ps_wallpaper() -> Bytes = "ps_wallpaper"
+
+///|
 #borrow(path)
 extern "C" fn ps_read_file(path : Bytes) -> Bytes = "ps_read_file"
 

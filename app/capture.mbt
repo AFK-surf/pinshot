@@ -237,7 +237,10 @@ fn close_capture() -> Unit {
   hand.set(Free)
   reset_marks()
   frozen_key.set("")
+  beauty_on.set(false)
   @signals.end_batch()
+  // (the wallpaper's picture, if it was read for a background, not kept between captures)
+  wallpaper_let_go()
   ps_capture_release()
   windows_on.set([])
   if key != "" {

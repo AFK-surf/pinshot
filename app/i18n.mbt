@@ -184,6 +184,7 @@ let en_words : Map[String, String] = {
   "夜空": "Night",
   "浅灰": "Light grey",
   "纯白": "White",
+  "桌面壁纸": "Wallpaper",
   "小": "Small",
   "大": "Large",
   "阴影": "Shadow",

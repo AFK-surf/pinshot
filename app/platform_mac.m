@@ -357,6 +357,10 @@ moonbit_bytes_t ps_memory(void) {
 }
 moonbit_bytes_t ps_data_dir(void) { return ps_string(appData().path); }
 moonbit_bytes_t ps_pictures_dir(void) { return ps_string(directory(NSPicturesDirectory).path); }
+moonbit_bytes_t ps_wallpaper(void) {
+  NSURL *url = [NSWorkspace.sharedWorkspace desktopImageURLForScreen:NSScreen.mainScreen];
+  return ps_string(url.path ?: @"");
+}
 moonbit_bytes_t ps_read_file(moonbit_bytes_t path) {
   return ps_data([NSData dataWithContentsOfFile:str(path)]);
 }

@@ -1124,6 +1124,15 @@ moonbit_bytes_t ps_data_dir(void) {
 }
 
 // The pictures folder's PinShot (%USERPROFILE%\Pictures\PinShot), not made.
+// The desktop's wallpaper, its file ("" none, or a colour alone): a background a capture may be laid on (beautify.mbt).
+moonbit_bytes_t ps_wallpaper(void) {
+  wchar_t path[MAX_PATH * 2] = {0};
+  if (!SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH * 2, path, 0) || !path[0] ||
+      GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
+    return moonbit_make_bytes(0, 0);
+  return ps_utf8_bytes(path);
+}
+
 moonbit_bytes_t ps_pictures_dir(void) {
   wchar_t *p = NULL;
   wchar_t dir[MAX_PATH * 2] = {0};
