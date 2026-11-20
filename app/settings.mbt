@@ -287,10 +287,9 @@ fn apply_keys() -> Unit {
     )
   }
   let pin_words = if pv == 0 { tr("贴图剪贴板中的图片") } else { tr("贴图剪贴板中的图片") + "\u{8}" + pw }
+  let capture_words = if s.capture_key.vk == 0 { tr("截图") } else { tr("截图") + "\u{8}" + cw }
   let menu = "capture\t" +
-    tr("截图") +
-    "\u{8}" +
-    cw +
+    capture_words +
     "\npin-clip\t" +
     pin_words +
     "\npins\t" +
@@ -356,6 +355,20 @@ fn record_key(which : Int) -> Unit {
 }
 
 ///|
+/// The shortcut `which` cleared (its box's ×, or Backspace while it is asked for): none, the screen still taken from
+/// the icon (the user, 2026-11-20: 「应该可以给一个选项，清空快捷键」).
+fn clear_key(which : Int) -> Unit {
+  stop_recording()
+  key_trouble.set((0, ""))
+  if which == 1 {
+    change_settings(fn(s) { { ..s, capture_key: { mods: 0, vk: 0 } } })
+  } else {
+    change_settings(fn(s) { { ..s, pin_key: { mods: 0, vk: 0 } } })
+  }
+  apply_keys()
+}
+
+///|
 /// Waiting for a shortcut no more (the settings closed, or another asked for), nothing taken.
 fn stop_recording() -> Unit {
   if recording.untracked() != 0 {
@@ -385,12 +398,7 @@ fn key_pressed(how : String, mods : Int, vk : Int) -> Unit {
       return
     }
     "clear" => {
-      if which == 2 {
-        change_settings(fn(s) { { ..s, pin_key: { mods: 0, vk: 0 } } })
-        apply_keys()
-      } else {
-        trouble(tr("截图必须有快捷键"))
-      }
+      clear_key(which)
       return
     }
     _ => ()
@@ -553,8 +561,14 @@ fn general_page(p : @view.View) -> Unit {
 fn keys_page(p : @view.View) -> Unit {
   set_group(p, "", fn(g) {
     if keys_pressed_in() {
-      set_row(g, "截图", fn(r) { key_box(r, 1) }, note=fn() { key_note(1) })
-      set_row(g, "贴剪贴板图片", fn(r) { key_box(r, 2) }, note=fn() { key_note(2) })
+      set_row(g, "截图", fn(r) {
+        key_box(r, 1)
+        key_clear_button(r, 1)
+      }, note=fn() { key_note(1) })
+      set_row(g, "贴剪贴板图片", fn(r) {
+        key_box(r, 2)
+        key_clear_button(r, 2)
+      }, note=fn() { key_note(2) })
     } else {
       set_row(g, "截图", fn(r) {
         choice(
@@ -577,7 +591,8 @@ fn keys_page(p : @view.View) -> Unit {
   if keys_pressed_in() {
     p.box(fn(b) {
       b.padding(Is((4.0, 0.0, 4.0, 0.0))) |> ignore
-      set_words(b, fn() { tr("点一下快捷键框，再按下想用的组合键；Esc 取消，退格键清除。") }, 12.0, set_muted)
+      set_words(b, fn() { tr("点一下快捷键框，再按下想用的组合键；Esc 取消。") }, 12.0, set_muted)
+      set_words(b, fn() { tr("点 × 清空；清空后仍可从托盘图标截图。") }, 12.0, set_muted)
     })
     |> ignore
   }
@@ -605,6 +620,40 @@ fn key_note(which : Int) -> String {
   } else {
     ""
   }
+}
+
+///|
+/// The × beside a shortcut's box: it cleared. Laid out only while there is one to clear (and it is not being asked for).
+fn key_clear_button(parent : @view.View, which : Int) -> Unit {
+  let has = fn() {
+    let s = settings.get()
+    recording.get() != which && (if which == 1 { s.capture_key.vk } else { s.pin_key.vk }) != 0
+  }
+  parent.box(fn(b) {
+    b
+    .laid_nowhere(By(fn() { !has() }))
+    .width(Is(Some(28.0)))
+    .height(Is(Some(28.0)))
+    .radius(Is(8.0))
+    .shrink(Is(0.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .presses(Is(true))
+    .says(By(fn() { Some(@view.said(Button, label=tr("清空快捷键"))) }))
+    .on_press(fn() { clear_key(which) })
+    .ground(By(fn() { if b.pointed() { 0x45474EFFL } else { 0x3A3C42FFL } }))
+    |> ignore
+    b.box(fn(g) {
+      g
+      .width(Is(Some(14.0)))
+      .height(Is(Some(14.0)))
+      .picture(Is(Some({ w: 14.0, h: 14.0, layers: [stroke_layer("M3.5 3.5l7 7M10.5 3.5l-7 7", 0x000000FFL, 1.5)] })))
+      .tint(By(fn() { if b.pointed() { 0xFFFFFFFFL } else { 0xFFFFFFB3L } }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
 }
 
 ///|
