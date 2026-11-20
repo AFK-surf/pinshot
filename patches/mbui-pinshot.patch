@@ -1,8 +1,53 @@
 diff --git a/libs/mbui/src/host/win_app.c b/libs/mbui/src/host/win_app.c
-index 290a1986..0a839486 100644
+index 290a1986..c1688356 100644
 --- a/libs/mbui/src/host/win_app.c
 +++ b/libs/mbui/src/host/win_app.c
-@@ -581,6 +581,7 @@ static void key_down(WPARAM vk) {
+@@ -336,9 +336,25 @@ static void draw_frame(void) {
+ // with the app's page drawn, not with nothing for the page's first moments. So is each window beside the first, till
+ // its first frame is (win_open: held).
+ static int window_held, window_shown, window_to_show;
++static int win0_reveal;
++
++extern int mb_render_pictures_missing(void);
++extern void mb_render_finish(void);
+ 
+ static int cloak(HWND h, BOOL on) { return SUCCEEDED(DwmSetWindowAttribute(h, DWMWA_CLOAK, &on, sizeof on)); }
+ 
++void mb_app_reveal_after_frame(int wid) {
++  if (wid == 0 && hwnd) {
++    win0_reveal = 1;
++    win_slots[0].want_frame = 1;
++    InvalidateRect(hwnd, NULL, FALSE);
++  }
++}
++
++void mb_app_cancel_reveal(int wid) {
++  if (wid == 0) win0_reveal = 0;
++}
++
+ void mb_host_window_hold(void) { window_held = 1; }
+ 
+ void mb_host_window_show(void) {
+@@ -354,6 +370,10 @@ static void held_shown_now(void) {
+     w->held = 0;
+     cloak(w->h, FALSE);
+   }
++  if (win0_reveal == 2 && hwnd) {
++    win0_reveal = 0;
++    cloak(hwnd, FALSE);
++  }
+   if (window_to_show && !window_shown && hwnd) {
+     window_to_show = 0;
+     window_shown = 1;
+@@ -363,6 +383,7 @@ static void held_shown_now(void) {
+ 
+ // What the frames presented since the last round owe the compositor waited for, and what was held shown then.
+ static void frames_paced(void) {
++  if (win0_reveal == 2) mb_render_finish();
+   mb_render_pace();
+   held_shown_now();
+ }
+@@ -581,6 +602,7 @@ static void key_down(WPARAM vk) {
      case VK_PRIOR: code = ws->ime_active ? 0 : 15; break;
      case VK_NEXT: code = ws->ime_active ? 0 : 16; break;
    }
@@ -10,7 +55,7 @@ index 290a1986..0a839486 100644
    if (code) {
      mb_cb.key(code, mods);
      return;
-@@ -1479,6 +1480,12 @@ static char *utf8_of(const WCHAR *s, int n) {
+@@ -1479,6 +1501,12 @@ static char *utf8_of(const WCHAR *s, int n) {
  // spec says; one of a role where the last of the role was left as it closed (roles_kept), a second of a role open
  // beside the first of it down and to the right of the last one opened, never over it. Out of sight (cloaked) till its
  // first frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
@@ -23,7 +68,7 @@ index 290a1986..0a839486 100644
  static int win_open(moonbit_string_t what) {
    if (!hwnd || !*win_class) return 0;
    int wid = 0;
-@@ -1546,25 +1553,30 @@ static int win_open(moonbit_string_t what) {
+@@ -1546,25 +1574,30 @@ static int win_open(moonbit_string_t what) {
    }
    jv_free(&spec);
    free(u);
@@ -57,6 +102,20 @@ index 290a1986..0a839486 100644
    drop_start(wid);
    w->held = cloak(h, TRUE) ? 1 : 0;
    ShowWindow(h, SW_SHOW);
+@@ -1630,7 +1663,12 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
+   // (a frame built while the window is not shown: nothing of it on the screen)
+   if (!presenting) return;
+   // (a window held whose frame this is: shown once the compositor has it, held_shown_now)
+-  if (mb_render_present(buf, count, r, g, b) && ws->held) ws->held = 2;
++  int presented = mb_render_present(buf, count, r, g, b);
++  if (presented && ws->held) ws->held = 2;
++  if (presented && win_active == 0 && win0_reveal == 1 && !mb_render_pictures_missing() &&
++      ws->frame_w > 32.0 && ws->frame_h > 32.0) {
++    win0_reveal = 2;
++  }
+ }
+ 
+ void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,
 diff --git a/libs/mbui/src/host/win_image.cpp b/libs/mbui/src/host/win_image.cpp
 index c37f4f6c..b8b733be 100644
 --- a/libs/mbui/src/host/win_image.cpp
@@ -148,7 +207,7 @@ index c37f4f6c..b8b733be 100644
        if (SUCCEEDED(wic->CreateStream(&stream)) &&
            SUCCEEDED(stream->InitializeFromMemory(j->data, (DWORD)j->len)))
 diff --git a/libs/mbui/src/host/win_render.cpp b/libs/mbui/src/host/win_render.cpp
-index 050a07e8..72cb870f 100644
+index 050a07e8..8fdd1622 100644
 --- a/libs/mbui/src/host/win_render.cpp
 +++ b/libs/mbui/src/host/win_render.cpp
 @@ -35,7 +35,8 @@
@@ -301,3 +360,19 @@ index 050a07e8..72cb870f 100644
  // The offscreen target as its frames left it (not the last frame drawn again: what drawing only the parts that differ
  // made of it, mbui-render's MBUI_DL_FROM), as a PNG.
  extern "C" int mb_render_snapshot_drawn(const wchar_t *path) {
+@@ -2049,3 +2091,15 @@ int mb_screen_snapshot(void *hwnd, const wchar_t *path) {
+ extern "C" double mb_host_gpu_ms(void) { return -1; }
+ // Each frame drawn as it is made, on the window's thread: none dropped.
+ extern "C" int32_t mb_host_frames_dropped(void) { return 0; }
++
++extern "C" int mb_render_pictures_missing(void) { return pictures_missing; }
++extern "C" void mb_render_finish(void) {
++  if (!dev || !ctx) return;
++  D3D11_QUERY_DESC qd = {D3D11_QUERY_EVENT, 0};
++  ID3D11Query *q = NULL;
++  if (FAILED(dev->CreateQuery(&qd, &q)) || !q) return;
++  ctx->End(q);
++  ctx->Flush();
++  for (int i = 0; i < 4000 && ctx->GetData(q, NULL, 0, 0) == S_FALSE; i++) Sleep(0);
++  q->Release();
++}

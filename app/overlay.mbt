@@ -212,12 +212,26 @@ fn overlay_window(root : @view.View) -> Unit {
   root.tree.hand_over_presses(false)
   root.ground(Is(0x000000FFL)).keymap(By(fn() { overlay_keys(settings.get().confirm_key) })) |> ignore
   overlay_actions(root)
-  // (seen once its first frame with the picture is on the screen: the frame after the decode is told)
+  // (seen once its first frame with the picture is on the screen: on Windows ps_cloak(0, 0) uncloaks inside
+  // held_shown_now() only after Present + GPU finish + DwmFlush so a cold first frame can never flash black)
   root.reacts(fn() {
     let key = frozen_key.get()
     key != "" && root.image_ready(key, dmax(mon.val.w.to_double(), mon.val.h.to_double()))
   }, fn(ready) {
     if ready && capturing.untracked() && !overlay_seen.untracked() {
+      if @hostapi.platform() != 0 {
+        if warming.val {
+          overlay_seen.set(true)
+          root.at_moment(root.cause_at() + 60.0, fn() { if warming.val { close_capture() } }, later=true) |> ignore
+          return
+        }
+        if @ui.env("PINSHOT_TEST_CLOAKED") == "" {
+          ps_cloak(0, 0)
+        }
+        overlay_seen.set(true)
+        said_shown()
+        return
+      }
       root.at_moment(root.cause_at() + 1.0, fn() {
         if capturing.untracked() && warming.val {
           // (drawn whole once as if seen, its magnifier and its words too, still out of sight; then let go)

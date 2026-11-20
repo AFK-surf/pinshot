@@ -1094,7 +1094,11 @@ void ps_center(int32_t wid, int32_t w, int32_t h) {
 }
 
 // Window `wid` hidden (its frames stop: mbui draws none for a window not shown).
+extern void mb_app_reveal_after_frame(int wid);
+extern void mb_app_cancel_reveal(int wid);
+
 void ps_hide(int32_t wid) {
+  if (wid == 0) mb_app_cancel_reveal(0);
   HWND h = own_window(wid);
   if (h) ShowWindow(h, SW_HIDE);
 }
@@ -1102,8 +1106,15 @@ void ps_hide(int32_t wid) {
 // Window `wid` kept out of sight while still drawn (DWM's cloak), or let be seen: its frame is there as it is uncloaked.
 void ps_cloak(int32_t wid, int32_t on) {
   HWND h = own_window(wid);
+  if (!h) return;
+  if (wid == 0 && !on) {
+    // Uncloak only after the next full-size frame with no missing textures has finished on the GPU and flushed DWM.
+    mb_app_reveal_after_frame(0);
+    return;
+  }
+  if (wid == 0) mb_app_cancel_reveal(0);
   BOOL b = on ? TRUE : FALSE;
-  if (h) DwmSetWindowAttribute(h, DWMWA_CLOAK, &b, sizeof b);
+  DwmSetWindowAttribute(h, DWMWA_CLOAK, &b, sizeof b);
 }
 
 // Window `wid` over the others (1) or among them (0); `front`: brought before them all now.
