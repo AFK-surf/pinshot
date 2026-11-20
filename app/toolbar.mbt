@@ -115,9 +115,9 @@ let line_variants : Array[Tool] = [Arrow, Line]
 let mosaic_variants : Array[Tool] = [Mosaic, MosaicBrush, Blur]
 
 ///|
-/// 13 buttons on the main bar: 7 tools + rule + 1 undo + rule + 5 actions = 15 items, 14 gaps.
+/// 14 buttons on the main bar: 7 tools + the background + rule + 1 undo + rule + 5 actions = 16 items, 15 gaps.
 fn bar_width() -> Double {
-  bar_pad * 2.0 + bar_button * 13.0 + bar_rule * 2.0 + bar_gap * 14.0
+  bar_pad * 2.0 + bar_button * 14.0 + bar_rule * 2.0 + bar_gap * 15.0
 }
 
 ///|
@@ -131,13 +131,16 @@ let style_height : Double = 36.0
 fn bar_place() -> (Double, Double) {
   let k = mon_scale.get()
   let (sw, sh) = mon_pt()
-  match sel.get() {
+  // (under the picture as it will be copied: the part, or the background it is laid on)
+  match beauty_or(sel.get()) {
     Some(r) => {
       let rx1 = r.right().to_double() / k
       let ry0 = r.y.to_double() / k
       let ry1 = r.bottom().to_double() / k
       let w = bar_width()
-      let h = bar_height + (if styling() { style_height + 4.0 } else { 0.0 })
+      let h = bar_height +
+        (if styling() { style_height + 4.0 } else { 0.0 }) +
+        (if beauty_on.get() { style_height + 4.0 } else { 0.0 })
       let x = clamp(rx1 - w, 4.0, sw - w - 4.0)
       let y = if ry1 + 8.0 + h <= sh - 4.0 {
         ry1 + 8.0
@@ -262,8 +265,10 @@ fn toolbar(stage : @view.View) -> Unit {
             pick_tool(which)
           })
         }
+        // 8. The background the part is laid on (beautify.mbt)
+        tool_button(bar, "beautify", "美化背景 B", fn() { beauty_on.get() }, beauty_toggle)
         bar_rule_node(bar)
-        // 8. Undo (Redo stays on Ctrl+Y / Ctrl+Shift+Z)
+        // 9. Undo (Redo stays on Ctrl+Y / Ctrl+Shift+Z)
         tool_button(bar, "undo", "撤销 Ctrl+Z", fn() { false }, fn() { undo() |> ignore }, dim=fn() {
           marks.get() |> ignore
           done_before.val.is_empty()
@@ -278,6 +283,7 @@ fn toolbar(stage : @view.View) -> Unit {
       })
       |> ignore
       col.show(fn() { styling() }, fn(row) { style_row(row) }, at_once=true)
+      col.show(fn() { beauty_on.get() }, fn(row) { beauty_row(row) }, at_once=true)
     })
     |> ignore
   })
@@ -620,6 +626,19 @@ fn glyph(name : String) -> @pixels.Vector {
         ],
       }
     "words" => lines(["M4 5V3.8h10V5", "M9 3.8v10.7", "M7 14.5h4"])
+    "beautify" =>
+      {
+        w: 18.0,
+        h: 18.0,
+        layers: [
+          stroke_layer(
+            "M5.6 2.8h6.8c1.8 0 2.8 1 2.8 2.8v6.8c0 1.8-1 2.8-2.8 2.8H5.6c-1.8 0-2.8-1-2.8-2.8V5.6c0-1.8 1-2.8 2.8-2.8z",
+            0x000000FFL,
+            1.6,
+          ),
+          fill_layer("M7 6h4c.6 0 1 .4 1 1v4c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V7c0-.6.4-1 1-1z", 0x000000FFL),
+        ],
+      }
     "ocr" => lines(["M2.8 6V2.8H6", "M12 2.8h3.2V6", "M15.2 12v3.2H12", "M6 15.2H2.8V12", "M6 6.5h6", "M9 6.5v5.5"])
     "undo" => lines(["M6.5 4 3 7.5 6.5 11", "M3.5 7.5h7a4 4 0 0 1 0 8H8"])
     "redo" => lines(["M11.5 4 15 7.5 11.5 11", "M14.5 7.5h-7a4 4 0 0 0 0 8H10"])

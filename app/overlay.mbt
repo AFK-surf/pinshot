@@ -124,8 +124,13 @@ fn chrome_picture() -> @pixels.Vector? {
   match clear_part() {
     Some(r) => {
       let (x, y, rw, rh) = (r.x.to_double(), r.y.to_double(), r.w.to_double(), r.h.to_double())
-      // (the veil one path, the part a hole in it: no seam where two pieces would meet)
-      layers.push(fill_layer(rect_path(0.0, 0.0, w, h) + rect_path(x, y, rw, rh), 0x00000078L, even_odd=true))
+      // (the veil one path, the part a hole in it: no seam where two pieces would meet; laid on a background, the hole
+      // is the whole picture as it will be copied)
+      let hole = match beauty_frame() {
+        Some(f) => rect_path(f.x.to_double(), f.y.to_double(), f.w.to_double(), f.h.to_double())
+        None => rect_path(x, y, rw, rh)
+      }
+      layers.push(fill_layer(rect_path(0.0, 0.0, w, h) + hole, 0x00000078L, even_odd=true))
       let line = dmax(1.0, k.round())
       let half = line / 2.0
       layers.push(stroke_layer(rect_path(x + half, y + half, rw - line, rh - line), accent, line))
@@ -217,7 +222,10 @@ fn overlay_window(root : @view.View) -> Unit {
           return
         }
         if capturing.untracked() && !overlay_seen.untracked() {
-          ps_cloak(0, 0)
+          // (a test run told to keep it out of sight, PINSHOT_TEST_CLOAKED: driven and printed, never on the screen)
+          if @ui.env("PINSHOT_TEST_CLOAKED") == "" {
+            ps_cloak(0, 0)
+          }
           overlay_seen.set(true)
           said_shown()
         }
@@ -255,6 +263,8 @@ fn overlay_window(root : @view.View) -> Unit {
       |> ignore
     })
     |> ignore
+    // (the background the part is laid on, while it is: beautify.mbt)
+    beauty_layer(stage)
     marks_layer(stage, editing=true)
     // the veil, the frame, the handles
     stage.box(fn(c) { c.over(Is(true)).presses(Is(false)).picture(By(chrome_picture)) |> ignore }) |> ignore
@@ -370,7 +380,7 @@ fn size_label(stage : @view.View) -> Unit {
       .laid_nowhere(By(fn() { clear_part() is None }))
       .offset(By(fn() {
         let k = mon_scale.get()
-        match clear_part() {
+        match beauty_or(clear_part()) {
           Some(r) => {
             let x = r.x.to_double() / k
             let y = r.y.to_double() / k
@@ -383,9 +393,10 @@ fn size_label(stage : @view.View) -> Unit {
       l.box(fn(t) {
         t
         .words(By(fn() {
-          match clear_part() {
-            Some(r) => "\{r.w} × \{r.h}"
-            None => ""
+          match (clear_part(), beauty_frame()) {
+            (Some(r), Some(f)) => "\{r.w} × \{r.h} → \{f.w} × \{f.h}"
+            (Some(r), None) => "\{r.w} × \{r.h}"
+            _ => ""
           }
         }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
         .ink(Is(0xEDEEF0FFL))
@@ -763,6 +774,7 @@ fn overlay_keys() -> @view.Keymap {
     ch('y', "redo", ctrl),
     ch('z', "redo", ctrl | shift),
     ch('c', "copy-color", 0),
+    ch('b', "beautify", 0),
     k(@ui.key_code_left, "left", 0),
     k(@ui.key_code_right, "right", 0),
     k(@ui.key_code_up, "up", 0),
@@ -808,6 +820,7 @@ fn overlay_actions(root : @view.View) -> Unit {
   on("undo", fn() { undo() |> ignore })
   on("redo", fn() { redo() |> ignore })
   on("copy-color", copy_color)
+  on("beautify", beauty_toggle)
   for step in [(1, ""), (10, "10")] {
     let (n, s) = step
     // (the mark picked moved, else the part)

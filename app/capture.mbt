@@ -150,6 +150,7 @@ fn prepare_capture(x : Int, y : Int, w : Int, h : Int, dpi : Double) -> Unit {
   sel.set(None)
   hand.set(Free)
   tool.set(Move)
+  beauty_on.set(false)
   words_open.set(None)
   let p = numbers_of(text_of(ps_pointer()))
   if p.length() == 2 {

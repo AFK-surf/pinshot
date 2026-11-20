@@ -176,4 +176,15 @@ let en_words : Map[String, String] = {
   "和「截图」的快捷键相同": "Already the screenshot shortcut",
   " 已被其他程序占用，换一个": " is taken by another program: choose another",
   "点一下快捷键框，再按下想用的组合键；Esc 取消，退格键清除。": "Click a shortcut, then press the keys you want. Esc cancels, Backspace clears.",
+  // a capture laid on a background (beautify.mbt)
+  "美化背景 B": "Background B",
+  "晚霞": "Sunset",
+  "海洋": "Ocean",
+  "薄荷": "Mint",
+  "夜空": "Night",
+  "浅灰": "Light grey",
+  "纯白": "White",
+  "小": "Small",
+  "大": "Large",
+  "阴影": "Shadow",
 }
