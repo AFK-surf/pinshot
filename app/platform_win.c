@@ -346,9 +346,19 @@ typedef struct {
   char *out;
   size_t len, cap;
   int depth;
+  HWND *hwnds;  // each line's window, in the lines' order (ps_window_shows)
+  size_t n, hwnds_cap;
 } WinList;
 
+static HWND *win_hwnds;  // the windows of win_list's lines, in its order
+static size_t win_hwnds_n;
+
 static void list_put(WinList *l, RECT r, HWND h) {
+  if (l->n + 1 > l->hwnds_cap) {
+    l->hwnds_cap = (l->n + 1) * 2;
+    l->hwnds = (HWND *)realloc(l->hwnds, l->hwnds_cap * sizeof(HWND));
+  }
+  l->hwnds[l->n++] = h;
   char s[200], cls[96] = {0};
   GetClassNameA(h, cls, sizeof cls);
   int n = snprintf(s, sizeof s, "%ld,%ld,%ld,%ld;%s\n", r.left - cap_x, r.top - cap_y, r.right - r.left, r.bottom - r.top, cls);
@@ -386,6 +396,12 @@ static BOOL CALLBACK window_found(HWND h, LPARAM lp) {
   if (cloaked) return TRUE;
   LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
   if ((ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED)) return TRUE;  // (what a click goes through: an overlay)
+  // (a layered window drawn wholly clear shows nothing: NVIDIA's overlay over the whole screen, at rest)
+  if (ex & WS_EX_LAYERED) {
+    BYTE alpha = 255;
+    DWORD flags = 0;
+    if (GetLayeredWindowAttributes(h, NULL, &alpha, &flags) && (flags & LWA_ALPHA) && alpha == 0) return TRUE;
+  }
   RECT r;
   if (FAILED(DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r)) && !GetWindowRect(h, &r)) return TRUE;
   if ((r.right - r.left) < 8 || (r.bottom - r.top) < 8 || !rect_on_monitor(r)) return TRUE;
@@ -396,11 +412,40 @@ static BOOL CALLBACK window_found(HWND h, LPARAM lp) {
 }
 
 static void windows_listed(void) {
-  WinList l = {NULL, 0, 0, 0};
+  WinList l = {NULL, 0, 0, 0, NULL, 0, 0};
   EnumWindows(window_found, (LPARAM)&l);
   free(win_list);
   win_list = l.out;
   win_list_len = l.len;
+  free(win_hwnds);
+  win_hwnds = l.hwnds;
+  win_hwnds_n = l.n;
+}
+
+// Whether the window of win_list's line `i` is a part (a pane, a view) of the window of line `of` and what shows at
+// (x, y) of the monitor taken: the window its own window has there, going down through what holds it as the system finds a click's window
+// among its children (none hidden, none a click goes through), is it or one of its own. A part covered there by another
+// part of the same window (a page behind the one shown, a view under a panel) is not: it is not seen (the user,
+// 2026-11-20: 「假如一个窗口看不到，不应该在 area capture 时能嗅探到」). Asked as the pointer comes to it, of the
+// windows as they are then (as the screen was taken, unless they moved since).
+int32_t ps_window_shows(int32_t of, int32_t i, int32_t x, int32_t y) {
+  if (i < 0 || (size_t)i >= win_hwnds_n || of < 0 || (size_t)of >= win_hwnds_n) return 0;
+  HWND h = win_hwnds[i];
+  if (!IsWindow(h)) return 0;
+  HWND cur = GetAncestor(h, GA_ROOT);
+  // (a part of the window `of` itself, not of a window behind it: a window listed after a big one and inside it is behind
+  // it, and so are its parts; a window under a maximized one, or a pane of it, was picked through it)
+  if (!cur || cur == h || cur != win_hwnds[of]) return 0;
+  POINT screen = {x + cap_x, y + cap_y};
+  for (int depth = 0; depth < 32; depth++) {
+    POINT pt = screen;
+    ScreenToClient(cur, &pt);
+    HWND next = ChildWindowFromPointEx(cur, pt, CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT);
+    if (!next || next == cur) break;
+    cur = next;
+    if (cur == h) return 1;
+  }
+  return cur == h || IsChild(h, cur) ? 1 : 0;
 }
 
 // The windows as they were when the screen was taken.

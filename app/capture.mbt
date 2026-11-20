@@ -92,7 +92,9 @@ fn window_at(x : Double, y : Double) -> Rect? {
       let mut j = i + 1
       while j < ws.length() && inside(ws[j], r) {
         let c = ws[j]
-        if c.contains(x, y) {
+        // (only a part of it, and only where it shows: a window behind it that lies within it, or a part covered there by
+        // another part of it, is not seen: not picked)
+        if c.contains(x, y) && ps_window_shows(i, j, x.to_int(), y.to_int()) == 1 {
           match found {
             Some(f) if c.w * c.h < f.w * f.h => found = c.within(full.w, full.h)
             _ => ()

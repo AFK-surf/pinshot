@@ -784,6 +784,9 @@ fn overlay_keys() -> @view.Keymap {
     ch('z', "redo", ctrl | shift),
     ch('c', "copy-color", 0),
     ch('b', "beautify", 0),
+    // (the whole monitor at once: as PixPin's Ctrl+A)
+    ch('a', "whole", ctrl),
+    k(@ui.key_code_select_all, "whole", ctrl),
     k(@ui.key_code_left, "left", 0),
     k(@ui.key_code_right, "right", 0),
     k(@ui.key_code_up, "up", 0),
@@ -831,6 +834,14 @@ fn overlay_actions(root : @view.View) -> Unit {
   on("redo", fn() { redo() |> ignore })
   on("copy-color", copy_color)
   on("beautify", beauty_toggle)
+  // (the whole monitor picked: a window covering all of it but the taskbar is what a click picks, so the screen whole is
+  // hard to get to by the pointer: the user, 2026-11-20 「现在似乎挺难直接截全屏」)
+  on("whole", fn() {
+    if marks.untracked().is_empty() {
+      selected.set(None)
+      sel.set(Some({ x: 0, y: 0, w: mon.val.w, h: mon.val.h }))
+    }
+  })
   for step in [(1, ""), (10, "10")] {
     let (n, s) = step
     // (the mark picked moved, else the part)
