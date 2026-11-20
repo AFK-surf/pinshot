@@ -1,14 +1,16 @@
 // The part as the overlay shows it, on its way to where it is (the user, 2026-11-20: 「各个地方感觉可以加一下
 // transition，比如capture选区变化时」): the window under the pointer, a window clicked, a part nudged by the keys, and the
-// background turned on or off or its room changed, each go there quickly (`shown_spring`) from where it shows then; what
+// background turned on or off or its room changed, each go there quickly and together (`shown_spring`) from where it shows then; what
 // the hand drags (a part drawn, moved or resized) follows the hand at once, and a part that comes from none is there at
 // once. The veil, the frame, the handles, the size's label and the bar are drawn where it shows; what a press finds, and
 // what is copied, is where it is.
 
 ///|
-/// How the part goes there: quick (0.12 s to be seen there), not mbui's move spring (0.28 s, too slow for a capture: the
-/// user, 2026-11-20 「过渡动画太慢了」).
-let shown_spring : @motion.Spec = @motion.motion_spring(0.12, threshold=0.5)
+/// How the part goes there: one tween of 140 ms on the web's ease-out (.2, .7, .2, 1) for all its edges and the room, so
+/// they set out and come to rest together. Not a spring: each of the four ways a spring of its own, each as long as its
+/// own way is far, the edges came in at different moments and the box seemed to warp, with a slow tail (the user,
+/// 2026-11-20: 「过渡动画太慢了」「我感觉曲线有问题」).
+let shown_spring : @motion.Spec = @motion.tween(140.0, ease=Out)
 
 ///|
 let shown_x : @motion.Way = @motion.Way::new(0.0)
