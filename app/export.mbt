@@ -8,8 +8,9 @@
 let exporting : Ref[String] = Ref("")
 
 ///|
-/// The part picked drawn as a picture of its own pixels, `done` told its PNG.
-fn picture_of_part(done : (Bytes?) -> Unit) -> Unit {
+/// The part picked drawn as a picture of its own pixels, `done` told its PNG: laid on its background where that is on
+/// (beautify.mbt), unless `framed` is false (the words read out of it).
+fn picture_of_part(done : (Bytes?) -> Unit, framed? : Bool = true) -> Unit {
   guard sel.untracked() is Some(r) else { return }
   if words_open.untracked() is Some(_) {
     commit_words()
@@ -20,6 +21,30 @@ fn picture_of_part(done : (Bytes?) -> Unit) -> Unit {
   let w = r.w.to_double() / k
   let h = r.h.to_double() / k
   let (mw, mh) = (mon.val.w.to_double() / k, mon.val.h.to_double() / k)
+  if framed && beauty_on.untracked() {
+    let room = beauty_rooms[beauty.untracked().room]
+    @ui.take_picture("part", w + 2.0 * room, fn(b) {
+      b.height(Is(Some(h + 2.0 * room))).clips(Is(true)).lines_up(Is(Some(Start))) |> ignore
+      b.box(fn(f) {
+        f.over(Is(true)) |> ignore
+        beauty_drawn(f, w, h, fn(c) {
+          c.box(fn(s) {
+            s
+            .width(Is(Some(mw)))
+            .height(Is(Some(mh)))
+            .shrink(Is(0.0))
+            .offset(Is((-r.x.to_double() / k, -r.y.to_double() / k)))
+            |> ignore
+            s.box(fn(p) { p.over(Is(true)).image(Is(Some((key, "", px)))) |> ignore }) |> ignore
+            marks_layer(s, editing=false)
+          })
+          |> ignore
+        }, overlay=false)
+      })
+      |> ignore
+    }, done, scale=k)
+    return
+  }
   @ui.take_picture("part", w, fn(b) {
     b.height(Is(Some(h))).clips(Is(true)).lines_up(Is(Some(Start))) |> ignore
     b.box(fn(s) {

@@ -85,7 +85,7 @@ fn ocr_out() -> Unit {
   }
   exporting.val = "ocr"
   ps_cloak(0, 1)
-  picture_of_part(fn(png) {
+  picture_of_part(framed=false, fn(png) {
     exporting.val = ""
     close_capture()
     match png {

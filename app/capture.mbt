@@ -150,6 +150,7 @@ fn prepare_capture(x : Int, y : Int, w : Int, h : Int, dpi : Double) -> Unit {
   sel.set(None)
   hand.set(Free)
   tool.set(Move)
+  beauty_on.set(false)
   words_open.set(None)
   let p = numbers_of(text_of(ps_pointer()))
   if p.length() == 2 {
@@ -236,7 +237,10 @@ fn close_capture() -> Unit {
   hand.set(Free)
   reset_marks()
   frozen_key.set("")
+  beauty_on.set(false)
   @signals.end_batch()
+  // (the wallpaper's picture, if it was read for a background, not kept between captures)
+  wallpaper_let_go()
   ps_capture_release()
   windows_on.set([])
   if key != "" {
