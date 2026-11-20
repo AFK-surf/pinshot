@@ -749,9 +749,6 @@ let tip_out_ms : Double = 120.0
 let tip_out_scale : Double = 0.97
 
 ///|
-let tip_hand_spring : @motion.Spec = @motion.motion_spring(0.09, threshold=0.5)
-
-///|
 /// Overlay layer node that hosts all toolbar tooltips (painted on top of the bar and sub-rows).
 let tip_layer : Ref[@view.View?] = Ref(None)
 
@@ -761,6 +758,16 @@ let tip_owner : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 let tip_next_id : Ref[Int] = Ref(0)
+
+///|
+/// Shared upstream mbui handoff coordinator for toolbar tooltips (glides ground & carried text across buttons).
+let tip_hands : @motion.Handoff = @motion.Handoff::new(within=tip_linger)
+
+///|
+let tip_went_at : Ref[Double] = Ref(-1.0e18)
+
+///|
+let tip_shut_now : Ref[() -> Unit] = Ref(fn() {  })
 
 ///|
 /// Monoid TipFade: smooth continuous progress (0..1) with mid-flight reversal.
@@ -829,29 +836,6 @@ fn TipFade::shown(self : TipFade, v : @view.View) -> Double {
 }
 
 ///|
-priv struct TipHandFrom {
-  rect : (Double, Double, Double, Double)
-  speed : (Double, Double, Double, Double)
-  at : Double
-}
-
-///|
-/// Per-button tooltip handoff participant (6 critically-damped springs: dx, dy, dw, dh + carried cx, cy).
-priv struct TipPart {
-  id : Int
-  anchor : @view.View
-  side : @view.Side
-  tag : Int
-  fade : TipFade
-  open : @signals.Signal[Bool]
-  ways : Array[@motion.Way]
-  mut node : @view.View?
-  mut due : () -> Unit
-  mut pending : TipHandFrom?
-  mut went : Double
-}
-
-///|
 fn tip_side_tag(side : @view.Side) -> Int {
   match side {
     Top => 0
@@ -862,132 +846,10 @@ fn tip_side_tag(side : @view.Side) -> Int {
 }
 
 ///|
-/// Shared handoff coordinator for the toolbar tooltip group.
-let tip_last_part : Ref[TipPart?] = Ref(None)
-
-///|
-let tip_went_at : Ref[Double] = Ref(-1.0e18)
-
-///|
-fn TipPart::new(id : Int, anchor : @view.View, side : @view.Side) -> TipPart {
-  {
-    id,
-    anchor,
-    side,
-    tag: tip_side_tag(side),
-    fade: TipFade::new(),
-    open: @signals.signal(false, same=fn(a, b) { a == b }),
-    ways: Array::makei(6, fn(_) { @motion.Way::new(0.0) }),
-    node: None,
-    due: fn() {  },
-    pending: None,
-    went: -1.0e18,
-  }
-}
-
-///|
-fn TipPart::still(self : TipPart) -> Unit {
-  (self.due)()
-  self.due = fn() {  }
-  self.pending = None
-  for w in self.ways {
-    w.put(0.0)
-  }
-}
-
-///|
-fn TipPart::ground(self : TipPart, v : @view.View) -> @view.GroundShape {
-  let dx = self.ways[0].shown_on(v)
-  let dy = self.ways[1].shown_on(v)
-  let dw = self.ways[2].shown_on(v)
-  let dh = self.ways[3].shown_on(v)
-  if dx == 0.0 && dy == 0.0 && dw == 0.0 && dh == 0.0 {
-    @view.ground_as_laid
-  } else {
-    { dx, dy, dw, dh, corners: None }
-  }
-}
-
-///|
-fn TipPart::drawn_at(self : TipPart, at : Double) -> ((Double, Double, Double, Double), (Double, Double, Double, Double))? {
-  if self.fade.at(at) <= 0.0 {
-    return None
-  }
-  match self.node {
-    Some(v) if v.alive() && v.was_placed() => {
-      let (x, y, w, h) = v.placed_window_now()
-      let (d0, v0) = self.ways[0].at(at)
-      let (d1, v1) = self.ways[1].at(at)
-      let (d2, v2) = self.ways[2].at(at)
-      let (d3, v3) = self.ways[3].at(at)
-      Some(((x + d0, y + d1, w + d2, h + d3), (v0, v1, v2, v3)))
-    }
-    _ => None
-  }
-}
-
-///|
-fn TipPart::start_glide(self : TipPart, v : @view.View) -> Unit {
-  guard self.pending is Some(f) else { return }
-  self.due = v.at_moment(f.at, fn() {
-    self.due = fn() {  }
-    self.pending = None
-    // Pinned mbui laid_window_now() returns (0, 0, tw, th) for .beside() nodes; compute the exact beside target
-    // rect directly via place_beside() so the spring glides from prev's rect to the button's true tip position.
-    let (_, _, tw, th) = v.laid_window_now()
-    if tw <= 0.0 || th <= 0.0 {
-      return
-    }
-    let anchor_rect = if self.anchor.was_placed() {
-      self.anchor.placed_window_now()
-    } else {
-      self.anchor.laid_window_now()
-    }
-    let k = mon_scale.untracked()
-    let (vw, vh) = (mon.val.w.to_double() / k, mon.val.h.to_double() / k)
-    let (tx, ty, _) = @view.place_beside(
-      anchor_rect,
-      tw,
-      th,
-      vw,
-      vh,
-      side=self.side,
-      along=Middle,
-      offset=6.0,
-      padding=4.0,
-    )
-    let (fx, fy, fw, fh) = f.rect
-    let (vx, vy, vws, vhs) = f.speed
-    let off = [fx - tx, fy - ty, fw - tw, fh - th, fx + fw / 2.0 - (tx + tw / 2.0), fy + fh / 2.0 - (ty + th / 2.0)]
-    let speed = [vx, vy, vws, vhs, vx + vws / 2.0, vy + vhs / 2.0]
-    for i, w in self.ways {
-      w.put(off[i])
-      w.go(0.0, tip_hand_spring, at=f.at, velocity=speed[i])
-    }
-  })
-}
-
-///|
-fn TipPart::other_near(self : TipPart, at : Double) -> Bool {
-  match tip_last_part.val {
-    Some(l) => l.id != self.id && (l.went > 1.0e17 || at < l.went + tip_linger)
-    None => false
-  }
-}
-
-///|
 fn tip_off() -> Unit {
   tip_owner.set(0)
-  match tip_last_part.val {
-    Some(l) => {
-      l.fade.put(0.0)
-      l.still()
-      l.open.set(false)
-      l.went = -1.0e18
-    }
-    None => ()
-  }
-  tip_last_part.val = None
+  (tip_shut_now.val)()
+  tip_shut_now.val = fn() {  }
   tip_went_at.val = -1.0e18
 }
 
@@ -1038,7 +900,23 @@ fn tip_key_caps(keys : String) -> Array[String] {
 fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : () -> String = fn() { "" }) -> Unit {
   let anchor_id = b.id()
   tip_next_id.val = tip_next_id.val + 1
-  let part = TipPart::new(tip_next_id.val, b, side)
+  let id = tip_next_id.val
+  let fade = TipFade::new()
+  let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+  let glide = tip_hands.part(
+    fn(t) {
+      if @signals.untracked(fn() { tip_owner.get() == id }) {
+        fade.at(t)
+      } else {
+        0.0
+      }
+    },
+    tag=tip_side_tag(side),
+    gave=fn() {
+      fade.put(0.0)
+      open.set(false)
+    },
+  )
   let made = Ref(false)
   let shut = Ref(false)
   let rest : Ref[(() -> Unit)?] = Ref(None)
@@ -1051,18 +929,10 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
   }
   let make = fn() -> Bool {
     guard tip_layer.val is Some(l) else { return false }
-    let holder = l.box(fn(h) { h.over(Is(true)).presses(Is(false)).points(Is(false)) |> ignore }).lives_with(b)
-    holder.show(fn() { part.open.get() }, leave=tip_out_ms, at_once=true, fn(t) {
-      let caps = tip_key_caps(keys())
+    let holder = l.box(fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(b)
+    holder.show(fn() { open.get() }, leave=tip_out_ms, at_once=true, fn(t) {
+      let caps = tip_key_caps(@signals.untracked(keys))
       let has_keys = !caps.is_empty()
-      part.node = Some(t)
-      t.owns(fn() {
-        match part.node {
-          Some(n) if n.id() == t.id() => part.node = None
-          _ => ()
-        }
-      })
-      |> ignore
       t
       .beside(anchor_id, side~, along=Middle, offset=6.0, padding=4.0)
       .presses(Is(false))
@@ -1072,14 +942,9 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
       .ground(Is(0x26282FF7L))
       .edge(Is((1.0, 0xFFFFFF18L)))
       .shadow(Is((8.0, 2.0, 0x00000048L)))
-      .ground_drawn(By(fn() { part.ground(t) }))
-      .clips(By(fn() {
-        let g = part.ground(t)
-        g.dx != 0.0 || g.dy != 0.0 || g.dw != 0.0
-      }))
       // Ground fades in first half (0..60ms), words in second half (60..120ms); reversed on exit
       .alpha(By(fn() {
-        let a = if tip_owner.get() == part.id { part.fade.shown(t) } else { 0.0 }
+        let a = if tip_owner.get() == id { fade.shown(t) } else { 0.0 }
         if a * 2.0 < 1.0 {
           a * 2.0
         } else {
@@ -1089,8 +954,8 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
       // Gentle 0.97 shrink toward the button while exiting
       .scale(
         By(fn() {
-          let a = part.fade.shown(t)
-          if part.fade.to > 0.5 {
+          let a = fade.shown(t)
+          if fade.to > 0.5 {
             1.0
           } else {
             tip_out_scale + (1.0 - tip_out_scale) * a
@@ -1098,16 +963,15 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
         }),
         about=@view.FromBeside,
       )
-      .hides(By(fn() { tip_owner.get() != part.id }))
+      .hides(By(fn() { tip_owner.get() != id }))
       |> ignore
-      t.box(fn(content) {
+      let content = t.box(fn(content) {
         content
         .row(Is(true))
         .gap(Is(7.0))
         .lines_up(Is(Some(Middle)))
-        .drawn_off(By(fn() { (part.ways[4].shown_on(content), part.ways[5].shown_on(content)) }))
         .alpha(By(fn() {
-          let a = part.fade.shown(t)
+          let a = fade.shown(t)
           let g = if a * 2.0 < 1.0 { a * 2.0 } else { 1.0 }
           let w = if a * 2.0 - 1.0 > 0.0 { a * 2.0 - 1.0 } else { 0.0 }
           if g > 0.0 {
@@ -1153,59 +1017,42 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
           |> ignore
         }
       })
-      |> ignore
-      part.start_glide(t)
+      glide.draws(t, carries=content)
     })
     true
   }
   let set_open = fn(on : Bool) {
-    if on == part.open.untracked() {
+    if on == open.untracked() {
       return
     }
     let at = b.cause_at()
     if on {
-      let mut handed = false
-      let from = match tip_last_part.val {
-        Some(prev) if prev.id != part.id && prev.tag == part.tag && (prev.went > 1.0e17 || at < prev.went + tip_linger) =>
-          match prev.drawn_at(at) {
-            Some((rect, speed)) => Some((prev, rect, speed))
-            None => None
-          }
-        _ => None
-      }
-      tip_last_part.val = Some(part)
-      part.went = 1.0e18
-      match from {
-        Some((prev, rect, speed)) => {
-          prev.fade.put(0.0)
-          prev.still()
-          prev.open.set(false)
-          part.pending = Some({ rect, speed, at })
-          handed = true
-        }
-        None => part.still()
-      }
       if !made.val {
         made.val = make()
       }
       if made.val {
-        tip_owner.set(part.id)
-      }
-      if handed {
-        part.fade.put(1.0)
-        match part.node {
-          Some(n) if n.alive() => part.start_glide(n)
-          _ => ()
+        tip_owner.set(id)
+        tip_shut_now.val = fn() {
+          fade.put(0.0)
+          glide.still()
+          open.set(false)
         }
-      } else {
-        part.fade.go(b, 1.0, at, tip_in_ms, Out)
       }
-      part.open.set(true)
+      match glide.came(at, @motion.hand_spring) {
+        Some(seen) => {
+          fade.put(seen)
+          if seen < 1.0 {
+            fade.go(b, 1.0, at, (1.0 - seen) * tip_in_ms, Out)
+          }
+        }
+        None => fade.go(b, 1.0, at, tip_in_ms, Out)
+      }
+      open.set(true)
     } else {
-      part.fade.go(b, 0.0, at, tip_out_ms, Leave)
-      part.went = at
+      fade.go(b, 0.0, at, tip_out_ms, Leave)
+      glide.left(at)
       tip_went_at.val = at
-      part.open.set(false)
+      open.set(false)
     }
   }
   b.reacts(fn() { (b.pointed(), b.pressed()) }, fn(st) {
@@ -1219,9 +1066,9 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
     }
     if shut.val || !pointed {
       set_open(false)
-    } else if part.open.untracked() {
-      tip_owner.set(part.id)
-    } else if at < tip_went_at.val + tip_linger || part.other_near(at) {
+    } else if open.untracked() {
+      tip_owner.set(id)
+    } else if at < tip_went_at.val + tip_linger || glide.other_near(at) {
       set_open(true)
     } else {
       rest.val = Some(
@@ -1235,12 +1082,8 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
   })
   b.owns(fn() {
     stop_rest()
-    part.fade.stop()
-    part.still()
-    match tip_last_part.val {
-      Some(l) if l.id == part.id => tip_last_part.val = None
-      _ => ()
-    }
+    fade.stop()
+    glide.gone()
   })
   |> ignore
 }

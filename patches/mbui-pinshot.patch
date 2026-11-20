@@ -1,8 +1,8 @@
 diff --git a/libs/mbui/src/host/win_app.c b/libs/mbui/src/host/win_app.c
-index 93f14f04..2984adcb 100644
+index 290a1986..0a839486 100644
 --- a/libs/mbui/src/host/win_app.c
 +++ b/libs/mbui/src/host/win_app.c
-@@ -533,6 +533,7 @@ static void key_down(WPARAM vk) {
+@@ -581,6 +581,7 @@ static void key_down(WPARAM vk) {
      case VK_PRIOR: code = ws->ime_active ? 0 : 15; break;
      case VK_NEXT: code = ws->ime_active ? 0 : 16; break;
    }
@@ -10,31 +10,31 @@ index 93f14f04..2984adcb 100644
    if (code) {
      mb_cb.key(code, mods);
      return;
-@@ -1236,6 +1237,12 @@ static void wins_close_beside(void) {
- // A window of this run (@hostapi.window_open_id): its id, 0 where none. As large as the first is now, down and to the
- // right of it, its title the first's, its top row the app's as the first's; out of sight (cloaked) till its first
- // frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
+@@ -1479,6 +1480,12 @@ static char *utf8_of(const WCHAR *s, int n) {
+ // spec says; one of a role where the last of the role was left as it closed (roles_kept), a second of a role open
+ // beside the first of it down and to the right of the last one opened, never over it. Out of sight (cloaked) till its
+ // first frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
 +#ifndef WS_EX_NOREDIRECTIONBITMAP
 +#define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
 +#endif
 +static int next_win_clear;
 +void mb_app_next_clear(void) { next_win_clear = 1; }
 +
- static int win_open(void) {
+ static int win_open(moonbit_string_t what) {
    if (!hwnd || !*win_class) return 0;
    int wid = 0;
-@@ -1252,25 +1259,30 @@ static int win_open(void) {
-   WCHAR title[256];
-   if (!GetWindowTextW(hwnd, title, 256)) title[0] = 0;
-   int off = (int)lround(32 * wid * (GetDpiForWindow(hwnd) / 96.0));
+@@ -1546,25 +1553,30 @@ static int win_open(moonbit_string_t what) {
+   }
+   jv_free(&spec);
+   free(u);
 +  int clear = next_win_clear;
 +  next_win_clear = 0;
 +  DWORD ex = clear ? (WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW) : 0;
 +  DWORD st = clear ? WS_POPUP : WS_OVERLAPPEDWINDOW;
    win_making = wid;
--  HWND h = CreateWindowExW(0, win_class, title, WS_OVERLAPPEDWINDOW, fr.left + off, fr.top + off, fr.right - fr.left,
-+  HWND h = CreateWindowExW(ex, win_class, title, st, fr.left + off, fr.top + off, fr.right - fr.left,
-                            fr.bottom - fr.top, NULL, NULL, GetModuleHandleW(NULL), NULL);
+-  HWND h = CreateWindowExW(0, win_class, title, WS_OVERLAPPEDWINDOW, x, y, cx, cy, NULL, NULL, GetModuleHandleW(NULL),
++  HWND h = CreateWindowExW(ex, win_class, title, st, x, y, cx, cy, NULL, NULL, GetModuleHandleW(NULL),
+                            NULL);
    win_making = -1;
    if (!h) {
      win_slot_fresh(w);
@@ -54,9 +54,9 @@ index 93f14f04..2984adcb 100644
    }
 -  title_dark_of(h);
 +  if (!clear) title_dark_of(h);
+   drop_start(wid);
    w->held = cloak(h, TRUE) ? 1 : 0;
    ShowWindow(h, SW_SHOW);
-   w->want_frame = 1;
 diff --git a/libs/mbui/src/host/win_image.cpp b/libs/mbui/src/host/win_image.cpp
 index c37f4f6c..b8b733be 100644
 --- a/libs/mbui/src/host/win_image.cpp
@@ -148,7 +148,7 @@ index c37f4f6c..b8b733be 100644
        if (SUCCEEDED(wic->CreateStream(&stream)) &&
            SUCCEEDED(stream->InitializeFromMemory(j->data, (DWORD)j->len)))
 diff --git a/libs/mbui/src/host/win_render.cpp b/libs/mbui/src/host/win_render.cpp
-index d13a63c2..8605d44c 100644
+index 050a07e8..72cb870f 100644
 --- a/libs/mbui/src/host/win_render.cpp
 +++ b/libs/mbui/src/host/win_render.cpp
 @@ -35,7 +35,8 @@
@@ -177,7 +177,7 @@ index d13a63c2..8605d44c 100644
  #define chain (rw->chain)
  #define rtv (rw->rtv)
  #define dtarget (rw->dtarget)
-@@ -316,7 +319,7 @@ static const char *shader_src =
+@@ -336,7 +339,7 @@ static const char *shader_src =
      "    float2 r0 = I.rect.xy * scale, r0i = floor(r0 + 0.5);\n"
      "    bool exact = kind == 1 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05 && I.prm.x == 0.0;\n"
      "    float2 tex = exact ? floor(p * scale - r0i) + 0.5 : (p - I.rect.xy) / I.rect.zw * I.c2.zw;\n"
@@ -186,7 +186,7 @@ index d13a63c2..8605d44c 100644
      "    float4 t = atlas.SampleLevel(samp, uv, 0);\n"
      "    if (kind == 1) {\n"
      "      // (a mask drawn in gray has its three the same as its alpha: as before; a glyph drawn larger or smaller than\n"
-@@ -795,6 +798,7 @@ int mb_render_init(void *hwnd) {
+@@ -928,6 +931,7 @@ int mb_render_init(void *hwnd) {
    xdev->GetAdapter(&adapter);
    adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&dxgi_factory);
    flip_chain = 1;
@@ -194,7 +194,7 @@ index d13a63c2..8605d44c 100644
    if (make_composed(xdev, (HWND)hwnd)) {
      // the composition's swap chain, made at the window's size (its first buffers' view: at the first frame's size)
      fb_w = fb_h = 0;
-@@ -815,6 +819,7 @@ int mb_render_open(int wid, void *hwnd) {
+@@ -948,6 +952,7 @@ int mb_render_open(int wid, void *hwnd) {
    RenderWin *back = rw;
    rw = &render_wins[wid];
    render_win_fresh(rw);
@@ -202,7 +202,7 @@ index d13a63c2..8605d44c 100644
    int ok;
    if (dcomp) {
      ok = make_composed(NULL, (HWND)hwnd);
-@@ -1370,8 +1375,9 @@ static void draw_banded(const float *f, int32_t start, int32_t end, int32_t coun
+@@ -1504,8 +1509,9 @@ static void draw_banded(const float *f, int32_t start, int32_t end, int32_t coun
  // `part`: only that part of the target drawn again, over what it holds (the frame's ground first: the instance after
  // the frame's in the vertex buffer, submit's); NULL, all of it, cleared to the ground.
  static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count, const float *bg,
@@ -214,7 +214,7 @@ index d13a63c2..8605d44c 100644
    encode_missing = 0;
    ctx->OMSetRenderTargets(1, &target, NULL);
    cut_on = part != NULL;
-@@ -1474,8 +1480,9 @@ static int submit(const double *inst, int32_t count, double r, double g, double
+@@ -1608,8 +1614,9 @@ static int submit(const double *inst, int32_t count, double r, double g, double
    memcpy(f, last_inst, (size_t)n * sizeof(float));
    float *gr = f + n;
    memset(gr, 0, MB_INST * sizeof(float));
@@ -225,7 +225,7 @@ index d13a63c2..8605d44c 100644
    gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
    ctx->Unmap(vbuf, 0);
    last_count = count;
-@@ -1700,7 +1707,7 @@ static int write_png(const wchar_t *path, const uint8_t *bgra, int w, int h, int
+@@ -1834,7 +1841,7 @@ static int write_png(const wchar_t *path, const uint8_t *bgra, int w, int h, int
  // Instances `f` (`count` of them) drawn on the ground `bg` into a texture of their own, `w` × `h`, and copied where the
  // CPU reads it (a staging texture, to Map; NULL where it could not be made). What the vertex buffer holds is drawn: the
  // caller has put `f` there.
@@ -234,7 +234,7 @@ index d13a63c2..8605d44c 100644
    D3D11_TEXTURE2D_DESC td = {};
    td.Width = (UINT)w;
    td.Height = (UINT)h;
-@@ -1716,7 +1723,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
+@@ -1850,7 +1857,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
      tex->Release();
      return NULL;
    }
@@ -243,7 +243,7 @@ index d13a63c2..8605d44c 100644
    td.Usage = D3D11_USAGE_STAGING;
    td.BindFlags = 0;
    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-@@ -1729,7 +1736,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
+@@ -1863,7 +1870,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
  
  // The last presented frame drawn again (its instances are what the vertex buffer holds), as redrawn_of draws.
  static ID3D11Texture2D *redrawn(int w, int h) {
@@ -252,7 +252,7 @@ index d13a63c2..8605d44c 100644
  }
  
  // `count` instances of `f` into the vertex buffer, grown to hold them: 0 where it could not be written.
-@@ -1845,6 +1852,28 @@ int mb_render_snapshot(const wchar_t *path) {
+@@ -1979,6 +1986,28 @@ int mb_render_snapshot(const wchar_t *path) {
        }
        px = out;
        stride = w * 4;
@@ -281,7 +281,7 @@ index d13a63c2..8605d44c 100644
      }
      ok = write_png(path, px, w, h, stride);
      free(out);
-@@ -1854,6 +1883,19 @@ int mb_render_snapshot(const wchar_t *path) {
+@@ -1988,6 +2017,19 @@ int mb_render_snapshot(const wchar_t *path) {
    return ok;
  }
  

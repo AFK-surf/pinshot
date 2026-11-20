@@ -22,8 +22,8 @@ patched() {
   done
 }
 if [ -d "$DIR/.git" ] && [ "$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" = "$COMMIT" ]; then
-  if [ "${1:-}" != library ] && [ ! -f "$DIR/apps/mbui/moon.mod" ]; then
-    git -C "$DIR" sparse-checkout add apps/mbui/
+  if [ "${1:-}" != library ] && { [ ! -f "$DIR/apps/mbui/moon.mod" ] || [ ! -f "$DIR/libs/sf-ui/moon.mod" ]; }; then
+    git -C "$DIR" sparse-checkout add apps/mbui/ libs/sf-ui/
   fi
   farview "$@"
   patched
@@ -35,7 +35,7 @@ if [ ! -d "$DIR/.git" ]; then
   git -C "$DIR" remote add origin "$REPO"
 fi
 parts=(libs/mbui/)
-[ "${1:-}" = library ] || parts+=(apps/mbui/)
+[ "${1:-}" = library ] || parts+=(apps/mbui/ libs/sf-ui/)
 git -C "$DIR" sparse-checkout set --no-cone "${parts[@]}"
 git -C "$DIR" remote set-url origin "$REPO"
 git -C "$DIR" fetch -q --depth 1 --filter=blob:none origin "$COMMIT"
