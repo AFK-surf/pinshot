@@ -918,6 +918,7 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
     },
   )
   let made = Ref(false)
+  let holder_v : Ref[@view.View?] = Ref(None)
   let shut = Ref(false)
   let rest : Ref[(() -> Unit)?] = Ref(None)
   let stop_rest = fn() {
@@ -930,7 +931,8 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
   let make = fn() -> Bool {
     guard tip_layer.val is Some(l) else { return false }
     let holder = l.box(fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(b)
-    holder.show(fn() { open.get() }, leave=tip_out_ms, at_once=true, fn(t) {
+    holder_v.val = Some(holder)
+    holder.show(fn() { open.get() }, leave=tip_out_ms, fn(t) {
       let caps = tip_key_caps(@signals.untracked(keys))
       let has_keys = !caps.is_empty()
       t
@@ -1027,6 +1029,8 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
     }
     let at = b.cause_at()
     if on {
+      // Take over from the previous tooltip BEFORE claiming tip_owner, so prev's seen(at) still sees it as active.
+      let taken = glide.came(at, @motion.hand_spring)
       if !made.val {
         made.val = make()
       }
@@ -1038,21 +1042,18 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
           open.set(false)
         }
       }
-      match glide.came(at, @motion.hand_spring) {
-        Some(seen) => {
-          fade.put(seen)
-          if seen < 1.0 {
-            fade.go(b, 1.0, at, (1.0 - seen) * tip_in_ms, Out)
-          }
-        }
+      match taken {
+        Some(_) => fade.put(1.0)
         None => fade.go(b, 1.0, at, tip_in_ms, Out)
       }
-      open.set(true)
     } else {
       fade.go(b, 0.0, at, tip_out_ms, Leave)
-      glide.left(at)
       tip_went_at.val = at
-      open.set(false)
+      glide.left(at)
+    }
+    match holder_v.val {
+      Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })
+      _ => open.set(on)
     }
   }
   b.reacts(fn() { (b.pointed(), b.pressed()) }, fn(st) {
