@@ -261,7 +261,7 @@ fn load_settings() -> Unit {
       rec_cursor.set(rflag("rec_cursor", true))
       rec_audio.set(rflag("rec_audio", false))
       rec_input.set(rflag("rec_input", false))
-      rec_exp_fmt.set(clampi(rnum("rec_exp_fmt", 0), 0, 2))
+      rec_exp_fmt.set(clampi(rnum("rec_exp_fmt", 0), 0, 3))
       rec_exp_qual.set(clampi(rnum("rec_exp_qual", 2), 0, 3))
       let rs = rnum("rec_exp_scale", 0)
       rec_exp_scale.set(if rs == 1920 || rs == 1280 || rs == 854 { rs } else { 0 })

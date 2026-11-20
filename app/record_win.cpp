@@ -255,14 +255,85 @@ static struct {
   int64_t master_ms;
   int master_w, master_h, master_fps, master_audio;
   std::string master_codec;
+  std::vector<uint8_t> preview_bmp;
 
   // Export job params
   std::wstring exp_dest;
-  int exp_fmt;       // 0=MP4 H.265, 1=MP4 H.264, 2=GIF
+  int exp_fmt;       // 0=MP4 H.265, 1=MP4 H.264, 2=GIF, 3=MP4 AV1
   int exp_quality;   // 0=Original, 1=High, 2=Balanced, 3=Compact
   int exp_max_side;  // 0=Original, else max long edge (1920/1280/854)
   int exp_gif_fps;   // 10 / 15 / 20
 } R;
+
+static const GUID PS_MFVideoFormat_AV1 = {
+    0x31305641, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+
+// Build a compact top-down 32-bit BGRX BMP (<= 720px long edge) for the export card hero preview.
+static void build_preview_bmp(const uint8_t *px, int w, int h, int pitch, bool is_bgra, std::vector<uint8_t> &out) {
+  out.clear();
+  if (!px || w <= 0 || h <= 0 || pitch < w * 4) return;
+  int pw = w, ph = h;
+  int big = w > h ? w : h;
+  if (big > 720) {
+    double k = 720.0 / (double)big;
+    pw = std::max(16, (int)(w * k + 0.5));
+    ph = std::max(16, (int)(h * k + 0.5));
+  }
+  size_t pix_bytes = (size_t)pw * (size_t)ph * 4;
+  out.resize(54 + pix_bytes, 0);
+  uint8_t *hdr = out.data();
+  uint32_t fsz = (uint32_t)out.size();
+  uint32_t off = 54, hsize = 40;
+  int32_t bw = pw, bh = -ph;
+  uint16_t planes = 1, bits = 32;
+  hdr[0] = 'B';
+  hdr[1] = 'M';
+  memcpy(hdr + 2, &fsz, 4);
+  memcpy(hdr + 10, &off, 4);
+  memcpy(hdr + 14, &hsize, 4);
+  memcpy(hdr + 18, &bw, 4);
+  memcpy(hdr + 22, &bh, 4);
+  memcpy(hdr + 26, &planes, 2);
+  memcpy(hdr + 28, &bits, 2);
+  uint8_t *dst = hdr + 54;
+  int bo = is_bgra ? 0 : 2, go = 1, ro = is_bgra ? 2 : 0;
+  if (pw == w && ph == h) {
+    for (int y = 0; y < ph; y++) {
+      const uint8_t *s = px + (size_t)y * (size_t)pitch;
+      uint8_t *d = dst + (size_t)y * (size_t)pw * 4;
+      for (int x = 0; x < pw; x++) {
+        d[x * 4 + 0] = s[x * 4 + bo];
+        d[x * 4 + 1] = s[x * 4 + go];
+        d[x * 4 + 2] = s[x * 4 + ro];
+        d[x * 4 + 3] = 255;
+      }
+    }
+  } else {
+    for (int y = 0; y < ph; y++) {
+      int y0 = y * h / ph, y1 = std::max(y0 + 1, (y + 1) * h / ph);
+      if (y1 > h) y1 = h;
+      uint8_t *d = dst + (size_t)y * (size_t)pw * 4;
+      for (int x = 0; x < pw; x++) {
+        int x0 = x * w / pw, x1 = std::max(x0 + 1, (x + 1) * w / pw);
+        if (x1 > w) x1 = w;
+        uint32_t sb = 0, sg = 0, sr = 0, cnt = 0;
+        for (int yy = y0; yy < y1; yy++) {
+          const uint8_t *s = px + (size_t)yy * (size_t)pitch;
+          for (int xx = x0; xx < x1; xx++) {
+            sb += s[xx * 4 + bo];
+            sg += s[xx * 4 + go];
+            sr += s[xx * 4 + ro];
+            cnt++;
+          }
+        }
+        d[x * 4 + 0] = (uint8_t)(sb / cnt);
+        d[x * 4 + 1] = (uint8_t)(sg / cnt);
+        d[x * 4 + 2] = (uint8_t)(sr / cnt);
+        d[x * 4 + 3] = 255;
+      }
+    }
+  }
+}
 
 static void rec_exclude_hwnd(HWND h) {
   if (!getenv("PINSHOT_REC_SHOW")) SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE);
@@ -288,6 +359,8 @@ static LRESULT CALLBACK rec_frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 static void rec_frame_show(COLORREF color) {
+  const char *cl = getenv("PINSHOT_TEST_CLOAKED");
+  if (cl && cl[0]) return;
   static int registered = 0;
   if (!registered) {
     WNDCLASSEXW wc = {};
@@ -464,6 +537,7 @@ struct GifWriter {
   uint8_t global_lut[32768];
 
   std::vector<uint8_t> prev_rgb;
+  std::vector<uint8_t> prev_idx;
   bool has_pending = false;
   int pend_x = 0, pend_y = 0, pend_w = 0, pend_h = 0;
   int pend_delay_cs = 0;
@@ -611,6 +685,7 @@ struct GifWriter {
     w = width;
     h = height;
     prev_rgb.assign((size_t)w * h * 3, 0);
+    prev_idx.assign((size_t)w * h, 255);
     header_written = false;
     has_pending = false;
     frames_written = 0;
@@ -734,8 +809,16 @@ struct GifWriter {
     frames_written++;
   }
 
+  void extend_pending_delay(int extra_cs) {
+    if (has_pending && extra_cs > 0) {
+      int total = pend_delay_cs + extra_cs;
+      pend_delay_cs = total > 65535 ? 65535 : total;
+    }
+  }
+
   void add_frame(const uint8_t *rgb, int delay_cs) {
     if (!fp) return;
+    static const int DIFF_THRESH = 18;
     const int n = w * h;
     if (!header_written && !has_pending) {
       build_palette(rgb, n, NULL, global_pal, global_lut);
@@ -746,14 +829,13 @@ struct GifWriter {
       pend_delay_cs = delay_cs;
       pend_local_pal = false;
       pend_idx.resize((size_t)n);
+      memcpy(prev_rgb.data(), rgb, (size_t)n * 3);
       for (int i = 0; i < n; i++) {
         uint32_t k = (((uint32_t)rgb[i * 3 + 0] >> 3) << 10) | (((uint32_t)rgb[i * 3 + 1] >> 3) << 5) |
                      ((uint32_t)rgb[i * 3 + 2] >> 3);
         uint8_t idx = global_lut[k];
         pend_idx[i] = idx;
-        prev_rgb[i * 3 + 0] = global_pal[idx * 3 + 0];
-        prev_rgb[i * 3 + 1] = global_pal[idx * 3 + 1];
-        prev_rgb[i * 3 + 2] = global_pal[idx * 3 + 2];
+        prev_idx[i] = idx;
       }
       has_pending = true;
       return;
@@ -761,20 +843,29 @@ struct GifWriter {
 
     int x0 = w, y0 = h, x1 = -1, y1 = -1;
     int changed = 0;
+    uint64_t err_sum = 0;
     for (int y = 0; y < h; y++) {
       const uint8_t *cur = rgb + (size_t)y * w * 3;
       const uint8_t *prv = prev_rgb.data() + (size_t)y * w * 3;
+      const uint8_t *pidx = prev_idx.data() + (size_t)y * w;
       for (int x = 0; x < w; x++) {
         int dr = abs((int)cur[x * 3 + 0] - (int)prv[x * 3 + 0]);
         int dg = abs((int)cur[x * 3 + 1] - (int)prv[x * 3 + 1]);
         int db = abs((int)cur[x * 3 + 2] - (int)prv[x * 3 + 2]);
-        if (dr + dg + db > 12) {
-          if (x < x0) x0 = x;
-          if (x > x1) x1 = x;
-          if (y < y0) y0 = y;
-          if (y > y1) y1 = y;
-          changed++;
-        }
+        if (dr + dg + db <= DIFF_THRESH) continue;
+        uint32_t k = (((uint32_t)cur[x * 3 + 0] >> 3) << 10) | (((uint32_t)cur[x * 3 + 1] >> 3) << 5) |
+                     ((uint32_t)cur[x * 3 + 2] >> 3);
+        uint8_t gidx = global_lut[k];
+        int gerr = abs((int)cur[x * 3 + 0] - (int)global_pal[gidx * 3 + 0]) +
+                   abs((int)cur[x * 3 + 1] - (int)global_pal[gidx * 3 + 1]) +
+                   abs((int)cur[x * 3 + 2] - (int)global_pal[gidx * 3 + 2]);
+        if (pidx[x] == gidx && gerr <= 24) continue;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+        changed++;
+        err_sum += (uint64_t)gerr;
       }
     }
 
@@ -797,26 +888,8 @@ struct GifWriter {
 
     int dw = x1 - x0 + 1;
     int dh = y1 - y0 + 1;
-    uint64_t err_sum = 0;
-    for (int y = y0; y <= y1; y++) {
-      const uint8_t *cur = rgb + (size_t)y * w * 3;
-      const uint8_t *prv = prev_rgb.data() + (size_t)y * w * 3;
-      for (int x = x0; x <= x1; x++) {
-        int dr0 = abs((int)cur[x * 3 + 0] - (int)prv[x * 3 + 0]);
-        int dg0 = abs((int)cur[x * 3 + 1] - (int)prv[x * 3 + 1]);
-        int db0 = abs((int)cur[x * 3 + 2] - (int)prv[x * 3 + 2]);
-        if (dr0 + dg0 + db0 <= 12) continue;
-        uint32_t k = (((uint32_t)cur[x * 3 + 0] >> 3) << 10) | (((uint32_t)cur[x * 3 + 1] >> 3) << 5) |
-                     ((uint32_t)cur[x * 3 + 2] >> 3);
-        uint8_t idx = global_lut[k];
-        err_sum += (uint64_t)(abs((int)cur[x * 3 + 0] - (int)global_pal[idx * 3 + 0]) +
-                              abs((int)cur[x * 3 + 1] - (int)global_pal[idx * 3 + 1]) +
-                              abs((int)cur[x * 3 + 2] - (int)global_pal[idx * 3 + 2]));
-      }
-    }
-    bool use_local = (changed > 256 && (err_sum / (uint64_t)changed) > 24);
+    bool use_local = (changed > 256 && (err_sum / (uint64_t)changed) > 26);
     uint8_t local_lut[32768];
-    const uint8_t *pal = global_pal;
     const uint8_t *lut = global_lut;
     if (use_local) {
       std::vector<uint8_t> crop((size_t)dw * dh * 3);
@@ -828,11 +901,10 @@ struct GifWriter {
         for (int x = 0; x < dw; x++) {
           int d = abs((int)cur[x * 3 + 0] - (int)prv[x * 3 + 0]) + abs((int)cur[x * 3 + 1] - (int)prv[x * 3 + 1]) +
                   abs((int)cur[x * 3 + 2] - (int)prv[x * 3 + 2]);
-          mask[(size_t)y * dw + x] = d > 12 ? 1 : 0;
+          mask[(size_t)y * dw + x] = d > DIFF_THRESH ? 1 : 0;
         }
       }
       build_palette(crop.data(), dw * dh, mask.data(), pend_pal, local_lut);
-      pal = pend_pal;
       lut = local_lut;
     }
 
@@ -846,19 +918,30 @@ struct GifWriter {
     for (int y = 0; y < dh; y++) {
       const uint8_t *cur = rgb + ((size_t)(y0 + y) * w + x0) * 3;
       uint8_t *prv = prev_rgb.data() + ((size_t)(y0 + y) * w + x0) * 3;
+      uint8_t *pidx = prev_idx.data() + ((size_t)(y0 + y) * w + x0);
       for (int x = 0; x < dw; x++) {
         int d = abs((int)cur[x * 3 + 0] - (int)prv[x * 3 + 0]) + abs((int)cur[x * 3 + 1] - (int)prv[x * 3 + 1]) +
                 abs((int)cur[x * 3 + 2] - (int)prv[x * 3 + 2]);
-        if (d <= 12) {
+        if (d <= DIFF_THRESH) {
           pend_idx[(size_t)y * dw + x] = 255;
         } else {
           uint32_t k = (((uint32_t)cur[x * 3 + 0] >> 3) << 10) | (((uint32_t)cur[x * 3 + 1] >> 3) << 5) |
                        ((uint32_t)cur[x * 3 + 2] >> 3);
           uint8_t idx = lut[k];
+          if (!use_local && pidx[x] == idx) {
+            int gerr = abs((int)cur[x * 3 + 0] - (int)global_pal[idx * 3 + 0]) +
+                       abs((int)cur[x * 3 + 1] - (int)global_pal[idx * 3 + 1]) +
+                       abs((int)cur[x * 3 + 2] - (int)global_pal[idx * 3 + 2]);
+            if (gerr <= 24) {
+              pend_idx[(size_t)y * dw + x] = 255;
+              continue;
+            }
+          }
           pend_idx[(size_t)y * dw + x] = idx;
-          prv[x * 3 + 0] = pal[idx * 3 + 0];
-          prv[x * 3 + 1] = pal[idx * 3 + 1];
-          prv[x * 3 + 2] = pal[idx * 3 + 2];
+          prv[x * 3 + 0] = cur[x * 3 + 0];
+          prv[x * 3 + 1] = cur[x * 3 + 1];
+          prv[x * 3 + 2] = cur[x * 3 + 2];
+          pidx[x] = use_local ? 255 : idx;
         }
       }
     }
@@ -939,7 +1022,7 @@ struct Mp4Encoder {
   bool audio_passthrough = false;
   std::string codec_name;
   int out_w = 0, out_h = 0, fps = 30;
-  UINT32 custom_bps_hevc = 0, custom_bps_h264 = 0;
+  UINT32 custom_bps_hevc = 0, custom_bps_h264 = 0, custom_bps_av1 = 0;
   std::wstring out_path;
 
   ComPtr<IMFDXGIDeviceManager> dev_mgr;
@@ -975,13 +1058,15 @@ struct Mp4Encoder {
     return (f > 30) ? (30.0 + (double)(f - 30) * 0.35) : (double)f;
   }
 
-  UINT32 pick_bitrate(bool hevc) const {
-    if (hevc && custom_bps_hevc > 0) return custom_bps_hevc;
-    if (!hevc && custom_bps_h264 > 0) return custom_bps_h264;
-    double bpp = hevc ? 0.075 : 0.115;
+  // codec_mode: 0=HEVC, 1=H.264, 3=AV1
+  UINT32 pick_bitrate(int codec_mode) const {
+    if (codec_mode == 3 && custom_bps_av1 > 0) return custom_bps_av1;
+    if (codec_mode == 0 && custom_bps_hevc > 0) return custom_bps_hevc;
+    if (codec_mode == 1 && custom_bps_h264 > 0) return custom_bps_h264;
+    double bpp = codec_mode == 3 ? 0.056 : (codec_mode == 0 ? 0.075 : 0.115);
     double raw = (double)out_w * (double)out_h * eff_fps(fps) * bpp;
-    double lo = hevc ? 1000000.0 : 1400000.0;
-    double hi = hevc ? 18000000.0 : 26000000.0;
+    double lo = codec_mode == 3 ? 650000.0 : (codec_mode == 0 ? 1000000.0 : 1400000.0);
+    double hi = codec_mode == 3 ? 12000000.0 : (codec_mode == 0 ? 18000000.0 : 26000000.0);
     if (raw < lo) raw = lo;
     if (raw > hi) raw = hi;
     return (UINT32)raw;
@@ -1022,7 +1107,7 @@ struct Mp4Encoder {
     return true;
   }
 
-  bool try_open_tier(ID3D11Device *dev, IMFDXGIDeviceManager *shared_mgr, bool try_hevc, bool try_hw,
+  bool try_open_tier(ID3D11Device *dev, IMFDXGIDeviceManager *shared_mgr, int codec_mode, bool try_hw,
                      bool want_audio, IMFMediaType *passthrough_audio) {
     writer.Reset();
     dev_mgr.Reset();
@@ -1057,15 +1142,16 @@ struct Mp4Encoder {
     ComPtr<IMFMediaType> out_mt;
     if (FAILED(MFCreateMediaType(&out_mt))) return false;
     out_mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    out_mt->SetGUID(MF_MT_SUBTYPE, try_hevc ? MFVideoFormat_HEVC : MFVideoFormat_H264);
-    out_mt->SetUINT32(MF_MT_AVG_BITRATE, pick_bitrate(try_hevc));
+    out_mt->SetGUID(MF_MT_SUBTYPE,
+                    codec_mode == 3 ? PS_MFVideoFormat_AV1 : (codec_mode == 0 ? MFVideoFormat_HEVC : MFVideoFormat_H264));
+    out_mt->SetUINT32(MF_MT_AVG_BITRATE, pick_bitrate(codec_mode));
     out_mt->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
     MFSetAttributeSize(out_mt.Get(), MF_MT_FRAME_SIZE, (UINT32)out_w, (UINT32)out_h);
     MFSetAttributeRatio(out_mt.Get(), MF_MT_FRAME_RATE, (UINT32)fps, 1);
     MFSetAttributeRatio(out_mt.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-    if (try_hevc) {
+    if (codec_mode == 0) {
       out_mt->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH265VProfile_Main_420_8);
-    } else {
+    } else if (codec_mode == 1) {
       out_mt->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High);
     }
     set_sdr_color(out_mt.Get());
@@ -1087,7 +1173,7 @@ struct Mp4Encoder {
 
     // High-efficiency PeakConstrainedVBR: 1s VBV buffer + tight peak cap lets quiet screen frames compress to
     // near-zero bits while keeping scrolling/motion crisp at high hardware NVENC/QSV/AMF throughput.
-    UINT32 bps = pick_bitrate(try_hevc);
+    UINT32 bps = pick_bitrate(codec_mode);
     UINT32 max_bps = (UINT32)std::min<uint64_t>((uint64_t)bps * (export_mode ? 125ULL : 140ULL) / 100ULL, 40000000ULL);
     UINT32 gop = (UINT32)(fps * (gop_secs > 0 ? gop_secs : 2));
     UINT32 qvs = export_mode ? 38 : 25;
@@ -1142,8 +1228,9 @@ struct Mp4Encoder {
     }
 
     gpu_path = try_hw;
-    is_hevc = try_hevc;
-    if (try_hevc && try_hw) codec_name = "HEVC (HW)";
+    is_hevc = (codec_mode == 0);
+    if (codec_mode == 3) codec_name = "AV1 (HW)";
+    else if (codec_mode == 0 && try_hw) codec_name = "HEVC (HW)";
     else if (try_hw) codec_name = "H.264 (HW)";
     else codec_name = "H.264 (SW)";
     return true;
@@ -1184,8 +1271,9 @@ struct Mp4Encoder {
     return true;
   }
 
+  // want_codec: 0=HEVC preferred, 1=H.264, 3=AV1 (HW)
   bool open(ID3D11Device *dev, IMFDXGIDeviceManager *shared_mgr, const std::wstring &path, int w, int h,
-            int target_fps, bool want_audio, IMFMediaType *passthrough_audio = NULL, bool prefer_hevc = true) {
+            int target_fps, bool want_audio, IMFMediaType *passthrough_audio = NULL, int want_codec = 0) {
     if (!ensure_mf_started()) return false;
     if (!lock_init) {
       InitializeCriticalSection(&write_lock);
@@ -1197,18 +1285,30 @@ struct Mp4Encoder {
     fps = target_fps;
 
     const char *force = getenv("PINSHOT_REC_CODEC");
-    bool allow_hevc = prefer_hevc && (!force || !force[0] || strcmp(force, "hevc") == 0);
     bool allow_hw = !force || !force[0] || strcmp(force, "sw") != 0;
 
+    if (want_codec == 3) {
+      if ((dev || shared_mgr) && allow_hw && try_open_tier(dev, shared_mgr, 3, true, want_audio, passthrough_audio))
+        return true;
+      DeleteFileW(out_path.c_str());
+      if (lock_init) {
+        DeleteCriticalSection(&write_lock);
+        lock_init = false;
+      }
+      return false;
+    }
+
+    bool allow_hevc = (want_codec == 0) && (!force || !force[0] || strcmp(force, "hevc") == 0);
+
     if ((dev || shared_mgr) && allow_hw && allow_hevc &&
-        try_open_tier(dev, shared_mgr, true, true, want_audio, passthrough_audio))
+        try_open_tier(dev, shared_mgr, 0, true, want_audio, passthrough_audio))
       return true;
     DeleteFileW(out_path.c_str());
     if ((dev || shared_mgr) && allow_hw &&
-        try_open_tier(dev, shared_mgr, false, true, want_audio, passthrough_audio))
+        try_open_tier(dev, shared_mgr, 1, true, want_audio, passthrough_audio))
       return true;
     DeleteFileW(out_path.c_str());
-    if (try_open_tier(NULL, NULL, false, false, want_audio, passthrough_audio)) return true;
+    if (try_open_tier(NULL, NULL, 1, false, want_audio, passthrough_audio)) return true;
     DeleteFileW(out_path.c_str());
     if (lock_init) {
       DeleteCriticalSection(&write_lock);
@@ -1919,6 +2019,8 @@ static DWORD WINAPI rec_worker(LPVOID) {
     return ok;
   };
 
+  R.preview_bmp.clear();
+  bool preview_captured = false;
   Mp4Encoder mp4;
   bool enc_ok = mp4.open(wgc_ok ? dev.Get() : NULL, NULL, master_path, rw, rh, fps, want_audio);
   if (!enc_ok) {
@@ -2026,6 +2128,15 @@ static DWORD WINAPI rec_worker(LPVOID) {
         sy = 0;
       }
       if (rgb_tex) {
+        if (!preview_captured) {
+          int pp = 0;
+          bool pbgra = true;
+          std::vector<uint8_t> pbuf;
+          if (read_cpu_srgb(rgb_tex, sx, sy, pbuf, pp, pbgra)) {
+            build_preview_bmp(pbuf.data(), rw, rh, pp, pbgra, R.preview_bmp);
+            preview_captured = true;
+          }
+        }
         wrote = mp4.write_gpu_frame(dev.Get(), ctx.Get(), rgb_tex, 0, false, sx, sy, rw, rh, next_slot_hns, dur_hns);
       }
     } else {
@@ -2045,7 +2156,13 @@ static DWORD WINAPI rec_worker(LPVOID) {
       } else {
         got = capture_gdi(cpu_bgra, pitch, is_bgra);
       }
-      if (got) wrote = mp4.write_cpu_frame(cpu_bgra.data(), pitch, is_bgra, next_slot_hns, dur_hns);
+      if (got) {
+        if (!preview_captured) {
+          build_preview_bmp(cpu_bgra.data(), rw, rh, pitch, is_bgra, R.preview_bmp);
+          preview_captured = true;
+        }
+        wrote = mp4.write_cpu_frame(cpu_bgra.data(), pitch, is_bgra, next_slot_hns, dur_hns);
+      }
     }
 
     if (wrote) {
@@ -2177,8 +2294,8 @@ static DWORD WINAPI export_worker(LPVOID) {
     return 0;
   }
 
-  // MP4 transcode / compress (fmt 0 = H.265 preferred, fmt 1 = H.264)
-  if (fmt == 0 || fmt == 1) {
+  // MP4 transcode / compress (fmt 0 = H.265 preferred, fmt 1 = H.264, fmt 3 = AV1)
+  if (fmt == 0 || fmt == 1 || fmt == 3) {
     int out_w = src_w, out_h = src_h;
     if (need_resize) {
       double k = (double)max_side / (double)(out_w > out_h ? out_w : out_h);
@@ -2272,19 +2389,24 @@ static DWORD WINAPI export_worker(LPVOID) {
     // Quality tiers: 0=Original (high-bitrate transcode), 1=High, 2=Balanced, 3=Compact
     static const double kBppHevc[4] = {0.075, 0.048, 0.024, 0.011};
     static const double kBppH264[4] = {0.115, 0.072, 0.038, 0.018};
+    static const double kBppAv1[4]  = {0.056, 0.036, 0.018, 0.0085};
     static const double kLoHevc[4]  = {900000.0, 550000.0, 280000.0, 150000.0};
     static const double kHiHevc[4]  = {16000000.0, 8000000.0, 3500000.0, 1500000.0};
     static const double kLoH264[4]  = {1300000.0, 800000.0, 420000.0, 220000.0};
     static const double kHiH264[4]  = {24000000.0, 12000000.0, 5200000.0, 2200000.0};
+    static const double kLoAv1[4]   = {650000.0, 400000.0, 200000.0, 110000.0};
+    static const double kHiAv1[4]   = {12000000.0, 6000000.0, 2600000.0, 1100000.0};
     int qi = quality < 0 ? 2 : (quality > 3 ? 3 : quality);
     double ef = Mp4Encoder::eff_fps(src_fps);
     double r_hevc = (double)out_w * out_h * ef * kBppHevc[qi];
     double r_h264 = (double)out_w * out_h * ef * kBppH264[qi];
+    double r_av1  = (double)out_w * out_h * ef * kBppAv1[qi];
     enc.custom_bps_hevc = (UINT32)(r_hevc < kLoHevc[qi] ? kLoHevc[qi] : (r_hevc > kHiHevc[qi] ? kHiHevc[qi] : r_hevc));
     enc.custom_bps_h264 = (UINT32)(r_h264 < kLoH264[qi] ? kLoH264[qi] : (r_h264 > kHiH264[qi] ? kHiH264[qi] : r_h264));
+    enc.custom_bps_av1  = (UINT32)(r_av1  < kLoAv1[qi]  ? kLoAv1[qi]  : (r_av1  > kHiAv1[qi]  ? kHiAv1[qi]  : r_av1));
 
     if (!enc.open(gpu_dec ? dev.Get() : NULL, gpu_dec ? mgr.Get() : NULL, dst, out_w, out_h, src_fps, has_src_audio,
-                  NULL, want_hevc)) {
+                  NULL, fmt)) {
       reader.Reset();
       InterlockedExchange(&R.exporting, 0);
       if (SUCCEEDED(co)) CoUninitialize();
@@ -2475,9 +2597,32 @@ static DWORD WINAPI export_worker(LPVOID) {
     return 0;
   }
 
+  UINT32 dec_w = (UINT32)src_w, dec_h = (UINT32)src_h;
+  LONG def_stride = (LONG)(dec_w * 4);
+  auto refresh_gif_mt = [&]() {
+    ComPtr<IMFMediaType> cur_mt;
+    if (SUCCEEDED(reader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &cur_mt)) && cur_mt) {
+      UINT32 fw = 0, fh = 0;
+      if (SUCCEEDED(MFGetAttributeSize(cur_mt.Get(), MF_MT_FRAME_SIZE, &fw, &fh)) && fw > 0 && fh > 0) {
+        dec_w = fw;
+        dec_h = fh;
+      }
+      UINT32 raw_st = 0;
+      if (SUCCEEDED(cur_mt->GetUINT32(MF_MT_DEFAULT_STRIDE, &raw_st)) && raw_st != 0) {
+        def_stride = (LONG)raw_st;
+      } else {
+        LONG st = (LONG)(dec_w * 4);
+        MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, dec_w, &st);
+        def_stride = st;
+      }
+    }
+  };
+  refresh_gif_mt();
+
   LONGLONG step_hns = 10000000LL / gif_fps;
   int step_cs = std::max(2, (100 + gif_fps / 2) / gif_fps);
   LONGLONG next_want = 0;
+  LONGLONG prev_ts = -1;
   LONGLONG total_hns = total_ms * 10000LL;
   int last_pct = -1;
   std::vector<uint8_t> rgb_frame((size_t)gif_w * gif_h * 3);
@@ -2488,52 +2633,86 @@ static DWORD WINAPI export_worker(LPVOID) {
     ComPtr<IMFSample> sample;
     HRESULT hr = reader->ReadSample((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &sidx, &flags, &ts, &sample);
     if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) break;
+    if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) refresh_gif_mt();
     if (!sample || ts < next_want) continue;
 
     while (next_want <= ts) next_want += step_hns;
 
-    ComPtr<IMFMediaBuffer> buf;
-    if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buf))) {
-      BYTE *p = NULL;
-      DWORD len = 0;
-      if (SUCCEEDED(buf->Lock(&p, NULL, &len)) && len >= (DWORD)((size_t)src_w * src_h * 4)) {
-        if (gif_w == src_w && gif_h == src_h) {
-          for (int y = 0; y < gif_h; y++) {
-            const uint8_t *s = p + (size_t)y * src_w * 4;
-            uint8_t *d = rgb_frame.data() + (size_t)y * gif_w * 3;
-            for (int x = 0; x < gif_w; x++) {
-              d[x * 3 + 0] = s[x * 4 + 2];
-              d[x * 3 + 1] = s[x * 4 + 1];
-              d[x * 3 + 2] = s[x * 4 + 0];
-            }
-          }
-        } else {
-          for (int y = 0; y < gif_h; y++) {
-            int y0 = y * src_h / gif_h, y1 = std::max(y0 + 1, (y + 1) * src_h / gif_h);
-            if (y1 > src_h) y1 = src_h;
-            uint8_t *d = rgb_frame.data() + (size_t)y * gif_w * 3;
-            for (int x = 0; x < gif_w; x++) {
-              int x0 = x * src_w / gif_w, x1 = std::max(x0 + 1, (x + 1) * src_w / gif_w);
-              if (x1 > src_w) x1 = src_w;
-              uint32_t sr = 0, sg = 0, sb = 0, cnt = 0;
-              for (int yy = y0; yy < y1; yy++) {
-                const uint8_t *s = p + (size_t)yy * src_w * 4;
-                for (int xx = x0; xx < x1; xx++) {
-                  sr += s[xx * 4 + 2];
-                  sg += s[xx * 4 + 1];
-                  sb += s[xx * 4 + 0];
-                  cnt++;
-                }
-              }
-              d[x * 3 + 0] = (uint8_t)(sr / cnt);
-              d[x * 3 + 1] = (uint8_t)(sg / cnt);
-              d[x * 3 + 2] = (uint8_t)(sb / cnt);
-            }
+    BYTE *scan0 = NULL;
+    LONG pitch = 0;
+    ComPtr<IMFMediaBuffer> raw_buf;
+    ComPtr<IMF2DBuffer> buf2d;
+    bool locked_2d = false;
+    bool locked_1d = false;
+    DWORD buf_count = 0;
+    if (SUCCEEDED(sample->GetBufferCount(&buf_count)) && buf_count == 1 &&
+        SUCCEEDED(sample->GetBufferByIndex(0, &raw_buf)) && SUCCEEDED(raw_buf.As(&buf2d)) &&
+        SUCCEEDED(buf2d->Lock2D(&scan0, &pitch))) {
+      locked_2d = true;
+    } else {
+      raw_buf.Reset();
+      if (SUCCEEDED(sample->ConvertToContiguousBuffer(&raw_buf))) {
+        BYTE *p = NULL;
+        DWORD len = 0;
+        if (SUCCEEDED(raw_buf->Lock(&p, NULL, &len))) {
+          LONG abs_st = def_stride < 0 ? -def_stride : def_stride;
+          if (abs_st >= (LONG)(src_w * 4) && len >= (DWORD)((size_t)abs_st * (size_t)std::min(src_h, (int)dec_h))) {
+            scan0 = def_stride < 0 ? (p + (size_t)(dec_h - 1) * (size_t)abs_st) : p;
+            pitch = def_stride;
+            locked_1d = true;
+          } else {
+            raw_buf->Unlock();
           }
         }
-        gif.add_frame(rgb_frame.data(), step_cs);
-        buf->Unlock();
       }
+    }
+
+    if (locked_2d || locked_1d) {
+      int copy_w = std::min(src_w, (int)dec_w);
+      int copy_h = std::min(src_h, (int)dec_h);
+      if (gif_w == copy_w && gif_h == copy_h) {
+        for (int y = 0; y < gif_h; y++) {
+          const uint8_t *s = scan0 + (ptrdiff_t)y * pitch;
+          uint8_t *d = rgb_frame.data() + (size_t)y * gif_w * 3;
+          for (int x = 0; x < gif_w; x++) {
+            d[x * 3 + 0] = s[x * 4 + 2];
+            d[x * 3 + 1] = s[x * 4 + 1];
+            d[x * 3 + 2] = s[x * 4 + 0];
+          }
+        }
+      } else {
+        // Bilinear/area downsample respecting actual signed row pitch
+        for (int y = 0; y < gif_h; y++) {
+          int y0 = y * copy_h / gif_h, y1 = std::max(y0 + 1, (y + 1) * copy_h / gif_h);
+          if (y1 > copy_h) y1 = copy_h;
+          uint8_t *d = rgb_frame.data() + (size_t)y * gif_w * 3;
+          for (int x = 0; x < gif_w; x++) {
+            int x0 = x * copy_w / gif_w, x1 = std::max(x0 + 1, (x + 1) * copy_w / gif_w);
+            if (x1 > copy_w) x1 = copy_w;
+            uint32_t sr = 0, sg = 0, sb = 0, cnt = 0;
+            for (int yy = y0; yy < y1; yy++) {
+              const uint8_t *s = scan0 + (ptrdiff_t)yy * pitch;
+              for (int xx = x0; xx < x1; xx++) {
+                sr += s[xx * 4 + 2];
+                sg += s[xx * 4 + 1];
+                sb += s[xx * 4 + 0];
+                cnt++;
+              }
+            }
+            d[x * 3 + 0] = (uint8_t)(sr / cnt);
+            d[x * 3 + 1] = (uint8_t)(sg / cnt);
+            d[x * 3 + 2] = (uint8_t)(sb / cnt);
+          }
+        }
+      }
+      if (prev_ts >= 0 && ts > prev_ts) {
+        int real_cs = (int)((ts - prev_ts + 50000LL) / 100000LL);
+        if (real_cs > step_cs) gif.extend_pending_delay(std::min(real_cs - step_cs, 500));
+      }
+      prev_ts = ts;
+      gif.add_frame(rgb_frame.data(), step_cs);
+      if (locked_2d) buf2d->Unlock2D();
+      else raw_buf->Unlock();
     }
 
     int pct = total_hns > 0 ? (int)((ts * 98LL) / total_hns) : 50;
@@ -2551,6 +2730,10 @@ static DWORD WINAPI export_worker(LPVOID) {
     gif.abort();
     DeleteFileW(dst.c_str());
   } else {
+    if (prev_ts >= 0 && total_hns > prev_ts) {
+      int tail_cs = (int)((total_hns - prev_ts + 50000LL) / 100000LL);
+      if (tail_cs > step_cs) gif.extend_pending_delay(std::min(tail_cs - step_cs, 300));
+    }
     out_bytes = gif.finish();
   }
   reader.Reset();
@@ -2604,8 +2787,10 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   R.my = mi.rcMonitor.top;
   R.mw = mi.rcMonitor.right - mi.rcMonitor.left;
   R.mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-  rec_frame_show(RGB(0x2F, 0x9B, 0xFF));
-  rec_draw_open(x, y, w, h);
+  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) {
+    rec_frame_show(RGB(0x2F, 0x9B, 0xFF));
+    rec_draw_open(x, y, w, h);
+  }
   return 1;
 }
 
@@ -2682,6 +2867,53 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, i
   return 1;
 }
 
+int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
+  int slen = (int)Moonbit_array_length(src_path);
+  int dlen = (int)Moonbit_array_length(dst_path);
+  std::wstring src = utf8_to_wide((const char *)src_path, slen);
+  if (src.empty()) return 0;
+  DWORD attr = GetFileAttributesW(src.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) || file_size_of(src) == 0)
+    return 0;
+  std::wstring dst = dlen > 0 ? utf8_to_wide((const char *)dst_path, dlen) : std::wstring();
+  if (dst.empty() || _wcsicmp(src.c_str(), dst.c_str()) == 0) {
+    copy_file_to_clipboard(src);
+    return 1;
+  }
+  rec_make_dirs(dst);
+  if (!CopyFileW(src.c_str(), dst.c_str(), FALSE)) return -1;
+  copy_file_to_clipboard(dst);
+  return 1;
+}
+
+int32_t ps_rec_has_av1(void) {
+  static int cached = -1;
+  if (cached >= 0) return cached;
+  if (!ensure_mf_started()) {
+    cached = 0;
+    return 0;
+  }
+  MFT_REGISTER_TYPE_INFO ot = {MFMediaType_Video, PS_MFVideoFormat_AV1};
+  IMFActivate **acts = NULL;
+  UINT32 cnt = 0;
+  HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER,
+                         MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_LOCALMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+                         NULL, &ot, &acts, &cnt);
+  if (SUCCEEDED(hr) && acts) {
+    for (UINT32 i = 0; i < cnt; i++) {
+      if (acts[i]) acts[i]->Release();
+    }
+    CoTaskMemFree(acts);
+  }
+  cached = (SUCCEEDED(hr) && cnt > 0) ? 1 : 0;
+  return cached;
+}
+
+moonbit_bytes_t ps_rec_preview(void) {
+  if (R.preview_bmp.empty()) return moonbit_make_bytes(0, 0);
+  return rec_bytes_of(R.preview_bmp.data(), R.preview_bmp.size());
+}
+
 void ps_rec_end(void) {
   rec_frame_hide();
   rec_draw_close();
@@ -2711,6 +2943,7 @@ void ps_rec_end(void) {
     R.master_path.clear();
   }
   R.master_bytes = 0;
+  R.preview_bmp.clear();
   R.prepared = 0;
 }
 
@@ -2728,7 +2961,8 @@ void ps_rec_exclude(int32_t wid) {
   DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
   COLORREF no_border = 0xFFFFFFFEu;  // DWMWA_COLOR_NONE
   DwmSetWindowAttribute(h, 34 /* DWMWA_BORDER_COLOR */, &no_border, sizeof no_border);
-  rec_exclude_hwnd(h);
+  const char *cl = getenv("PINSHOT_TEST_CLOAKED");
+  if (!cl || !cl[0]) rec_exclude_hwnd(h);
 }
 
 }  // extern "C"

@@ -487,6 +487,12 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, i
   (void)dest_path, (void)fmt, (void)quality, (void)max_side, (void)gif_fps;
   return 0;
 }
+int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
+  (void)src_path, (void)dst_path;
+  return 0;
+}
+int32_t ps_rec_has_av1(void) { return 0; }
+moonbit_bytes_t ps_rec_preview(void) { return moonbit_make_bytes(0, 0); }
 void ps_rec_end(void) {}
 void ps_rec_exclude(int32_t wid) { (void)wid; }
 void ps_next_win_clear(void) {}
