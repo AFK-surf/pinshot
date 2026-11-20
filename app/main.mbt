@@ -52,6 +52,8 @@ fn main {
       toast_window
     } else if what == "ocr" {
       ocr_window
+    } else if what == "long" {
+      long_window
     } else {
       pin_window(wid, what)
     }
@@ -73,6 +75,9 @@ fn main {
       ocr_wid.val = 0
       ocr_field.set("")
       trim_soon()
+    }
+    if wid == long_wid.val {
+      long_gone()
     }
     pin_gone(wid)
   })
@@ -116,6 +121,15 @@ fn told(json : String, bytes : Bytes?) -> Unit {
     "capture-failed" => toast(tr("截图失败，请重试。"))
     "pin-clipboard" => pin_clipboard()
     "ocr" => ocr_told(o, bytes)
+    "long" => {
+      let n = fn(k : String) {
+        match o.get(k) {
+          Some(Number(v, ..)) => v.to_int()
+          _ => 0
+        }
+      }
+      long_told(n("h"), n("lost") != 0, n("full") != 0)
+    }
     "tick" =>
       match o.get("wid") {
         Some(Number(w, ..)) => pin_tick(w.to_int())
@@ -150,6 +164,8 @@ fn told(json : String, bytes : Bytes?) -> Unit {
             close_capture()
           } else if wid == settings_wid.val || wid == ocr_wid.val {
             close_window(wid)
+          } else if wid == long_wid.val {
+            long_close()
           } else {
             close_pin(wid)
           }

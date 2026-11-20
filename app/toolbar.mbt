@@ -115,9 +115,11 @@ let line_variants : Array[Tool] = [Arrow, Line]
 let mosaic_variants : Array[Tool] = [Mosaic, MosaicBrush, Blur]
 
 ///|
-/// 14 buttons on the main bar: 7 tools + the background + rule + 1 undo + rule + 5 actions = 16 items, 15 gaps.
+/// 14 buttons on the main bar (15 where a scrolling screenshot can be taken): 7 tools + the background + rule + 1 undo
+/// + rule + 5 actions (6) = 16 items (17), 15 gaps (16).
 fn bar_width() -> Double {
-  bar_pad * 2.0 + bar_button * 14.0 + bar_rule * 2.0 + bar_gap * 15.0
+  let n = if long_shot_here() { 15.0 } else { 14.0 }
+  bar_pad * 2.0 + bar_button * n + bar_rule * 2.0 + bar_gap * (n + 1.0)
 }
 
 ///|
@@ -275,8 +277,11 @@ fn toolbar(stage : @view.View) -> Unit {
           done_before.val.is_empty()
         })
         bar_rule_node(bar)
-        // 9..13. OCR, Pin, Save, Close, Copy
+        // 9..14. OCR, a scrolling screenshot (Windows'), Pin, Save, Close, Copy
         tool_button(bar, "ocr", "提取文字 Ctrl+O", fn() { false }, ocr_out)
+        if long_shot_here() {
+          tool_button(bar, "long", "长截图 Ctrl+L", fn() { false }, long_out)
+        }
         tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, pin_out)
         tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, save_out)
         tool_button(bar, "close", "关闭 Esc", fn() { false }, close_capture)
@@ -330,8 +335,9 @@ fn tool_button(
   press : () -> Unit,
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
+  tip? : Bool = true,
 ) -> Unit {
-  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~)
+  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~)
 }
 
 ///|
@@ -344,7 +350,10 @@ fn tool_group_button(
   press : () -> Unit,
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
+  tip? : Bool = true,
 ) -> Unit {
+  // (`tip`: told by the overlay's tip; a button of another window, the long screenshot's panel, is not: the tip is the
+  // overlay's, its node ids of no other window)
   bar.box(fn(b) {
     b
     .width(Is(Some(bar_button)))
@@ -355,7 +364,9 @@ fn tool_group_button(
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
     .on_press(fn() {
-      tip_off()
+      if tip {
+        tip_off()
+      }
       if !dim() {
         press()
       }
@@ -372,7 +383,9 @@ fn tool_group_button(
       }
     }))
     |> ignore
-    tip_follows(b, label_fn, @view.Top)
+    if tip {
+      tip_follows(b, label_fn, @view.Top)
+    }
     b.box(fn(g) {
       g
       .width(Is(Some(18.0)))
@@ -648,6 +661,8 @@ fn glyph(name : String) -> @pixels.Vector {
     "close" => lines(["M4.5 4.5l9 9", "M13.5 4.5l-9 9"])
     "check" => { w: 18.0, h: 18.0, layers: [stroke_layer("M3.5 9.5 7.3 13.2 14.5 5", 0x000000FFL, 2.0)] }
     "copy" => lines(["M6.5 6.5h8v8h-8z", "M11.5 6.5V3.5h-8v8h3"])
+    // (a page taller than its frame, an arrow down it: a long screenshot)
+    "long" => lines(["M4 2.5h10v13h-10z", "M9 5.5v7", "M6.5 10 9 12.5 11.5 10"])
     "top" => lines(["M9 15V5", "M5 9l4-4 4 4", "M4 2.8h10"])
     _ => lines([])
   }

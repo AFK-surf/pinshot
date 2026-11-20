@@ -68,8 +68,8 @@ let pin_n : Ref[Int] = Ref(0)
 let pins_hidden : Ref[Bool] = Ref(false)
 
 ///|
-/// A pin of `png` (w by h pixels) opened at x, y on the screen.
-fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
+/// A pin of `png` (w by h pixels) opened at x, y on the screen, at `zoom` (a long screenshot's: brought down to fit).
+fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom? : Double = 1.0) -> Unit {
   pin_n.val += 1
   let what = "pin:\{pin_n.val}"
   let key = "mem:" + what
@@ -86,8 +86,8 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
     key_first: key,
     w,
     h,
-    zx: @signals.signal(1.0),
-    zy: @signals.signal(1.0),
+    zx: @signals.signal(zoom),
+    zy: @signals.signal(zoom),
     alpha: @signals.signal(s.pin_alpha),
     top: @signals.signal(s.pin_top),
     zoomed_at: @signals.signal(-10000.0),
@@ -108,7 +108,12 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int) -> Unit {
   p.wid.val = wid
   ps_own(wid, if s.pin_top { 1 } else { 0 }) |> ignore
   ps_shadow(wid)
-  ps_place(wid, x, y, w, h, 1, 1)
+  let (pw, ph) = if zoom == 1.0 {
+    (w, h)
+  } else {
+    (dmax(16.0, (w.to_double() * zoom).round()).to_int(), dmax(16.0, (h.to_double() * zoom).round()).to_int())
+  }
+  ps_place(wid, x, y, pw, ph, 1, 1)
   if s.pin_alpha < 255 {
     ps_opacity(wid, s.pin_alpha)
   }
@@ -753,7 +758,8 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
       }
     })
     |> ignore
-    let px = if p.w > p.h { p.w } else { p.h }
+    // (a long screenshot's taller than a texture may be: decoded brought down to fit one)
+    let px = clampi(if p.w > p.h { p.w } else { p.h }, 1, 16384)
     root.box(fn(i) { i.over(Is(true)).image(By(fn() { Some((p.key.get(), "", px)) })).presses(Is(false)) |> ignore })
     |> ignore
     // (its edge: a hairline; the accent's while the pointer is on it; the window in front, a frame of the accent, and
