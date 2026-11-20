@@ -139,16 +139,16 @@ let rec_path : @signals.Signal[String] = @signals.signal("")
 let rec_err : @signals.Signal[String] = @signals.signal("")
 
 ///|
-let rec_bar_w : Double = 604.0
+let rec_bar_w : Double = 648.0
 
 ///|
 let rec_bar_h : Double = 44.0
 
 ///|
-let rec_exp_w : Double = 486.0
+let rec_exp_w : Double = 560.0
 
 ///|
-let rec_exp_h : Double = 172.0
+let rec_exp_h : Double = 160.0
 
 ///|
 fn rec_export_mode_code() -> Int {
@@ -533,7 +533,11 @@ fn rec_saved_pct_tag() -> String {
   if orig > 0.0 && out > 0.0 && out < orig * 0.96 {
     let saved = ((orig - out) / orig * 100.0).round().to_int()
     if saved > 0 {
-      "（-\{saved}%）"
+      if english.get() {
+        " (-\{saved}%)"
+      } else {
+        "（-\{saved}%）"
+      }
     } else {
       ""
     }
@@ -682,10 +686,11 @@ fn rec_export_card(
   sub_fn : () -> String,
   toggle_sub : (() -> Unit)?,
 ) -> Unit {
+  let card_w = (rec_exp_w - 28.0 - 16.0) / 3.0
   row.box(fn(c) {
     let active = fn() { rec_exp_kind.get() == kind }
     c
-    .grow(Is(1.0))
+    .width(Is(Some(card_w)))
     .height(Is(Some(58.0)))
     .padding(Is((10.0, 8.0, 10.0, 8.0)))
     .gap(Is(3.0))
@@ -780,10 +785,9 @@ fn rec_window(root : @view.View) -> Unit {
     // ---- Phases 0..3: Compact single-row PixPin-style live control bar ----
     page.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
       bar
+      .over(Is(true))
       .row(Is(true))
       .gap(Is(3.0))
-      .width(Is(Some(rec_bar_w)))
-      .height(Is(Some(rec_bar_h)))
       .padding(Is((10.0, 0.0, 8.0, 0.0)))
       .lines_up(Is(Some(Middle)))
       |> ignore
@@ -1043,8 +1047,7 @@ fn rec_window(root : @view.View) -> Unit {
     // ---- Phases 4..7: Post-recording encoding & compression panel ----
     page.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
       exp
-      .width(Is(Some(rec_exp_w)))
-      .height(Is(Some(rec_exp_h)))
+      .over(Is(true))
       .padding(Is((14.0, 12.0, 14.0, 12.0)))
       .gap(Is(10.0))
       .lines_up(Is(Some(Start)))
@@ -1131,9 +1134,9 @@ fn rec_window(root : @view.View) -> Unit {
           "MP4 压缩",
           fn() {
             if rec_exp_kind.get() == 1 && rec_exp_sub.get() == 1 {
-              tr("小体积 720p · 点击切换")
+              tr("720p 小体积 · 点击切换")
             } else {
-              tr("标准 1080p · 点击切换")
+              tr("1080p 标准 · 点击切换")
             }
           },
           Some(fn() { rec_exp_sub.set(if rec_exp_sub.untracked() == 0 { 1 } else { 0 }) }),
@@ -1172,9 +1175,9 @@ fn rec_window(root : @view.View) -> Unit {
               By(fn() {
                 match rec_phase.get() {
                   5 => tr("正在编码 ") + rec_exp_pct.get().to_string() + "%"
-                  6 => tr("已保存并复制 · ") + rec_fmt_size(rec_exp_bytes.get()) + rec_saved_pct_tag()
+                  6 => tr("已保存 · ") + rec_fmt_size(rec_exp_bytes.get()) + rec_saved_pct_tag()
                   7 => rec_err.get()
-                  _ => tr("导出后自动保存并复制文件")
+                  _ => tr("导出后自动保存并复制")
                 }
               }),
               look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false },
