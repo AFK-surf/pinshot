@@ -94,8 +94,10 @@ double ps_now_ms(void) { return ps_ms(); }
 
 #define WM_PS_TAKEN (WM_APP + 42)
 #define PS_FREE_TIMER 7
-#define PS_WGC_TIMER 8  // the captures made again a moment after the monitors wake (tray_proc)
-static int wgc_off;     // PINSHOT_CAPTURE=gdi: no capture kept
+#define PS_WGC_TIMER 8       // the captures made again a moment after the monitors wake (tray_proc)
+#define PS_IDLE_TRIM_TIMER 9 // Instant mode: trim D3D11 driver pools after sitting idle (tray_proc)
+#define IDLE_TRIM_MS 60000
+static int wgc_off;          // PINSHOT_CAPTURE=gdi: no capture kept
 // GUID_CONSOLE_DISPLAY_STATE (the monitors off 0, on 1, dimmed 2)
 static const GUID display_state_guid = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47}};
 
@@ -110,6 +112,7 @@ typedef struct {
 int ps_wgc_restart(void);
 void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch);
 void ps_wgc_release(void *taken);
+void ps_wgc_trim(void);
 static HMONITOR cap_mon;
 
 static Shot cap;               // the picture being taken or taken
@@ -123,6 +126,30 @@ static HWND tray_hwnd;
 static char *win_list;  // the windows on the monitor as it was taken (ps_windows)
 static size_t win_list_len;
 static void windows_listed(void);
+
+static UINT idle_trim_ms(void) {
+  static int cached = -1;
+  if (cached < 0) {
+    const char *e = getenv("PINSHOT_IDLE_TRIM_MS");
+    int v = e ? atoi(e) : IDLE_TRIM_MS;
+    cached = v >= 100 ? v : IDLE_TRIM_MS;
+  }
+  return (UINT)cached;
+}
+
+static UINT monitor_dpi(HMONITOR mon) {
+  UINT dx = 96, dy = 96;
+  typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
+  static GetDpiForMonitorFn dpi_of;
+  static int tried;
+  if (!tried) {
+    tried = 1;
+    HMODULE sh = LoadLibraryW(L"shcore.dll");
+    if (sh) dpi_of = (GetDpiForMonitorFn)GetProcAddress(sh, "GetDpiForMonitor");
+  }
+  if (dpi_of) dpi_of(mon, 0, &dx, &dy);
+  return dx;
+}
 
 static void shot_free(Shot *s) {
   if (s->dib) DeleteObject(s->dib);
@@ -141,15 +168,7 @@ static int monitor_under_pointer(void) {
   if (!GetMonitorInfoW(mon, &mi)) return 0;
   int w = mi.rcMonitor.right - mi.rcMonitor.left, h = mi.rcMonitor.bottom - mi.rcMonitor.top;
   if (w <= 0 || h <= 0) return 0;
-  UINT dx = 96, dy = 96;
-  typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
-  static GetDpiForMonitorFn dpi_of;
-  if (!dpi_of) {
-    HMODULE sh = LoadLibraryW(L"shcore.dll");
-    if (sh) dpi_of = (GetDpiForMonitorFn)GetProcAddress(sh, "GetDpiForMonitor");
-  }
-  if (dpi_of) dpi_of(mon, 0, &dx, &dy);
-  cap_x = mi.rcMonitor.left, cap_y = mi.rcMonitor.top, cap_w = w, cap_h = h, cap_dpi = (int)dx;
+  cap_x = mi.rcMonitor.left, cap_y = mi.rcMonitor.top, cap_w = w, cap_h = h, cap_dpi = (int)monitor_dpi(mon);
   cap_mon = mon;
   return 1;
 }
@@ -190,7 +209,7 @@ static int cap_begin(void) {
   // (the system's capture kept on: the monitor's last frame, there already; GDI's where it has had none yet)
   uint8_t *bits = NULL;
   int pitch = 0;
-  void *t = ps_wgc_take_now(cap_mon, cap_w, cap_h, &bits, &pitch);
+  void *t = wgc_off ? NULL : ps_wgc_take_now(cap_mon, cap_w, cap_h, &bits, &pitch);
   if (t && tray_hwnd) {
     cap.staging = t;
     cap.bits = bits;
@@ -292,9 +311,9 @@ moonbit_bytes_t ps_capture_take(void) {
 
 // The picture taken let go: freed a moment later (what decoded it is done by then).
 void ps_capture_release(void) {
-  if (!cap.dib || cap_busy) return;
+  if ((!cap.dib && !cap.staging) || cap_busy) return;
   for (int i = 0; i < 4; i++)
-    if (!cap_old[i].dib) {
+    if (!cap_old[i].dib && !cap_old[i].staging) {
       cap_old[i] = cap;
       memset(&cap, 0, sizeof cap);
       if (tray_hwnd) SetTimer(tray_hwnd, PS_FREE_TIMER, 1500, NULL);
@@ -479,6 +498,7 @@ static HICON own_icon(int size) {
 
 static void tray_put(void) {
   if (test_run()) return;
+  if (tray.hIcon) DestroyIcon(tray.hIcon);
   memset(&tray, 0, sizeof tray);
   tray.cbSize = sizeof tray;
   tray.hWnd = tray_hwnd;
@@ -496,6 +516,10 @@ static void tray_put(void) {
 
 static void tray_gone(void) {
   if (tray_hwnd) Shell_NotifyIconW(NIM_DELETE, &tray);
+  if (tray.hIcon) {
+    DestroyIcon(tray.hIcon);
+    tray.hIcon = NULL;
+  }
 }
 
 // The icon's menu (words the app gave: ps_set_menu), each item's key told back as chosen.
@@ -552,7 +576,7 @@ static int capture_open;  // the app has a capture open (ps_capture_open): 1 the
 static char ask_waiting[16];  // a capture asked for while the one taken as it starts was open: asked as that closes
 #define WM_PS_ASK (WM_APP + 45)
 #define WM_PS_MOVE (WM_APP + 46)
-static void gpu_trim_now(void);
+static void gpu_trim_now(int force_trim);
 #define WM_PS_TRIM (WM_APP + 43)
 
 static HWND own_window(int wid);
@@ -565,6 +589,7 @@ static void capture_asked(const char *by) {
     return;
   }
   if (capture_open) return;
+  if (tray_hwnd) KillTimer(tray_hwnd, PS_IDLE_TRIM_TIMER);
   if (strcmp(by, "key") != 0) cap_key_lag = 0.0;
   if (!cap_begin()) return;
   lstrcpynA(cap_by, by, sizeof cap_by);
@@ -595,7 +620,8 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       else capture_asked("again");
       return 0;
     case WM_PS_TRIM:
-      gpu_trim_now();
+      gpu_trim_now(0);
+      if (keep_gpu_warm && !capture_open && !cap_busy) SetTimer(h, PS_IDLE_TRIM_TIMER, idle_trim_ms(), NULL);
       return 0;
     case WM_PS_ASK:
       if (ask_waiting[0] && !capture_open) {
@@ -629,6 +655,11 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       if (wp == PS_FREE_TIMER) {
         KillTimer(h, PS_FREE_TIMER);
         cap_old_free();
+        if (keep_gpu_warm && !capture_open && !cap_busy) SetTimer(h, PS_IDLE_TRIM_TIMER, idle_trim_ms(), NULL);
+      }
+      if (wp == PS_IDLE_TRIM_TIMER) {
+        KillTimer(h, PS_IDLE_TRIM_TIMER);
+        if (!capture_open && !cap_busy) gpu_trim_now(1);
       }
       return 0;
     case WM_PS_TAKEN: {
@@ -655,6 +686,7 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 // Whether the app has a capture open: no other is taken meanwhile (its shortcut pressed again does nothing).
 void ps_capture_open(int32_t on) {
   capture_open = on;
+  if (on && tray_hwnd) KillTimer(tray_hwnd, PS_IDLE_TRIM_TIMER);
   // (asked for once the app is through closing it: a message to the icon's window, after what closes it now)
   if (!on && ask_waiting[0] && tray_hwnd) PostMessageW(tray_hwnd, WM_PS_ASK, 0, 0);
 }
@@ -721,6 +753,10 @@ void ps_wgc_set_keep(int keep);
 void ps_set_capture_keep(int32_t keep) {
   keep_gpu_warm = keep ? 1 : 0;
   if (!wgc_off) ps_wgc_set_keep(keep);
+  if (!keep && tray_hwnd) {
+    KillTimer(tray_hwnd, PS_IDLE_TRIM_TIMER);
+    PostMessageW(tray_hwnd, WM_PS_TRIM, 0, 0);
+  }
 }
 
 // A note from the icon (the system's balloon, a notification): `title` and `text` (UTF-8, ending in a NUL); clicked,
@@ -995,10 +1031,7 @@ void ps_toast_place(int32_t wid, int32_t w, int32_t h) {
   HMONITOR mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
   MONITORINFO mi = {sizeof mi};
   GetMonitorInfoW(mon, &mi);
-  UINT dx = 96, dy = 96;
-  typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
-  GetDpiForMonitorFn dpi_of = (GetDpiForMonitorFn)GetProcAddress(LoadLibraryW(L"shcore.dll"), "GetDpiForMonitor");
-  if (dpi_of) dpi_of(mon, 0, &dx, &dy);
+  UINT dx = monitor_dpi(mon);
   DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
   DwmSetWindowAttribute(hw, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
   int ww = MulDiv(w, (int)dx, 96), wh = MulDiv(h, (int)dx, 96);
@@ -1033,10 +1066,7 @@ void ps_center(int32_t wid, int32_t w, int32_t h) {
   HMONITOR mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
   MONITORINFO mi = {sizeof mi};
   GetMonitorInfoW(mon, &mi);
-  UINT dx = 96, dy = 96;
-  typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
-  GetDpiForMonitorFn dpi_of = (GetDpiForMonitorFn)GetProcAddress(LoadLibraryW(L"shcore.dll"), "GetDpiForMonitor");
-  if (dpi_of) dpi_of(mon, 0, &dx, &dy);
+  UINT dx = monitor_dpi(mon);
   // (its frame dark, as what it shows is)
   BOOL dark = TRUE;
   DwmSetWindowAttribute(hw, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
@@ -1118,13 +1148,13 @@ moonbit_bytes_t ps_pointer(void) {
 // frame, so nothing of it is lost.
 extern void *mb_render_context(void);
 extern void *mb_render_device(void);
-static void gpu_trim_now(void) {
+static void gpu_trim_now(int force_trim) {
   ID3D11DeviceContext *ctx = (ID3D11DeviceContext *)mb_render_context();
   if (ctx) {
     ID3D11DeviceContext_ClearState(ctx);
     ID3D11DeviceContext_Flush(ctx);
   }
-  if (!keep_gpu_warm) {
+  if (!keep_gpu_warm || force_trim) {
     ID3D11Device *dev = (ID3D11Device *)mb_render_device();
     IDXGIDevice3 *xd = NULL;
     if (dev && SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice3, (void **)&xd))) {
@@ -1132,6 +1162,7 @@ static void gpu_trim_now(void) {
       IDXGIDevice3_Release(xd);
     }
   }
+  if (force_trim && !wgc_off) ps_wgc_trim();
 }
 
 void ps_gpu_flush(void) {

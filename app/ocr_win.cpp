@@ -251,7 +251,12 @@ static void ocr_run(const uint8_t *png, int len, OcrOut *o) {
   }
   ComPtr<WF::IAsyncOperation<OCR::OcrResult *>> op;
   ComPtr<OCR::IOcrResult> res;
-  if (FAILED(engine->RecognizeAsync(bmp.Get(), &op)) || FAILED(ocr_wait(op.Get(), res.GetAddressOf())) || !res) {
+  HRESULT rhr = engine->RecognizeAsync(bmp.Get(), &op);
+  HRESULT whr = SUCCEEDED(rhr) ? ocr_wait(op.Get(), res.GetAddressOf()) : rhr;
+  ComPtr<WF::IClosable> bc;
+  if (bmp && SUCCEEDED(bmp.As(&bc))) bc->Close();
+  bmp.Reset();
+  if (FAILED(whr) || !res) {
     o->why = "failed";
     return;
   }
