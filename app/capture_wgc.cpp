@@ -81,6 +81,7 @@ static int take_fresh;  // its session was made again as it was taken (its last 
 // 1: keep each monitor's WGC session open in the background (default); 0: open a session on demand for one frame and
 // close it right after (saving ~245 MB of idle video memory on 4K HDR while still capturing 16-bit HDR frames).
 static int keep_sessions = 1;
+static int long_holds;  // a long screenshot under way: a session made as needed kept till it ends (ps_wgc_long_hold)
 
 extern "C" void ps_wgc_timing(double *out) {
   out[0] = take_ms, out[1] = take_white, out[2] = said_half, out[3] = take_age, out[4] = take_fresh;
@@ -364,7 +365,36 @@ static void device_lost(void) {
 // The picture of monitor `mon` (w by h) as it is now: its last frame copied into a staging texture and mapped. The
 // texture (an opaque handle, ps_wgc_release lets it go) and where its pixels are (rows `pitch` bytes apart); NULL
 // where its session has had no frame yet, or is of another size.
+static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int any_age, uint8_t **bits, int *pitch);
+
 extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch) {
+  return take(mon, w, h, 0, 0, w, h, 0, bits, pitch);
+}
+
+// A long screenshot begun (1) or over (0): while it goes, a session made only as needed (keep_sessions 0) is kept
+// rather than made again and let go at each of its takings; as it ends, let go, and the memory given back.
+extern "C" void ps_wgc_long_hold(int on) {
+  long_holds = on;
+  if (on || keep_sessions) return;
+  for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
+  nmons = 0;
+  if (ready > 0) {
+    ctx->ClearState();
+    ctx->Flush();
+    ComPtr<IDXGIDevice3> d3;
+    if (SUCCEEDED(dev.As(&d3))) d3->Trim();
+  }
+}
+
+// A part of monitor `mon` (rx, ry, rw by rh of its w by h pixels) as it is now, for a long screenshot: its last frame
+// however old (the system gives none while nothing changes: the last is the screen then), only that part copied off.
+// NULL where its session has had no frame yet.
+extern "C" void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, uint8_t **bits, int *pitch) {
+  if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 || rx + rw > w || ry + rh > h) return NULL;
+  return take(mon, w, h, rx, ry, rw, rh, 1, bits, pitch);
+}
+
+static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int any_age, uint8_t **bits, int *pitch) {
   LARGE_INTEGER t0, t1, f;
   QueryPerformanceCounter(&t0);
   QueryPerformanceFrequency(&f);
@@ -404,7 +434,7 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
     trusted = e ? atof(e) : FRAME_TRUSTED_S;
   }
   double age = fr ? (t0.QuadPart - at) / (double)f.QuadPart : 1e9;
-  if (age > trusted) {
+  if (age > trusted && !(any_age && fr)) {
     // (made again, its first frame waited for: the system gives one as a session starts)
     fr.Reset();
     mon_stop(m);
@@ -421,7 +451,7 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
       QueryPerformanceCounter(&now);
       double left = FIRST_FRAME_MS - (now.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
       if (left <= 0) {
-        if (!keep_sessions) {
+        if (!keep_sessions && !long_holds) {
           mon_stop(m);
           nmons = 0;
         }
@@ -498,18 +528,27 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
   td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
   td.MiscFlags = 0;
   td.MipLevels = td.ArraySize = 1;
+  int whole = rx == 0 && ry == 0 && rw == w && rh == h;
+  td.Width = (UINT)rw;
+  td.Height = (UINT)rh;
   ComPtr<ID3D11Texture2D> staging;
   D3D11_MAPPED_SUBRESOURCE mp;
   if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) {
-    if (!keep_sessions) {
+    if (!keep_sessions && !long_holds) {
       mon_stop(m);
       nmons = 0;
     }
     return NULL;
   }
-  ctx->CopyResource(staging.Get(), tex.Get());
+  if (whole) {
+    ctx->CopyResource(staging.Get(), tex.Get());
+  } else {
+    D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
+    ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
+  }
   take_white = m->hdr ? white : 0.0;
-  if (!keep_sessions) {
+  // (sessions made only as needed: let go once taken, but while a long screenshot holds them, every 33 ms)
+  if (!keep_sessions && !long_holds) {
     tex.Reset();
     surface.Reset();
     access.Reset();
@@ -540,7 +579,7 @@ extern "C" void ps_wgc_release(void *taken) {
   t->Release();
   c->ClearState();
   c->Flush();
-  if (!keep_sessions) {
+  if (!keep_sessions && !long_holds) {
     ComPtr<IDXGIDevice3> d3;
     if (SUCCEEDED(d.As(&d3))) d3->Trim();
   }
