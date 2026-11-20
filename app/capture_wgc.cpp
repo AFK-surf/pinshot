@@ -203,6 +203,10 @@ static int mon_hdr(HMONITOR mon, float *white) {
   return 0;
 }
 
+extern "C" int ps_wgc_mon_hdr(HMONITOR mon, float *white) {
+  return mon_hdr(mon, white);
+}
+
 static void mon_stop(Mon *m) {
   if (m->pool) m->pool->remove_FrameArrived(m->token);
   ComPtr<ABI::Windows::Foundation::IClosable> c;
@@ -319,6 +323,10 @@ static int borderless_allowed(void) {
       });
   if (FAILED(op->put_Completed(done.Get()))) borderless = 0;
   return 0;
+}
+
+extern "C" int ps_wgc_borderless_ok(void) {
+  return borderless_allowed();
 }
 
 // Every monitor's session (made again: the monitors changed). How many there are.

@@ -964,6 +964,19 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
         return 0;
       }
       break;
+    case WM_USER + 0x51: {
+      if (test_run()) {
+        extern int mb_render_snap_win(int wid, const wchar_t *path);
+        wchar_t path[MAX_PATH] = {0};
+        if (!GetEnvironmentVariableW(L"PINSHOT_SNAP_PATH", path, MAX_PATH) || !path[0]) {
+          wchar_t tmp[MAX_PATH] = {0};
+          GetTempPathW(MAX_PATH, tmp);
+          _snwprintf(path, MAX_PATH, L"%lspinshot-snap.png", tmp);
+        }
+        return mb_render_snap_win((int)wid, path);
+      }
+      break;
+    }
     case WM_NCDESTROY:
       RemovePropW(h, L"PinShot.Frames");
       RemovePropW(h, L"PinShot.Closing");

@@ -522,9 +522,9 @@ fn edge_cursor(e : Int) -> @view.Cursor {
 }
 
 ///|
-/// Pin `p` sized by the drag `s` begun, the pointer where it is now: by an edge stretched that way alone, by a corner as
-/// it is (its proportions then kept, by how far the pointer went along its diagonal; Shift held: freely), each zoom 0.1 to
-/// 8 as the wheel's, the opposite side or corner staying where it was.
+/// Pin `p` sized by the drag `s` begun, the pointer where it is now: every edge and corner preserves the picture's
+/// aspect ratio by default (corner along its diagonal, side edge scaling proportionally with the perpendicular axis
+/// centered; Shift held: stretch freely), each zoom 0.1 to 8 as the wheel's, the opposite side or corner staying put.
 fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let q = numbers_of(text_of(ps_pointer()))
   if q.length() < 2 || s.w <= 0.0 || s.h <= 0.0 {
@@ -536,11 +536,19 @@ fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let sy = (s.h + (if b { dy } else if t { -dy } else { 0.0 })) / s.h
   let across = l || r
   let down = t || b
-  let (kx, ky) = if across && down && ps_shift_down() == 0 {
-    // (the pointer's way taken along the pin's diagonal: one size, going on smoothly whichever side it moves more along,
-    // where taking the side moved further jumped between the two as they crossed; the user, 2026-11-18: 「这里会突然跳很多」)
-    let k = (sx * s.w * s.w + sy * s.h * s.h) / (s.w * s.w + s.h * s.h)
-    let k = clamp(k, dmax(0.1 / s.zx, 0.1 / s.zy), dmin(8.0 / s.zx, 8.0 / s.zy))
+  let keep_aspect = ps_shift_down() == 0
+  let (kx, ky) = if keep_aspect {
+    let raw = if across && down {
+      // (the pointer's way taken along the pin's diagonal: smooth whichever side it moves more along)
+      (sx * s.w * s.w + sy * s.h * s.h) / (s.w * s.w + s.h * s.h)
+    } else if across {
+      sx
+    } else {
+      sy
+    }
+    let k_lo = dmax(dmax(0.1 / s.zx, 0.1 / s.zy), dmax(16.0 / s.w, 16.0 / s.h))
+    let k_hi = dmin(8.0 / s.zx, 8.0 / s.zy)
+    let k = clamp(raw, k_lo, dmax(k_lo, k_hi))
     (k, k)
   } else {
     (if across { sx } else { 1.0 }, if down { sy } else { 1.0 })
@@ -549,8 +557,24 @@ fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let zy = clamp(s.zy * ky, 0.1, 8.0)
   let nw = dmax(16.0, (p.w.to_double() * zx).round())
   let nh = dmax(16.0, (p.h.to_double() * zy).round())
-  let nx = if l { s.x + s.w - nw } else { s.x }
-  let ny = if t { s.y + s.h - nh } else { s.y }
+  let nx = if l {
+    s.x + s.w - nw
+  } else if r {
+    s.x
+  } else if keep_aspect {
+    s.x + (s.w - nw) / 2.0
+  } else {
+    s.x
+  }
+  let ny = if t {
+    s.y + s.h - nh
+  } else if b {
+    s.y
+  } else if keep_aspect {
+    s.y + (s.h - nh) / 2.0
+  } else {
+    s.y
+  }
   p.zx.set(zx)
   p.zy.set(zy)
   p.zoomed_at.set(now_of(p))

@@ -46,7 +46,7 @@ fn main {
     true
   })
   @ui.set_window_tree(fn(wid, what) {
-    if what == "settings" {
+    let build = if what == "settings" {
       settings_window
     } else if what == "toast" {
       toast_window
@@ -54,8 +54,15 @@ fn main {
       ocr_window
     } else if what == "long" {
       long_window
+    } else if what == "rec" {
+      rec_window
     } else {
       pin_window(wid, what)
+    }
+    fn(root) {
+      // Every child window has its own window-kept tree theme; apply app_theme (tabular digits) here too.
+      @ui.set_tree_theme(app_theme)
+      build(root)
     }
   })
   @ui.when_window_closed(fn(wid) {
@@ -78,6 +85,9 @@ fn main {
     }
     if wid == long_wid.val {
       long_gone()
+    }
+    if wid == rec_wid.val {
+      rec_gone()
     }
     pin_gone(wid)
   })
@@ -139,6 +149,41 @@ fn told(json : String, bytes : Bytes?) -> Unit {
         n("top"),
       )
     }
+    "rec" => {
+      let n = fn(k : String) {
+        match o.get(k) {
+          Some(Number(v, ..)) => v
+          _ => 0.0
+        }
+      }
+      let s = fn(k : String) {
+        match o.get(k) {
+          Some(String(v)) => v
+          _ => ""
+        }
+      }
+      rec_told(
+        s("state"),
+        n("ms").to_int(),
+        n("frames").to_int(),
+        n("bytes"),
+        n("orig"),
+        n("pct").to_int(),
+        n("audio").to_int(),
+        s("codec"),
+        s("path"),
+        s("err"),
+      )
+    }
+    "rec-draw" => {
+      let n = fn(k : String) {
+        match o.get(k) {
+          Some(Number(v, ..)) => v.to_int()
+          _ => 0
+        }
+      }
+      rec_draw_told(n("tool"), n("count"))
+    }
     "tick" =>
       match o.get("wid") {
         Some(Number(w, ..)) => pin_tick(w.to_int())
@@ -175,6 +220,8 @@ fn told(json : String, bytes : Bytes?) -> Unit {
             close_window(wid)
           } else if wid == long_wid.val {
             long_close()
+          } else if wid == rec_wid.val {
+            rec_cancel()
           } else {
             close_pin(wid)
           }

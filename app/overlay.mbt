@@ -74,7 +74,7 @@ fn side_cursor(side : (Int, Int)) -> @view.Cursor {
 /// The pointer's shape on the overlay.
 fn overlay_cursor() -> @view.Cursor? {
   match hand.get() {
-    Drawing(_, _) | Marking => return Some(Crosshair)
+    Drawing(_, _) | Marking | Erasing(_, _, _, _) => return Some(Crosshair)
     Moving(_, _, _) | Dragging(_, _, _, _, _, -1, _) => return Some(Grabbing)
     Dragging(_, _, _, _, _, _, _) => return Some(Crosshair)
     Sizing(hx, hy, _) => return Some(side_cursor((hx, hy)))
@@ -87,9 +87,12 @@ fn overlay_cursor() -> @view.Cursor? {
       if selected_handle_at(x, y) is Some(_) {
         return Some(Crosshair)
       }
+      let t = tool.get()
       match handle_at(r, x, y) {
         Some((0, 0)) =>
-          if tool.get() == Move || mark_at(x, y, false) is Some(_) {
+          if t == Pen || t == Eraser {
+            Some(Crosshair)
+          } else if t == Move || mark_at(x, y, false) is Some(_) {
             Some(Grab)
           } else {
             Some(Crosshair)
@@ -445,8 +448,9 @@ fn stage_drag(d : @view.Drag) -> Unit {
 /// What the hand holds let go of as it was: a mark being drawn called off, one dragged put back where it was.
 fn drop_held() -> Unit {
   @signals.start_batch()
-  if hand.untracked() is Dragging(_, _, _, before, _, _, _) {
-    marks.set(before)
+  match hand.untracked() {
+    Dragging(_, _, _, before, _, _, _) | Erasing(before, _, _, _) => marks.set(before)
+    _ => ()
   }
   draft.set(None)
   hand.set(Free)
@@ -526,28 +530,41 @@ fn press_down(x : Double, y : Double) -> Unit {
     None => hand.set(Drawing(x, y))
     Some(r) =>
       match handle_at(r, x, y) {
-        Some((0, 0)) =>
-          match mark_at(x, y, tool.untracked() == Move) {
-            // (on a mark: it is picked and dragged, whatever tool is held)
-            Some(i) => take_up(i, x, y, -1, -1)
-            None => {
-              selected.set(None)
-          match tool.untracked() {
-            Move => hand.set(Moving(x, y, r))
-            Number | Words => hand.set(Marking)
-            t => {
-              hand.set(Marking)
-              let start = if t == Mosaic {
-                let cell = dmax(2.0, (mosaic_pt(size_now.untracked()) * mon_scale.untracked()).round())
-                ((x / cell).floor() * cell, (y / cell).floor() * cell)
-              } else {
-                (x, y)
+        Some((0, 0)) => {
+          let cur_tool = tool.untracked()
+          if cur_tool == Eraser {
+            selected.set(None)
+            let before = marks.untracked()
+            let hit = erase_pen_segment(x, y, x, y)
+            hand.set(Erasing(before, x, y, hit))
+          } else if cur_tool == Pen {
+            selected.set(None)
+            hand.set(Marking)
+            draft.set(Some(new_mark(Pen, [(x, y), (x, y)])))
+          } else {
+            match mark_at(x, y, cur_tool == Move) {
+              // (on a mark: it is picked and dragged, whatever shape/line tool is held)
+              Some(i) => take_up(i, x, y, -1, -1)
+              None => {
+                selected.set(None)
+                match cur_tool {
+                  Move => hand.set(Moving(x, y, r))
+                  Number | Words => hand.set(Marking)
+                  t => {
+                    hand.set(Marking)
+                    let start = if t == Mosaic {
+                      let cell = dmax(2.0, (mosaic_pt(size_now.untracked()) * mon_scale.untracked()).round())
+                      ((x / cell).floor() * cell, (y / cell).floor() * cell)
+                    } else {
+                      (x, y)
+                    }
+                    draft.set(Some(new_mark(t, [start, start])))
+                  }
+                }
               }
-              draft.set(Some(new_mark(t, [start, start])))
             }
           }
-            }
-          }
+        }
         Some((hx, hy)) => {
           selected.set(None)
           hand.set(Sizing(hx, hy, r))
@@ -592,6 +609,11 @@ fn press_moved(x : Double, y : Double) -> Unit {
       }
     }
     Dragging(x0, y0, m, _, _, hx, hy) => if moved { draft.set(Some(held_to(m, hx, hy, x0, y0, x, y))) }
+    Erasing(before, lx, ly, hit) => {
+      let (cx, cy) = clamp_to_sel(x, y)
+      let hit2 = erase_pen_segment(lx, ly, cx, cy)
+      hand.set(Erasing(before, cx, cy, hit || hit2))
+    }
     Marking =>
       match draft.untracked() {
         Some(m) => {
@@ -656,6 +678,10 @@ fn clamp_to_sel(x : Double, y : Double) -> (Double, Double) {
 let last_click : Ref[(Double, Double, Double)] = Ref((0.0, 0.0, 0.0))
 
 ///|
+/// Whether the first click of a potential double-click pushed an undoable mark/erase (undone if the second click lands).
+let last_click_undo : Ref[Bool] = Ref(false)
+
+///|
 /// Whether the click let go at (x, y) is the second of two: as soon after the first as Windows' double click (500 ms)
 /// and within 4 points of it.
 fn second_click(x : Double, y : Double) -> Bool {
@@ -674,20 +700,29 @@ fn second_click(x : Double, y : Double) -> Bool {
 ///|
 fn press_up(x : Double, y : Double) -> Unit {
   let (_, _, moved) = down_at.val
-  // (a double click in the part copies it, whatever tool is held, but where a click puts a number or words down: as
-  // PixPin's; the first of the two picks the window under it where nothing is picked yet)
+  // (a double click inside the picked part finishes and copies immediately in ANY marking mode, discarding any stray
+  // mark/erase/words box created by the double click itself)
   if moved {
     last_click.val = (0.0, 0.0, 0.0)
+    last_click_undo.val = false
   } else if second_click(x, y) {
-    let t = tool.untracked()
     match sel.untracked() {
-      Some(r) if r.contains(x, y) && t != Number && t != Words && words_open.untracked() is None => {
+      Some(r) if r.contains(x, y) => {
         drop_held()
+        if words_open.untracked() is Some(_) {
+          words_open.set(None)
+        }
+        if last_click_undo.val {
+          undo() |> ignore
+          last_click_undo.val = false
+        }
         copy_out()
         return
       }
-      _ => ()
+      _ => last_click_undo.val = false
     }
+  } else {
+    last_click_undo.val = false
   }
   match hand.untracked() {
     Drawing(_, _) =>
@@ -716,9 +751,25 @@ fn press_up(x : Double, y : Double) -> Unit {
       @signals.end_batch()
       return
     }
+    Erasing(before, _, _, hit) => {
+      if hit {
+        done_before.val.push(before)
+        undone.val = []
+        if !moved {
+          last_click_undo.val = true
+        }
+      }
+      hand.set(Free)
+      return
+    }
     Marking =>
       match tool.untracked() {
-        Number => add_mark(new_mark(Number, [(x, y)]))
+        Number => {
+          add_mark(new_mark(Number, [(x, y)]))
+          if !moved {
+            last_click_undo.val = true
+          }
+        }
         Words => if !words_put_down.val { open_words(x, y) }
         _ =>
           match draft.untracked() {
@@ -726,6 +777,9 @@ fn press_up(x : Double, y : Double) -> Unit {
               draft.set(None)
               if !too_small(m) {
                 add_mark(m)
+                if !moved {
+                  last_click_undo.val = true
+                }
               }
             }
             None => ()
@@ -779,6 +833,7 @@ fn overlay_keys() -> @view.Keymap {
     ch('t', "pin", ctrl),
     ch('o', "ocr", ctrl),
     ch('l', "long", ctrl),
+    ch('r', "record", ctrl),
     ch('z', "undo", ctrl),
     ch('y', "redo", ctrl),
     ch('z', "redo", ctrl | shift),
@@ -830,6 +885,7 @@ fn overlay_actions(root : @view.View) -> Unit {
   on("pin", pin_out)
   on("ocr", ocr_out)
   on("long", long_out)
+  on("record", rec_out)
   on("undo", fn() { undo() |> ignore })
   on("redo", fn() { redo() |> ignore })
   on("copy-color", copy_color)
@@ -905,6 +961,28 @@ fn said_shown() -> Unit {
 /// The mark picked, its handles (a line's ends, a box's corners) or, where it has none, a thin frame round it: in the
 /// monitor's pixels, over the marks.
 fn picked_picture() -> @pixels.Vector? {
+  // Eraser brush preview circle when hovering/erasing inside the selection
+  if tool.get() == Eraser {
+    match sel.get() {
+      Some(r) => {
+        let (px, py) = pointer_px.get()
+        if r.contains(px, py) {
+          let k = mon_scale.get()
+          let rad = eraser_pt(size_now.get()) * k
+          return Some({
+            w: mon.val.w.to_double(),
+            h: mon.val.h.to_double(),
+            layers: [
+              fill_layer(circle_path(px, py, rad), 0xFFFFFF26L),
+              stroke_layer(circle_path(px, py, rad), 0x00000088L, dmax(1.0, k * 2.0)),
+              stroke_layer(circle_path(px, py, rad), 0xFFFFFFFFL, dmax(1.0, k)),
+            ],
+          })
+        }
+      }
+      None => ()
+    }
+  }
   // (a mosaic being dragged out: where it reaches, a thin frame of the accent round a faint tint of it, its squares
   // alone showing nothing over an even ground)
   if hand.get() is Marking && draft.get() is Some(d) && (d.tool == Mosaic || d.tool == Blur) {

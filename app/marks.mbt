@@ -12,6 +12,7 @@ enum Tool {
   Arrow
   Line
   Pen
+  Eraser
   Mosaic
   MosaicBrush
   Blur
@@ -75,6 +76,15 @@ fn line_pt(size : Int) -> Double {
 }
 
 ///|
+fn eraser_pt(size : Int) -> Double {
+  match size {
+    0 => 10.0
+    1 => 18.0
+    _ => 28.0
+  }
+}
+
+///|
 fn mosaic_pt(size : Int) -> Double {
   match size {
     0 => 6.0
@@ -127,8 +137,13 @@ fn add_mark(m : Mark) -> Unit {
   let next = marks.untracked().copy()
   next.push(m)
   marks.set(next)
-  // (picked as it is made: its colour, its thickness, Delete, the arrows its at once; the user, 2026-11-17)
-  selected.set(Some(m.id))
+  // (picked as it is made: its colour, its thickness, Delete, the arrows its at once; except freehand pen strokes,
+  // which stay unselected so sketching never flashes a selection frame or grabs the last stroke)
+  if m.tool == Pen {
+    selected.set(None)
+  } else {
+    selected.set(Some(m.id))
+  }
 }
 
 ///|
@@ -267,7 +282,7 @@ fn mark_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
     Mosaic => mosaic_layers(m, k, blur=false)
     Blur => mosaic_layers(m, k, blur=true)
     MosaicBrush => mosaic_brush_layers(m, k)
-    Move | Words | Focus => []
+    Move | Words | Focus | Eraser => []
   }
 }
 
@@ -613,7 +628,7 @@ fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool
       }
       x >= wx - 3.0 * k && x <= wx + wide + 6.0 * k && y >= wy - 3.0 * k && y <= wy + size * 1.3 + 3.0 * k
     }
-    Move => false
+    Move | Eraser => false
   }
 }
 
@@ -725,6 +740,107 @@ fn restyle_selected(c? : Int64, s? : Int) -> Unit {
   if m2 != m {
     replace_mark(i, m2)
   }
+}
+
+///|
+/// Split a pen stroke's polyline by removing every point/segment within `hit_r` of the eraser sweep `a`-`b`.
+/// Returns `(changed, surviving_runs)`.
+fn split_pen_erased(
+  pts : Array[(Double, Double)],
+  a : (Double, Double),
+  b : (Double, Double),
+  hit_r : Double,
+) -> (Bool, Array[Array[(Double, Double)]]) {
+  if pts.length() < 2 {
+    return (false, [])
+  }
+  let step = dmax(2.0, hit_r * 0.45)
+  let sampled : Array[(Double, Double)] = [pts[0]]
+  for i in 1..<pts.length() {
+    let (x0, y0) = pts[i - 1]
+    let (x1, y1) = pts[i]
+    let len = ((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)).sqrt()
+    if len > step {
+      let n = clampi((len / step).ceil().to_int(), 1, 64)
+      for s in 1..<=n {
+        let t = s.to_double() / n.to_double()
+        sampled.push((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+      }
+    } else {
+      sampled.push((x1, y1))
+    }
+  }
+  let mut changed = false
+  let runs : Array[Array[(Double, Double)]] = []
+  let mut cur : Array[(Double, Double)] = []
+  for p in sampled {
+    if to_segment(p.0, p.1, a, b) <= hit_r {
+      changed = true
+      if cur.length() >= 2 {
+        runs.push(cur)
+      }
+      cur = []
+    } else {
+      cur.push(p)
+    }
+  }
+  if cur.length() >= 2 {
+    runs.push(cur)
+  }
+  (changed, runs)
+}
+
+///|
+/// Erase any portion of freehand Pen strokes touched by the eraser swept from `(ax, ay)` to `(bx, by)` (pixels).
+fn erase_pen_segment(ax : Double, ay : Double, bx : Double, by : Double) -> Bool {
+  let k = mon_scale.untracked()
+  let r = eraser_pt(size_now.untracked()) * k
+  let ex0 = dmin(ax, bx) - r
+  let ey0 = dmin(ay, by) - r
+  let ex1 = dmax(ax, bx) + r
+  let ey1 = dmax(ay, by) + r
+  let cur = marks.untracked()
+  let next : Array[Mark] = []
+  let mut changed = false
+  for m in cur {
+    if m.tool != Pen {
+      next.push(m)
+      continue
+    }
+    let (mx0, my0, mx1, my1) = mark_box(m, k)
+    if mx1 < ex0 || mx0 > ex1 || my1 < ey0 || my0 > ey1 {
+      next.push(m)
+      continue
+    }
+    let hit_r = r + line_pt(m.size) * k / 2.0
+    let (hit, runs) = split_pen_erased(m.pts, (ax, ay), (bx, by), hit_r)
+    if !hit {
+      next.push(m)
+    } else {
+      changed = true
+      for run in runs {
+        mark_ids.val += 1
+        next.push({ ..m, id: mark_ids.val, pts: run })
+      }
+    }
+  }
+  if changed {
+    marks.set(next)
+  }
+  changed
+}
+
+///|
+test "split_pen_erased" {
+  let stroke = [(0.0, 0.0), (100.0, 0.0)]
+  let (hit, runs) = split_pen_erased(stroke, (50.0, -5.0), (50.0, 5.0), 12.0)
+  assert_true(hit)
+  assert_eq(runs.length(), 2)
+  assert_true(runs[0][runs[0].length() - 1].0 < 40.0)
+  assert_true(runs[1][0].0 > 60.0)
+  let (miss, runs2) = split_pen_erased(stroke, (50.0, 40.0), (60.0, 40.0), 12.0)
+  assert_false(miss)
+  assert_eq(runs2.length(), 1)
 }
 
 ///|
