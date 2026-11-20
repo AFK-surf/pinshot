@@ -422,18 +422,20 @@ static void windows_listed(void) {
   win_hwnds_n = l.n;
 }
 
-// Whether the window of win_list's line `i` is what shows at (x, y) of the monitor taken (a part of a window: a pane, a
-// view): the window its own window has there, going down through what holds it as the system finds a click's window
+// Whether the window of win_list's line `i` is a part (a pane, a view) of the window of line `of` and what shows at
+// (x, y) of the monitor taken: the window its own window has there, going down through what holds it as the system finds a click's window
 // among its children (none hidden, none a click goes through), is it or one of its own. A part covered there by another
 // part of the same window (a page behind the one shown, a view under a panel) is not: it is not seen (the user,
 // 2026-11-20: 「假如一个窗口看不到，不应该在 area capture 时能嗅探到」). Asked as the pointer comes to it, of the
 // windows as they are then (as the screen was taken, unless they moved since).
-int32_t ps_window_shows(int32_t i, int32_t x, int32_t y) {
-  if (i < 0 || (size_t)i >= win_hwnds_n) return 0;
+int32_t ps_window_shows(int32_t of, int32_t i, int32_t x, int32_t y) {
+  if (i < 0 || (size_t)i >= win_hwnds_n || of < 0 || (size_t)of >= win_hwnds_n) return 0;
   HWND h = win_hwnds[i];
   if (!IsWindow(h)) return 0;
   HWND cur = GetAncestor(h, GA_ROOT);
-  if (!cur || cur == h) return 1;
+  // (a part of the window `of` itself, not of a window behind it: a window listed after a big one and inside it is behind
+  // it, and so are its parts; a window under a maximized one, or a pane of it, was picked through it)
+  if (!cur || cur == h || cur != win_hwnds[of]) return 0;
   POINT screen = {x + cap_x, y + cap_y};
   for (int depth = 0; depth < 32; depth++) {
     POINT pt = screen;

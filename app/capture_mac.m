@@ -193,12 +193,14 @@ moonbit_bytes_t ps_capture_info(void) {
 }
 moonbit_bytes_t ps_capture_take(void) { return ps_data(png); }
 moonbit_bytes_t ps_windows(void) { return ps_string(windows); }
-// (whether a window's part shows where the pointer is: Windows' question; the Mac lists no parts)
-int ps_window_shows(int i, int x, int y) {
+// (whether a window's part shows where the pointer is: Windows' question; the Mac lists windows alone, no parts, so a
+// window listed after another and inside it is behind it: never)
+int ps_window_shows(int of, int i, int x, int y) {
+  (void)of;
   (void)i;
   (void)x;
   (void)y;
-  return 1;
+  return 0;
 }
 int ps_pixel(int x, int y) {
   if (!rgba || x < 0 || y < 0 || x >= width || y >= height)
