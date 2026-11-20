@@ -129,6 +129,11 @@ extern "C" fn ps_mean(x : Int, y : Int, cell : Int) -> Int = "ps_mean"
 extern "C" fn ps_windows() -> Bytes = "ps_windows"
 
 ///|
+/// Whether the window of ps_windows' line `i` is what shows at (`x`, `y`) of the monitor (a part of a window not covered
+/// there by another part of it): 1 it is.
+extern "C" fn ps_window_shows(i : Int, x : Int, y : Int) -> Int = "ps_window_shows"
+
+///|
 /// Window `wid` made one of PinShot's own: no frame, not on the taskbar, over the others where `topmost`.
 extern "C" fn ps_own(wid : Int, topmost : Int) -> Int = "ps_own"
 

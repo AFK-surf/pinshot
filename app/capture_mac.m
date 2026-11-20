@@ -193,6 +193,13 @@ moonbit_bytes_t ps_capture_info(void) {
 }
 moonbit_bytes_t ps_capture_take(void) { return ps_data(png); }
 moonbit_bytes_t ps_windows(void) { return ps_string(windows); }
+// (whether a window's part shows where the pointer is: Windows' question; the Mac lists no parts)
+int ps_window_shows(int i, int x, int y) {
+  (void)i;
+  (void)x;
+  (void)y;
+  return 1;
+}
 int ps_pixel(int x, int y) {
   if (!rgba || x < 0 || y < 0 || x >= width || y >= height)
     return -1;
