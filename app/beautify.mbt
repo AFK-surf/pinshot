@@ -101,6 +101,14 @@ fn beauty_toggle() -> Unit {
   beauty_on.set(!beauty_on.untracked())
   if beauty_on.untracked() {
     wallpaper_read()
+    // (the background comes in as its room opens: shown.mbt)
+    match overlay_root.val {
+      Some(root) => {
+        beauty_fade.put(0.0)
+        beauty_fade.go(1.0, @motion.move_spring, at=root.cause_at())
+      }
+      None => ()
+    }
   }
 }
 
@@ -335,6 +343,7 @@ fn beauty_layer(stage : @view.View) -> Unit {
       let (mw, mh) = (mon.val.w.to_double() / k, mon.val.h.to_double() / k)
       let px = dmax(mon.val.w.to_double(), mon.val.h.to_double()).to_int()
       b
+      .alpha(By(fn() { beauty_fade.shown_on(b) }))
       .width(Is(Some(f.w.to_double() / k)))
       .height(Is(Some(f.h.to_double() / k)))
       .offset(Is((f.x.to_double() / k, f.y.to_double() / k)))
@@ -454,13 +463,4 @@ fn beauty_word_button(row : @view.View, name : String, on : () -> Bool, press : 
     |> ignore
   })
   |> ignore
-}
-
-///|
-/// The picture as it will be copied where the part is laid on a background, else `r`.
-fn beauty_or(r : Rect?) -> Rect? {
-  match beauty_frame() {
-    Some(f) => Some(f)
-    None => r
-  }
 }

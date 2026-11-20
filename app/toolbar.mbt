@@ -128,11 +128,12 @@ let style_height : Double = 36.0
 
 ///|
 /// Where the bar stands (points): under the part at its right edge, kept on the screen.
-fn bar_place() -> (Double, Double) {
+fn bar_place(n : @view.View) -> (Double, Double) {
   let k = mon_scale.get()
   let (sw, sh) = mon_pt()
-  // (under the picture as it will be copied: the part, or the background it is laid on)
-  match beauty_or(sel.get()) {
+  // (under the picture as it will be copied, where it shows on its way: the part, or the background it is laid on)
+  guard sel.get() is Some(_) else { return (0.0, 0.0) }
+  match shown_whole(n) {
     Some(r) => {
       let rx1 = r.right().to_double() / k
       let ry0 = r.y.to_double() / k
@@ -173,7 +174,7 @@ fn toolbar(stage : @view.View) -> Unit {
       .gap(Is(4.0))
       // (each row as wide as what it holds, from the bar's left: the style row is not stretched to the bar's width)
       .lines_up(Is(Some(Start)))
-      .offset(By(bar_place))
+      .offset(By(fn() { bar_place(col) }))
       // (out of the way while the part is dragged or resized)
       .laid_nowhere(By(fn() {
         sel.get() is None ||
@@ -282,8 +283,8 @@ fn toolbar(stage : @view.View) -> Unit {
         tool_button(bar, "check", "复制 Enter", fn() { false }, copy_out, strong=true)
       })
       |> ignore
-      col.show(fn() { styling() }, fn(row) { style_row(row) }, at_once=true)
-      col.show(fn() { beauty_on.get() }, fn(row) { beauty_row(row) }, at_once=true)
+      col.show(fn() { styling() }, fn(row) { style_row(row) })
+      col.show(fn() { beauty_on.get() }, fn(row) { beauty_row(row) })
     })
     |> ignore
   })
