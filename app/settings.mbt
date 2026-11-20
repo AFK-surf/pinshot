@@ -52,17 +52,17 @@ let pin_choices : Array[(String, Int, Int)] = [
 
 ///|
 let confirm_choices : Array[(String, Int, Int)] = if @hostapi.platform() == 0 {
-  [("Return", 0, 0x0D), ("Space", 0, 0x20), ("⌘Return", 2, 0x0D), ("不用快捷键", 0, 0)]
+  [("不用快捷键", 0, 0), ("Space", 0, 0x20), ("Tab", 0, 0x09), ("⌘Return", 2, 0x0D)]
 } else {
-  [("Enter", 0, 0x0D), ("Space", 0, 0x20), ("Ctrl+Enter", 2, 0x0D), ("不用快捷键", 0, 0)]
+  [("不用快捷键", 0, 0), ("Space", 0, 0x20), ("Tab", 0, 0x09), ("Ctrl+Enter", 2, 0x0D)]
 }
 
 ///|
-/// Shortcut label for the capture "confirm & copy" key (empty if cleared), used by the toolbar tooltip.
+/// Shortcut label for the capture "confirm & copy" button tooltip (Enter is always supported; shows extra key if set).
 fn confirm_key_label() -> String {
   let h = settings.get().confirm_key
   if h.vk == 0 {
-    ""
+    if @hostapi.platform() == 0 { "Return" } else { "Enter" }
   } else {
     key_words(h, confirm_choices)
   }
@@ -643,7 +643,7 @@ fn keys_page(p : @view.View) -> Unit {
         key_box(r, 2)
         key_clear_button(r, 2)
       }, note=fn() { key_note(2) })
-      set_row(g, "确认并复制截图", fn(r) {
+      set_row(g, "额外确认并复制", fn(r) {
         key_box(r, 3)
         key_clear_button(r, 3)
       }, note=fn() { key_note(3) }, note_ink=fn() { if key_trouble.get().0 == 3 { 0xF5A524FFL } else { set_muted } })
@@ -664,7 +664,7 @@ fn keys_page(p : @view.View) -> Unit {
           fn(i) { change_settings(fn(s) { { ..s, pin_key: hotkey_of(pin_choices[i]) } }) },
         )
       }, note=fn() { key_note(2) })
-      set_row(g, "确认并复制截图", fn(r) {
+      set_row(g, "额外确认并复制", fn(r) {
         choice(
           r,
           confirm_choices.map(fn(c) { c.0 }),
@@ -702,7 +702,7 @@ fn key_note(which : Int) -> String {
   if row == which {
     why
   } else if which == 3 {
-    tr("仅在截图界面生效，支持单键（如 Enter、Space）或组合键")
+    tr("Enter、Ctrl+C 与双击始终可用；这里可额外再绑一个单键（如 Space）或组合键")
   } else if !(if which == 1 { capture_key_ok.get() } else { pin_key_ok.get() }) {
     tr("已被其他程序占用，换一个")
   } else {
