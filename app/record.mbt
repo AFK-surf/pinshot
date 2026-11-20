@@ -1069,42 +1069,35 @@ fn rec_window(root : @view.View) -> Unit {
           })
           |> ignore
 
-          // Capture option toggles: System audio, Cursor, Click & keycap overlay
-          rec_icon_btn(
-            r,
-            fn() { if rec_audio.get() { "speaker" } else { "speaker-off" } },
-            fn() { if rec_audio.get() { tr("系统声音：开") } else { tr("系统声音：关") } },
-            fn() { rec_audio.get() },
-            fn() {
-              if rec_phase.untracked() == 0 {
-                rec_audio.set(!rec_audio.untracked())
-              }
-            },
-            dim=fn() { rec_phase.get() != 0 },
-          )
-          rec_icon_btn(
-            r,
-            fn() { "select" },
-            fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
-            fn() { rec_cursor.get() },
-            fn() {
-              if rec_phase.untracked() == 0 {
-                rec_cursor.set(!rec_cursor.untracked())
-              }
-            },
-            dim=fn() { rec_phase.get() != 0 },
-          )
-          rec_icon_btn(
-            r,
-            fn() { "keycap" },
-            fn() { if rec_input.get() { tr("按键与点击显示：开") } else { tr("按键与点击显示：关") } },
-            fn() { rec_input.get() },
-            fn() {
-              let next = !rec_input.untracked()
-              rec_input.set(next)
-              ps_rec_input_show(if next { 1 } else { 0 })
-            },
-          )
+          // Pre-recording capture switches (System audio, Cursor, Click & keycap overlay): hidden once recording starts
+          r.show(fn() { rec_phase.get() == 0 }, fn(opts) {
+            opts.row(Is(true)).gap(Is(3.0)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+            rec_icon_btn(
+              opts,
+              fn() { if rec_audio.get() { "speaker" } else { "speaker-off" } },
+              fn() { if rec_audio.get() { tr("系统声音：开") } else { tr("系统声音：关") } },
+              fn() { rec_audio.get() },
+              fn() { rec_audio.set(!rec_audio.untracked()) },
+            )
+            rec_icon_btn(
+              opts,
+              fn() { "select" },
+              fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
+              fn() { rec_cursor.get() },
+              fn() { rec_cursor.set(!rec_cursor.untracked()) },
+            )
+            rec_icon_btn(
+              opts,
+              fn() { "keycap" },
+              fn() { if rec_input.get() { tr("按键与点击显示：开") } else { tr("按键与点击显示：关") } },
+              fn() { rec_input.get() },
+              fn() {
+                let next = !rec_input.untracked()
+                rec_input.set(next)
+                ps_rec_input_show(if next { 1 } else { 0 })
+              },
+            )
+          }, at_once=true)
 
           bar_rule_node(r)
 
