@@ -152,7 +152,8 @@ fn chrome_picture(c : @view.View) -> @pixels.Vector? {
       let fy1 = dmin(h - half, y + rh + half)
       let fw = dmax(1.0, fx1 - fx0)
       let fh = dmax(1.0, fy1 - fy0)
-      let frame_r = rect_path(fx0, fy0, fw, fh)
+      let cr = if picked && beauty_on.get() { dmin(beauty_corner * k + half, dmin(fw, fh) / 2.0) } else { 0.0 }
+      let frame_r = if cr > 0.5 { round_rect_path(fx0, fy0, fw, fh, cr) } else { rect_path(fx0, fy0, fw, fh) }
       let casing_w = line + dmax(2.0, (2.0 * k).round())
       if !picked {
         // Hover auto-detect window: airy dual-contrast PinShot blue viewfinder outline + crisp corner accents
@@ -167,17 +168,34 @@ fn chrome_picture(c : @view.View) -> @pixels.Vector? {
         layers.push(stroke_layer(crn, 0x00000066L, bw + dmax(2.0, (2.0 * k).round())))
         layers.push(stroke_layer(crn, 0x9ED8FFFFL, bw))
       } else {
-        // Confirmed selection (Proposal A): dual-contrast crisp white viewfinder line + rounded L-brackets + pill grabbers
+        // Confirmed selection (Proposal A): dual-contrast crisp white viewfinder line + L-brackets (rounded in
+        // background mode to match the card's corners) + mid-edge pill grabbers
         layers.push(stroke_layer(frame_r, 0x00000078L, casing_w))
         layers.push(stroke_layer(frame_r, 0xFFFFFFF2L, line))
         if hand.get() != Marking {
           let bl = clamp(dmin(fw, fh) * 0.16, 8.0 * k, 15.0 * k)
           let bw = dmax(2.5, (3.2 * k).round())
           let b_case = bw + dmax(2.0, (2.4 * k).round())
-          let crn = "M\{num(fx0)} \{num(fy0 + bl)}L\{num(fx0)} \{num(fy0)}L\{num(fx0 + bl)} \{num(fy0)}" +
+          let ext = if cr > 0.5 { clamp(dmax(bl, cr + 5.0 * k), cr, dmin(fw, fh) * 0.42) } else { bl }
+          let crn = if cr > 0.5 {
+            let rc = num(cr)
+            if ext > cr + 0.25 {
+              "M\{num(fx0)} \{num(fy0 + ext)}V\{num(fy0 + cr)}A\{rc} \{rc} 0 0 1 \{num(fx0 + cr)} \{num(fy0)}H\{num(fx0 + ext)}" +
+              "M\{num(fx1 - ext)} \{num(fy0)}H\{num(fx1 - cr)}A\{rc} \{rc} 0 0 1 \{num(fx1)} \{num(fy0 + cr)}V\{num(fy0 + ext)}" +
+              "M\{num(fx1)} \{num(fy1 - ext)}V\{num(fy1 - cr)}A\{rc} \{rc} 0 0 1 \{num(fx1 - cr)} \{num(fy1)}H\{num(fx1 - ext)}" +
+              "M\{num(fx0 + ext)} \{num(fy1)}H\{num(fx0 + cr)}A\{rc} \{rc} 0 0 1 \{num(fx0)} \{num(fy1 - cr)}V\{num(fy1 - ext)}"
+            } else {
+              "M\{num(fx0)} \{num(fy0 + cr)}A\{rc} \{rc} 0 0 1 \{num(fx0 + cr)} \{num(fy0)}" +
+              "M\{num(fx1 - cr)} \{num(fy0)}A\{rc} \{rc} 0 0 1 \{num(fx1)} \{num(fy0 + cr)}" +
+              "M\{num(fx1)} \{num(fy1 - cr)}A\{rc} \{rc} 0 0 1 \{num(fx1 - cr)} \{num(fy1)}" +
+              "M\{num(fx0 + cr)} \{num(fy1)}A\{rc} \{rc} 0 0 1 \{num(fx0)} \{num(fy1 - cr)}"
+            }
+          } else {
+            "M\{num(fx0)} \{num(fy0 + bl)}L\{num(fx0)} \{num(fy0)}L\{num(fx0 + bl)} \{num(fy0)}" +
             "M\{num(fx1 - bl)} \{num(fy0)}L\{num(fx1)} \{num(fy0)}L\{num(fx1)} \{num(fy0 + bl)}" +
             "M\{num(fx0)} \{num(fy1 - bl)}L\{num(fx0)} \{num(fy1)}L\{num(fx0 + bl)} \{num(fy1)}" +
             "M\{num(fx1 - bl)} \{num(fy1)}L\{num(fx1)} \{num(fy1)}L\{num(fx1)} \{num(fy1 - bl)}"
+          }
           layers.push(stroke_layer(crn, 0x00000080L, b_case))
           layers.push(stroke_layer(crn, 0xFFFFFFFFL, bw))
 
@@ -185,11 +203,12 @@ fn chrome_picture(c : @view.View) -> @pixels.Vector? {
           let plen = (14.0 * k).round()
           let pthk = dmax(3.0, (3.4 * k).round())
           let pcase = dmax(1.0, (1.2 * k).round())
+          let min_side = dmax(54.0 * k, ext * 2.0 + plen + 12.0 * k)
           let mx = (fx0 + fx1) / 2.0
           let my = (fy0 + fy1) / 2.0
           let mut pills_case = ""
           let mut pills = ""
-          if fw >= 54.0 * k {
+          if fw >= min_side {
             let px = mx - plen / 2.0
             let py_t = fy0 - pthk / 2.0
             let py_b = fy1 - pthk / 2.0
@@ -200,7 +219,7 @@ fn chrome_picture(c : @view.View) -> @pixels.Vector? {
               round_rect_path(px, py_t, plen, pthk, pthk / 2.0) +
               round_rect_path(px, py_b, plen, pthk, pthk / 2.0)
           }
-          if fh >= 54.0 * k {
+          if fh >= min_side {
             let py = my - plen / 2.0
             let px_l = fx0 - pthk / 2.0
             let px_r = fx1 - pthk / 2.0

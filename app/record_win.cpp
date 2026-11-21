@@ -79,6 +79,15 @@ namespace WGC = ABI::Windows::Graphics::Capture;
 namespace WD3D = ABI::Windows::Graphics::DirectX::Direct3D11;
 using ABI::Windows::Foundation::ITypedEventHandler;
 
+// Windows 11 24H2+ IGraphicsCaptureSession5 (SDK 10.0.26100+): default MinUpdateInterval is 16ms (~60Hz),
+// which silently throttles WGC monitor capture to 60fps on 120/240Hz displays unless explicitly lowered.
+MIDL_INTERFACE("67c0ea62-1f85-5061-925a-239be0ac09cb")
+IPsGraphicsCaptureSession5 : public IInspectable {
+public:
+  virtual HRESULT STDMETHODCALLTYPE get_MinUpdateInterval(ABI::Windows::Foundation::TimeSpan *value) = 0;
+  virtual HRESULT STDMETHODCALLTYPE put_MinUpdateInterval(ABI::Windows::Foundation::TimeSpan value) = 0;
+};
+
 extern "C" void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
 extern "C" void *mb_app_hwnd_of(int wid);
 extern "C" int ps_wgc_mon_hdr(HMONITOR mon, float *white);
@@ -2032,6 +2041,8 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
             HStringReference(RuntimeClass_Windows_Graphics_Capture_Direct3D11CaptureFramePool).Get(),
             IID_PPV_ARGS(&pool_statics))) &&
         SUCCEEDED(item_interop->CreateForMonitor(mon, IID_PPV_ARGS(&item)))) {
+      // Elevate GPU scheduling priority (best-effort) so 100%-GPU games do not starve HDR tonemap / VideoProcessorBlt.
+      xdev->SetGPUThreadPriority(7);
       ABI::Windows::Graphics::SizeInt32 sz = {mw, mh};
       auto pix_fmt = is_hdr ? ABI::Windows::Graphics::DirectX::DirectXPixelFormat_R16G16B16A16Float
                             : ABI::Windows::Graphics::DirectX::DirectXPixelFormat_B8G8R8A8UIntNormalized;
@@ -2071,6 +2082,12 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
             SUCCEEDED(pool->CreateCaptureSession(item.Get(), &session))) {
           ComPtr<WGC::IGraphicsCaptureSession2> s2;
           if (SUCCEEDED(session.As(&s2))) s2->put_IsCursorCaptureEnabled(cursor ? TRUE : FALSE);
+          ComPtr<IPsGraphicsCaptureSession5> s5;
+          if (fps > 30 && SUCCEEDED(session.As(&s5))) {
+            // Unlock Win11 24H2+'s 16ms (60Hz) default WGC throttle: 1ms for >60fps (90/120fps), 7ms for 60fps.
+            ABI::Windows::Foundation::TimeSpan min_iv = {fps > 60 ? 10000LL : 70000LL};
+            s5->put_MinUpdateInterval(min_iv);
+          }
           ComPtr<WGC::IGraphicsCaptureSession3> s3;
           if (SUCCEEDED(session.As(&s3)) && SUCCEEDED(s3->put_IsBorderRequired(FALSE)) &&
               SUCCEEDED(session->StartCapture())) {
