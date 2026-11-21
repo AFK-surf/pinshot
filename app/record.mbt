@@ -206,6 +206,10 @@ let rec_tip : @signals.Signal[String] = @signals.signal("")
 let rec_dim_tip_cancel : Ref[() -> Unit] = Ref(fn() {  })
 
 ///|
+/// Whether the Ready bar's FPS dropdown (30 / 60 / 90 / 120 fps) is expanded.
+let rec_fps_open : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
 /// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma so alpha reaches 0 before every window edge).
 let rec_pad_l : Double = 30.0
 
@@ -613,6 +617,7 @@ fn rec_start_now() -> Unit {
   rec_ms.set(0)
   rec_frames.set(0)
   rec_err.set("")
+  rec_fps_open.set(false)
   rec_clear_exports()
   rec_phase.set(1)
   @signals.end_batch()
@@ -872,6 +877,7 @@ fn rec_gone() -> Unit {
   (rec_handoff_cancel.val)()
   rec_handoff_cancel.val = fn() {  }
   rec_disarm_discard()
+  rec_fps_open.set(false)
   (rec_dim_tip_cancel.val)()
   rec_dim_tip_cancel.val = fn() {  }
   rec_tip.set("")
@@ -1410,6 +1416,10 @@ fn rec_window(root : @view.View) -> Unit {
   root.keymap(Is(rec_keys())) |> ignore
   root.on_action("cancel", fn(_) {
     let ph = rec_phase.untracked()
+    if ph == 0 && rec_fps_open.untracked() {
+      rec_fps_open.set(false)
+      return true
+    }
     if ph == 1 || ph == 2 {
       return true
     }
@@ -1460,6 +1470,7 @@ fn rec_window(root : @view.View) -> Unit {
 
   root.reacts(fn() { rec_phase.get() }, at_start=false, fn(_) {
     rec_tip.set("")
+    rec_fps_open.set(false)
     rec_disarm_discard()
   })
 
@@ -1468,6 +1479,7 @@ fn rec_window(root : @view.View) -> Unit {
     (
       rec_phase.get(),
       rec_morph_in.get(),
+      rec_fps_open.get(),
       rec_codec.get(),
       rec_fps.get(),
       rec_exp_fmt.get(),
@@ -1634,16 +1646,18 @@ fn rec_window(root : @view.View) -> Unit {
             })
             |> ignore
 
-            // FPS / codec pill (clickable in Ready to switch 30 / 60fps; persisted in settings.json)
+            // FPS / codec pill (dropdown in Ready for 30 / 60 / 90 / 120 fps; persisted in settings.json)
             r.box(fn(fps_b) {
               track_part(fps_b)
               let hov = smooth_hover(fps_b, live=fn() { rec_phase.get() == 0 })
               tactile_press(fps_b, live=fn() { rec_phase.get() == 0 }, sink_px=0.9)
-              rec_tip_follow(fps_b, fn() { tr("点击切换帧率") }, live=fn() { rec_phase.get() == 0 })
+              rec_tip_follow(fps_b, fn() { tr("点击切换帧率") }, live=fn() { rec_phase.get() == 0 && !rec_fps_open.get() })
               fps_b
+              .row(Is(true))
+              .gap(Is(3.5))
               .height(Is(Some(26.0)))
               .shrink(Is(0.0))
-              .padding(Is((8.0, 0.0, 8.0, 0.0)))
+              .padding(Is((8.0, 0.0, 7.0, 0.0)))
               .radius(Is(style_btn_corner))
               .lines_up(Is(Some(Middle)))
               .lies_along(Is(Middle))
@@ -1652,17 +1666,16 @@ fn rec_window(root : @view.View) -> Unit {
               .says(By(fn() { Some(@view.said(Button, label="\{rec_fps.get()}fps")) }))
               .on_press(fn() {
                 if rec_phase.untracked() == 0 {
-                  rec_fps.set(
-                    match rec_fps.untracked() {
-                      30 => 60
-                      60 => 120
-                      _ => 30
-                    },
-                  )
-                  save_settings()
+                  rec_fps_open.set(!rec_fps_open.untracked())
                 }
               })
-              .ground(By(fn() { mix_rgba(0xFFFFFF18L, 0xFFFFFF26L, hov()) }))
+              .ground(By(fn() {
+                if rec_phase.get() == 0 && rec_fps_open.get() {
+                  0xFFFFFF2EL
+                } else {
+                  mix_rgba(0xFFFFFF18L, 0xFFFFFF26L, hov())
+                }
+              }))
               |> ignore
               fps_b.box(fn(w) {
                 w
@@ -1679,10 +1692,27 @@ fn rec_window(root : @view.View) -> Unit {
                   }),
                   look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false },
                 )
-                .ink(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0xD0D5DFFFL } }))
+                .ink(By(fn() {
+                  if rec_phase.get() == 2 {
+                    0xF5A524FFL
+                  } else if rec_phase.get() == 0 && rec_fps_open.get() {
+                    0xFFFFFFFFL
+                  } else {
+                    0xD0D5DFFFL
+                  }
+                }))
                 |> ignore
               })
               |> ignore
+              fps_b.show(fn() { rec_phase.get() == 0 }, fn(ch) {
+                ch
+                .width(Is(Some(10.0)))
+                .height(Is(Some(10.0)))
+                .shrink(Is(0.0))
+                .picture(Is(Some(glyph("chevron-down"))))
+                .tint(By(fn() { if rec_fps_open.get() { 0xFFFFFFFFL } else { mix_rgba(0xA6ADBCFFL, 0xE2E6F0FFL, hov()) } }))
+                |> ignore
+              }, at_once=true)
             })
             |> ignore
 
@@ -1695,6 +1725,7 @@ fn rec_window(root : @view.View) -> Unit {
                 fn() { if rec_audio.get() { tr("系统声音：开") } else { tr("系统声音：关") } },
                 fn() { rec_audio.get() },
                 fn() {
+                  rec_fps_open.set(false)
                   rec_audio.set(!rec_audio.untracked())
                   save_settings()
                 },
@@ -1705,6 +1736,7 @@ fn rec_window(root : @view.View) -> Unit {
                 fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
                 fn() { rec_cursor.get() },
                 fn() {
+                  rec_fps_open.set(false)
                   rec_cursor.set(!rec_cursor.untracked())
                   save_settings()
                 },
@@ -1715,6 +1747,7 @@ fn rec_window(root : @view.View) -> Unit {
                 fn() { if rec_input.get() { tr("按键与点击显示：开") } else { tr("按键与点击显示：关") } },
                 fn() { rec_input.get() },
                 fn() {
+                  rec_fps_open.set(false)
                   let next = !rec_input.untracked()
                   rec_input.set(next)
                   ps_rec_input_show(if next { 1 } else { 0 })
@@ -2580,10 +2613,84 @@ fn rec_window(root : @view.View) -> Unit {
       })
       |> ignore
 
+      // Downward-unfolding FPS dropdown menu (30 / 60 / 90 / 120 fps) aligned directly under the Ready bar's FPS pill
+      content.show(fn() { rec_phase.get() == 0 && rec_fps_open.get() }, fn(dd_wrap) {
+        dd_wrap
+        .padding(Is((62.0, 6.0, 0.0, 0.0)))
+        .shrink(Is(0.0))
+        .lines_up(Is(Some(Start)))
+        |> ignore
+        dd_wrap.box(fn(menu) {
+          enter_reveal(menu, ms=135.0, dy=-8.0, from_scale=0.96)
+          menu
+          .width(Is(Some(98.0)))
+          .padding(Is((4.0, 4.0, 4.0, 4.0)))
+          .gap(Is(2.0))
+          .radius(Is(11.0))
+          .ground(Is(0x18191DF7L))
+          .edge(Is((1.0, 0xFFFFFF2EL)))
+          .shadow(Is((14.0, 4.0, 0x00000070L)))
+          .presses(Is(true))
+          |> ignore
+          for f in [30, 60, 90, 120] {
+            menu.box(fn(item) {
+              let hov = smooth_hover(item, ms=100.0)
+              tactile_press(item, sink_px=0.8)
+              let on = fn() { rec_fps.get() == f }
+              item
+              .row(Is(true))
+              .height(Is(Some(26.0)))
+              .padding(Is((9.0, 0.0, 8.0, 0.0)))
+              .radius(Is(7.0))
+              .lines_up(Is(Some(Middle)))
+              .presses(Is(true))
+              .cursor(Is(Some(Hand)))
+              .says(By(fn() { Some(@view.said(Radio, label="\{f} fps", selected=on())) }))
+              .on_press(fn() {
+                rec_fps.set(f)
+                rec_fps_open.set(false)
+                save_settings()
+              })
+              .ground(By(fn() {
+                if item.pressed() {
+                  0xFFFFFF2EL
+                } else if on() {
+                  mix_rgba(0xFFFFFF22L, 0xFFFFFF2CL, hov())
+                } else {
+                  mix_rgba(0L, 0xFFFFFF18L, hov())
+                }
+              }))
+              |> ignore
+              item.box(fn(lbl) {
+                lbl
+                .grow(Is(1.0))
+                .words(Is("\{f} fps"), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+                .ink(By(fn() { if on() { 0xFFFFFFFFL } else { mix_rgba(0xC4CAD8FFL, 0xF5F6F8FFL, hov()) } }))
+                |> ignore
+              })
+              |> ignore
+              item.show(on, fn(ck) {
+                ck
+                .width(Is(Some(12.0)))
+                .height(Is(Some(12.0)))
+                .shrink(Is(0.0))
+                .picture(Is(Some(glyph("check"))))
+                .tint(Is(0x5CB3FFFFL))
+                |> ignore
+              }, at_once=true)
+            })
+            |> ignore
+          }
+        })
+        |> ignore
+      }, at_once=true)
+
       // Floating hover tooltip / inline discard-confirmation pill centered inside the bottom halo (`rec_pad_b = 36pt`)
       content.box(fn(tip_row) {
         let shown_text = fn() {
-          if rec_confirm_discard.get() {
+          if rec_fps_open.get() {
+            ""
+          } else if rec_confirm_discard.get() {
             tr("再按一次丢弃")
           } else {
             rec_tip.get()

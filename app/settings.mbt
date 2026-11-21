@@ -259,7 +259,7 @@ fn load_settings() -> Unit {
         }
       }
       let rf = rnum("rec_fps", 60)
-      rec_fps.set(if rf == 120 { 120 } else if rf == 30 { 30 } else { 60 })
+      rec_fps.set(if rf == 30 || rf == 60 || rf == 90 || rf == 120 { rf } else { 60 })
       rec_cursor.set(rflag("rec_cursor", true))
       rec_audio.set(rflag("rec_audio", false))
       rec_input.set(rflag("rec_input", false))

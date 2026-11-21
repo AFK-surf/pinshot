@@ -1026,6 +1026,7 @@ fn glyph(name : String) -> @pixels.Vector {
     "save" => lines(["M9 3v8.5", "M5.5 8 9 11.5 12.5 8", "M3.5 13v1.7h11V13"])
     "close" => lines(["M4.5 4.5l9 9", "M13.5 4.5l-9 9"])
     "check" => { w: 18.0, h: 18.0, layers: [stroke_layer("M3.5 9.5 7.3 13.2 14.5 5", 0x000000FFL, 2.0)] }
+    "chevron-down" => { w: 18.0, h: 18.0, layers: [stroke_layer("M4.5 6.8 9 11.3 13.5 6.8", 0x000000FFL, 2.0)] }
     "copy" => lines(["M6.5 6.5h8v8h-8z", "M11.5 6.5V3.5h-8v8h3"])
     // (a page taller than its frame, an arrow down it: a long screenshot)
     "long" => lines(["M4 2.5h10v13h-10z", "M9 5.5v7", "M6.5 10 9 12.5 11.5 10"])
