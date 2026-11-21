@@ -206,7 +206,14 @@ static void postRect(void) {
 
 // ---- the frame round the region ----
 
+static NSColor *rgb(int c) {
+  return [NSColor colorWithSRGBRed:((c >> 16) & 255) / 255.0 green:((c >> 8) & 255) / 255.0 blue:(c & 255) / 255.0
+                             alpha:1];
+}
+
+
 @interface PSRecFrameView : NSView
+@property NSScreen *screen;
 @property NSColor *color;
 @property BOOL dashed, handles;
 @end
@@ -249,7 +256,7 @@ static void framePlace(void) {
 // The border's rectangle in the view (just outside the region; kept on its screen where the region is its edge).
 - (NSRect)borderRect {
   NSRect b = NSInsetRect(self.bounds, framePad - 2, framePad - 2);
-  NSRect s = recScreen.frame;
+  NSRect s = self.screen.frame;
   NSRect onScreen = [self.window convertRectFromScreen:NSInsetRect(s, 2, 2)];
   onScreen = [self convertRect:onScreen fromView:nil];
   return NSIntersectionRect(b, onScreen);
@@ -313,14 +320,14 @@ static void framePlace(void) {
       [marks curveToPoint:NSMakePoint(x, y + sy * rad) controlPoint1:NSMakePoint(x, y) controlPoint2:NSMakePoint(x, y)];
       [marks lineToPoint:NSMakePoint(x, y + sy * blen)];
     }
-  if (R.w >= 54 * recScreen.backingScaleFactor / 1) {
+  if (R.w >= 54 * recScreen.backingScaleFactor) {
     CGFloat mx = NSMidX(r);
     [marks moveToPoint:NSMakePoint(mx - 7, y0)];
     [marks lineToPoint:NSMakePoint(mx + 7, y0)];
     [marks moveToPoint:NSMakePoint(mx - 7, y1)];
     [marks lineToPoint:NSMakePoint(mx + 7, y1)];
   }
-  if (R.h >= 54 * recScreen.backingScaleFactor / 1) {
+  if (R.h >= 54 * recScreen.backingScaleFactor) {
     CGFloat my = NSMidY(r);
     [marks moveToPoint:NSMakePoint(x0, my - 7)];
     [marks lineToPoint:NSMakePoint(x0, my + 7)];
@@ -451,33 +458,61 @@ static NSCursor *cursorFor(int hx, int hy) {
 }
 @end
 
+// A frame's window: on every space, over the others, never key, the pointer passing through it unless it is gripped.
+static PSRecFrameWindow *frameWindowMade(void) {
+  PSRecFrameWindow *w = [[PSRecFrameWindow alloc] initWithContentRect:NSMakeRect(0, 0, 16, 16)
+                                                            styleMask:NSWindowStyleMaskBorderless |
+                                                                      NSWindowStyleMaskNonactivatingPanel
+                                                              backing:NSBackingStoreBuffered
+                                                                defer:NO];
+  w.opaque = NO;
+  w.backgroundColor = NSColor.clearColor;
+  w.hasShadow = NO;
+  w.releasedWhenClosed = NO;
+  w.level = NSFloatingWindowLevel;
+  w.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary |
+                         NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle;
+  w.ignoresMouseEvents = YES;
+  w.contentView = [[PSRecFrameView alloc] initWithFrame:NSMakeRect(0, 0, 16, 16)];
+  return w;
+}
+
 static void frameShow(NSColor *color, BOOL dashed, BOOL handles) {
   if (!frameWin) {
-    frameWin = [[PSRecFrameWindow alloc] initWithContentRect:NSMakeRect(0, 0, 16, 16)
-                                                   styleMask:NSWindowStyleMaskBorderless |
-                                                             NSWindowStyleMaskNonactivatingPanel
-                                                     backing:NSBackingStoreBuffered
-                                                       defer:NO];
-    frameWin.opaque = NO;
-    frameWin.backgroundColor = NSColor.clearColor;
-    frameWin.hasShadow = NO;
-    frameWin.releasedWhenClosed = NO;
-    frameWin.level = NSFloatingWindowLevel;
-    frameWin.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                  NSWindowCollectionBehaviorFullScreenAuxiliary |
-                                  NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle;
+    frameWin = frameWindowMade();
     if (!getenv("PINSHOT_REC_SHOW"))
       frameWin.sharingType = NSWindowSharingNone;
-    frameView = [[PSRecFrameView alloc] initWithFrame:NSMakeRect(0, 0, 16, 16)];
-    frameWin.contentView = frameView;
+    frameView = (PSRecFrameView *)frameWin.contentView;
     [excluded addObject:@(frameWin.windowNumber)];
   }
+  frameView.screen = recScreen;
   frameView.color = color;
   frameView.dashed = dashed;
   frameView.handles = handles;
   frameWin.ignoresMouseEvents = !handles;
   framePlace();
   [frameWin orderFrontRegardless];
+}
+
+// A frame round the part `px` (screen `s`'s pixels) that the pointer passes through (longshot_mac.m's): made where `w`
+// is nil, else changed.
+NSWindow *ps_region_frame(NSWindow *w, NSScreen *s, NSRect px, int c, int dashed) {
+  if (!w)
+    w = frameWindowMade();
+  PSRecFrameView *v = (PSRecFrameView *)w.contentView;
+  v.screen = s;
+  v.color = rgb(c);
+  v.dashed = dashed != 0;
+  v.handles = NO;
+  [w setFrame:NSInsetRect(ps_screen_points(s, px), -framePad, -framePad) display:YES];
+  v.needsDisplay = YES;
+  [w orderFrontRegardless];
+  return w;
+}
+
+void ps_region_frame_close(NSWindow *w) {
+  [w orderOut:nil];
+  [w close];
 }
 
 static void frameHide(void) {
@@ -488,11 +523,6 @@ static void frameHide(void) {
   [frameWin close];
   frameWin = nil;
   frameView = nil;
-}
-
-static NSColor *rgb(int c) {
-  return [NSColor colorWithSRGBRed:((c >> 16) & 255) / 255.0 green:((c >> 8) & 255) / 255.0 blue:(c & 255) / 255.0
-                             alpha:1];
 }
 
 // ---- clicks and keys shown over the region ----

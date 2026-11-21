@@ -455,24 +455,7 @@ void ps_shutter(void) {
 void ps_set_capture_keep(int32_t keep) { (void)keep; }
 // (ps_ocr / ps_ocr_now: ocr_mac.m)
 
-// A scrolling screenshot is Windows' alone (longshot_win.c): its button is not shown here, and these say there is none.
-int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
-  (void)x, (void)y, (void)w, (void)h;
-  return 0;
-}
-void ps_long_stop(void) {}
-void ps_long_end(void) {}
-void ps_long_pause(int32_t on) { (void)on; }
-void ps_long_reset(void) {}
-void ps_long_preview_free(void) {}
-moonbit_bytes_t ps_long_info(void) { return moonbit_make_bytes(0, 0); }
-moonbit_bytes_t ps_long_preview(int32_t w, int32_t h, int32_t from_row) {
-  (void)w, (void)h, (void)from_row;
-  return moonbit_make_bytes(0, 0);
-}
-moonbit_bytes_t ps_long_png(void) { return moonbit_make_bytes(0, 0); }
-void ps_long_exclude(int32_t wid) { (void)wid; }
-
+// (ps_long_*: longshot_mac.m)
 // (ps_rec_*: record_mac.m)
 // (the system's codecs not asked here: the app turns and encodes pictures itself)
 moonbit_bytes_t ps_picture_jpeg(moonbit_bytes_t pic, int32_t quality) {

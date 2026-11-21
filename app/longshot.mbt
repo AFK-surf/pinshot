@@ -45,7 +45,7 @@ extern "C" fn ps_long_preview_free() -> Unit = "ps_long_preview_free"
 ///|
 /// Whether a scrolling screenshot can be taken here: Windows' alone (its taking is longshot_win.c's).
 fn long_shot_here() -> Bool {
-  @hostapi.platform() == 3
+  @hostapi.platform() == 3 || @hostapi.platform() == 0
 }
 
 ///|
@@ -493,8 +493,10 @@ fn long_preview_make() -> Unit {
   if b.length() < 28 {
     return
   }
-  let pw = le32(b, 16)
-  let ph = le32(b, 20)
+  // (Windows hands pixels it keeps by their address, "MBRAWPTR" and their size; a Mac a top-down BMP of them)
+  let bmp = b[0] == b'B' && b[1] == b'M'
+  let pw = if bmp { le32(b, 18) } else { le32(b, 16) }
+  let ph = if bmp { -le32(b, 22) } else { le32(b, 20) }
   long_preview_n.val += 1
   let key = "mem:long/\{long_preview_n.val}"
   @ui.add_image(key, b)
