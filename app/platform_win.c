@@ -26,6 +26,7 @@
 #include <math.h>
 #include <mmsystem.h>
 #include <wtsapi32.h>
+#include <wincodec.h>
 #include "moonbit.h"
 
 #pragma comment(lib, "user32.lib")
@@ -237,10 +238,49 @@ static int monitor_under_pointer(void) {
   return 1;
 }
 
+// (a test run told PINSHOT_TEST_SCREEN=<picture>: that picture taken as the screen, at its top left, the rest black,
+// so a check sees the same pixels at every run whatever is on the person's screen; never the person's run)
+static int test_screen_into(uint8_t *bits, int w, int h, int pitch) {
+  wchar_t path[MAX_PATH];
+  if (!getenv("PINSHOT_TEST") || !GetEnvironmentVariableW(L"PINSHOT_TEST_SCREEN", path, MAX_PATH)) return 0;
+  HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  IWICImagingFactory *f = NULL;
+  IWICBitmapDecoder *dec = NULL;
+  IWICBitmapFrameDecode *fr = NULL;
+  IWICFormatConverter *cv = NULL;
+  int ok = 0;
+  memset(bits, 0, (size_t)pitch * h);
+  if (SUCCEEDED(CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory,
+                                 (void **)&f)) &&
+      SUCCEEDED(IWICImagingFactory_CreateDecoderFromFilename(f, path, NULL, GENERIC_READ,
+                                                             WICDecodeMetadataCacheOnDemand, &dec)) &&
+      SUCCEEDED(IWICBitmapDecoder_GetFrame(dec, 0, &fr)) && SUCCEEDED(IWICImagingFactory_CreateFormatConverter(f, &cv)) &&
+      SUCCEEDED(IWICFormatConverter_Initialize(cv, (IWICBitmapSource *)fr, &GUID_WICPixelFormat32bppBGR,
+                                               WICBitmapDitherTypeNone, NULL, 0.0, WICBitmapPaletteTypeCustom))) {
+    UINT iw = 0, ih = 0;
+    IWICFormatConverter_GetSize(cv, &iw, &ih);
+    WICRect r = {0, 0, (INT)(iw < (UINT)w ? iw : (UINT)w), (INT)(ih < (UINT)h ? ih : (UINT)h)};
+    ok = SUCCEEDED(IWICFormatConverter_CopyPixels(cv, &r, (UINT)pitch, (UINT)pitch * h, bits));
+  }
+  if (cv) IWICFormatConverter_Release(cv);
+  if (fr) IWICBitmapFrameDecode_Release(fr);
+  if (dec) IWICBitmapDecoder_Release(dec);
+  if (f) IWICImagingFactory_Release(f);
+  if (SUCCEEDED(co)) CoUninitialize();
+  return ok;
+}
+
 // The taking itself, on its own thread: BitBlt into the section made for it.
 static DWORD WINAPI cap_work(void *arg) {
   (void)arg;
   int ok = 0;
+  if (cap.dib && test_screen_into(cap.bits, cap_w, cap_h, cap.pitch)) {
+    cap_ok = 1;
+    cap_ms = ps_ms() - cap_t0;
+    InterlockedExchange(&cap_busy, 0);
+    if (tray_hwnd) PostMessageW(tray_hwnd, WM_PS_TAKEN, 1, 0);
+    return 0;
+  }
   HDC screen = GetDC(NULL);
   HDC mem = CreateCompatibleDC(screen);
   if (cap.dib) {
@@ -273,7 +313,8 @@ static int cap_begin(void) {
   // (the system's capture kept on: the monitor's last frame, there already; GDI's where it has had none yet)
   uint8_t *bits = NULL;
   int pitch = 0;
-  void *t = wgc_off ? NULL : ps_wgc_take_now(cap_mon, cap_w, cap_h, &bits, &pitch);
+  int test_screen = getenv("PINSHOT_TEST") && getenv("PINSHOT_TEST_SCREEN");
+  void *t = wgc_off || test_screen ? NULL : ps_wgc_take_now(cap_mon, cap_w, cap_h, &bits, &pitch);
   if (t && tray_hwnd) {
     cap.staging = t;
     cap.bits = bits;
