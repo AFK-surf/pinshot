@@ -473,28 +473,7 @@ moonbit_bytes_t ps_long_preview(int32_t w, int32_t h, int32_t from_row) {
 moonbit_bytes_t ps_long_png(void) { return moonbit_make_bytes(0, 0); }
 void ps_long_exclude(int32_t wid) { (void)wid; }
 
-// Screen recording is Windows' alone (record_win.cpp): its button is not shown here, and these say there is none.
-int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
-  (void)x, (void)y, (void)w, (void)h;
-  return 0;
-}
-moonbit_bytes_t ps_rec_rect(void) { return moonbit_make_bytes(0, 0); }
-int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
-  (void)fps, (void)cursor, (void)audio;
-  return 0;
-}
-void ps_rec_pause(int32_t on) { (void)on; }
-void ps_rec_stop(int32_t cancel) { (void)cancel; }
-int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, int32_t max_side, int32_t gif_fps) {
-  (void)dest_path, (void)fmt, (void)quality, (void)max_side, (void)gif_fps;
-  return 0;
-}
-int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
-  (void)src_path, (void)dst_path;
-  return 0;
-}
-int32_t ps_rec_has_av1(void) { return 0; }
-void ps_rec_export_cancel(void) {}
+// (ps_rec_*: record_mac.m)
 // (the system's codecs not asked here: the app turns and encodes pictures itself)
 moonbit_bytes_t ps_picture_jpeg(moonbit_bytes_t pic, int32_t quality) {
   (void)pic, (void)quality;
@@ -504,8 +483,3 @@ moonbit_bytes_t ps_picture_oriented(moonbit_bytes_t pic, int32_t turns, int32_t 
   (void)pic, (void)turns, (void)flipped, (void)shown;
   return moonbit_make_bytes(0, 0);
 }
-moonbit_bytes_t ps_rec_preview(void) { return moonbit_make_bytes(0, 0); }
-void ps_rec_end(void) {}
-void ps_rec_exclude(int32_t wid) { (void)wid; }
-void ps_next_win_clear(void) {}
-void ps_rec_input_show(int32_t on) { (void)on; }

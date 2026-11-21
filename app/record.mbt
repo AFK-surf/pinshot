@@ -1,4 +1,4 @@
-// Lightweight area screen recorder & post-recording exporter (Windows):
+// Lightweight area screen recorder & post-recording exporter (Windows: record_win.cpp; Mac: record_mac.m):
 // - Captures a selected region into a temporary high-quality MP4 via WGC + optimal GPU hardware cascade
 //   (HEVC hvc1 -> H.264 HW -> H.264 SW) with optional WASAPI system audio (AAC), cursor capture, and optional
 //   mouse-click ripples + keycap overlay.
@@ -55,7 +55,7 @@ extern "C" fn ps_rec_input_show(on : Int) -> Unit = "ps_rec_input_show"
 
 ///|
 fn rec_here() -> Bool {
-  @hostapi.platform() == 3
+  @hostapi.platform() == 3 || @hostapi.platform() == 0
 }
 
 ///|
