@@ -240,7 +240,7 @@ fn ocr_window(root : @view.View) -> Unit {
         s.grow(Is(1.0)) |> ignore
         set_words(
           s,
-          fn() { if ocr_state.get() is Read(_) { tr("可直接编辑修改文字 · Ctrl+Enter 复制 · Esc 关闭") } else { "" } },
+          fn() { if ocr_state.get() is Read(_) { key_hint(tr("可直接编辑修改文字 · Ctrl+Enter 复制 · Esc 关闭")) } else { "" } },
           11.5,
           set_muted,
         )

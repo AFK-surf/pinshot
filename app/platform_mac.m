@@ -453,15 +453,7 @@ void ps_shutter(void) {
   [sound play];
 }
 void ps_set_capture_keep(int32_t keep) { (void)keep; }
-int32_t ps_ocr(int32_t id, moonbit_bytes_t png) {
-  (void)id;
-  (void)png;
-  return 0;
-}
-moonbit_bytes_t ps_ocr_now(moonbit_bytes_t png) {
-  (void)png;
-  return ps_string(@"no-ocr\t\t0\n");
-}
+// (ps_ocr / ps_ocr_now: ocr_mac.m)
 
 // A scrolling screenshot is Windows' alone (longshot_win.c): its button is not shown here, and these say there is none.
 int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
