@@ -1272,6 +1272,7 @@ fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (In
       6.0,
       fn() { 0x3D414AFFL },
       extra_watch=fn() { if english.get() { 1 } else { 0 } },
+      snap_watch=fn() { settings_tab.get() },
     )
     for i, name in names {
       seg.box(fn(b) {

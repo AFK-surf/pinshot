@@ -286,7 +286,14 @@ fn toolbar(stage : @view.View) -> Unit {
         bar.box(fn(tg) {
           tg.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
           let tool_views : Map[Int, @view.View] = Map([])
-          sliding_thumb(tg, main_tool_slot, tool_views, bar_btn_corner, fn() { 0xFFFFFF3DL })
+          sliding_thumb(
+            tg,
+            main_tool_slot,
+            tool_views,
+            bar_btn_corner,
+            fn() { 0xFFFFFF3DL },
+            snap_watch=fn() { if bar_shown() { 1 } else { 0 } },
+          )
           // 1. Select (Move)
           tool_button(
             tg,
