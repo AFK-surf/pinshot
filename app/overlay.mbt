@@ -142,29 +142,83 @@ fn chrome_picture(c : @view.View) -> @pixels.Vector? {
         Some(f) => rect_path(f.x.to_double(), f.y.to_double(), f.w.to_double(), f.h.to_double())
         None => rect_path(x, y, rw, rh)
       }
-      layers.push(fill_layer(rect_path(0.0, 0.0, w, h) + hole, 0x00000078L, even_odd=true))
-      let line = dmax(1.0, k.round())
+      layers.push(fill_layer(rect_path(0.0, 0.0, w, h) + hole, 0x00000072L, even_odd=true))
+      let line = dmax(1.5, (1.5 * k).round())
       let half = line / 2.0
-      layers.push(stroke_layer(rect_path(x + half, y + half, rw - line, rh - line), accent, line))
-      if picked && hand.get() != Marking {
-        let s = (6.0 * k).round()
-        let hs = s / 2.0
-        let mut dots = ""
-        for hx in [0.0, 0.5, 1.0] {
-          for hy in [0.0, 0.5, 1.0] {
-            if hx == 0.5 && hy == 0.5 {
-              continue
-            }
-            let cx = (x + rw * hx).round()
-            let cy = (y + rh * hy).round()
-            dots = dots + rect_path(cx - hs, cy - hs, s, s)
+      // Sit strictly outside the selection perimeter (0 px eaten inside content), clamped cleanly at monitor edges.
+      let fx0 = dmax(half, x - half)
+      let fy0 = dmax(half, y - half)
+      let fx1 = dmin(w - half, x + rw + half)
+      let fy1 = dmin(h - half, y + rh + half)
+      let fw = dmax(1.0, fx1 - fx0)
+      let fh = dmax(1.0, fy1 - fy0)
+      let frame_r = rect_path(fx0, fy0, fw, fh)
+      let casing_w = line + dmax(2.0, (2.0 * k).round())
+      if !picked {
+        // Hover auto-detect window: airy dual-contrast PinShot blue viewfinder outline + crisp corner accents
+        layers.push(stroke_layer(frame_r, 0x00000066L, casing_w))
+        layers.push(stroke_layer(frame_r, 0x3DA6FFFFL, line))
+        let bl = clamp(dmin(fw, fh) * 0.14, 7.0 * k, 14.0 * k)
+        let crn = "M\{num(fx0)} \{num(fy0 + bl)}L\{num(fx0)} \{num(fy0)}L\{num(fx0 + bl)} \{num(fy0)}" +
+          "M\{num(fx1 - bl)} \{num(fy0)}L\{num(fx1)} \{num(fy0)}L\{num(fx1)} \{num(fy0 + bl)}" +
+          "M\{num(fx0)} \{num(fy1 - bl)}L\{num(fx0)} \{num(fy1)}L\{num(fx0 + bl)} \{num(fy1)}" +
+          "M\{num(fx1 - bl)} \{num(fy1)}L\{num(fx1)} \{num(fy1)}L\{num(fx1)} \{num(fy1 - bl)}"
+        let bw = dmax(2.0, (2.4 * k).round())
+        layers.push(stroke_layer(crn, 0x00000066L, bw + dmax(2.0, (2.0 * k).round())))
+        layers.push(stroke_layer(crn, 0x9ED8FFFFL, bw))
+      } else {
+        // Confirmed selection (Proposal A): dual-contrast crisp white viewfinder line + rounded L-brackets + pill grabbers
+        layers.push(stroke_layer(frame_r, 0x00000078L, casing_w))
+        layers.push(stroke_layer(frame_r, 0xFFFFFFF2L, line))
+        if hand.get() != Marking {
+          let bl = clamp(dmin(fw, fh) * 0.16, 8.0 * k, 15.0 * k)
+          let bw = dmax(2.5, (3.2 * k).round())
+          let b_case = bw + dmax(2.0, (2.4 * k).round())
+          let crn = "M\{num(fx0)} \{num(fy0 + bl)}L\{num(fx0)} \{num(fy0)}L\{num(fx0 + bl)} \{num(fy0)}" +
+            "M\{num(fx1 - bl)} \{num(fy0)}L\{num(fx1)} \{num(fy0)}L\{num(fx1)} \{num(fy0 + bl)}" +
+            "M\{num(fx0)} \{num(fy1 - bl)}L\{num(fx0)} \{num(fy1)}L\{num(fx0 + bl)} \{num(fy1)}" +
+            "M\{num(fx1 - bl)} \{num(fy1)}L\{num(fx1)} \{num(fy1)}L\{num(fx1)} \{num(fy1 - bl)}"
+          layers.push(stroke_layer(crn, 0x00000080L, b_case))
+          layers.push(stroke_layer(crn, 0xFFFFFFFFL, bw))
+
+          // Mid-edge directional pill grabbers (shown when side has comfortable breathing room)
+          let plen = (14.0 * k).round()
+          let pthk = dmax(3.0, (3.4 * k).round())
+          let pcase = dmax(1.0, (1.2 * k).round())
+          let mx = (fx0 + fx1) / 2.0
+          let my = (fy0 + fy1) / 2.0
+          let mut pills_case = ""
+          let mut pills = ""
+          if fw >= 54.0 * k {
+            let px = mx - plen / 2.0
+            let py_t = fy0 - pthk / 2.0
+            let py_b = fy1 - pthk / 2.0
+            pills_case = pills_case +
+              round_rect_path(px - pcase, py_t - pcase, plen + pcase * 2.0, pthk + pcase * 2.0, (pthk + pcase * 2.0) / 2.0) +
+              round_rect_path(px - pcase, py_b - pcase, plen + pcase * 2.0, pthk + pcase * 2.0, (pthk + pcase * 2.0) / 2.0)
+            pills = pills +
+              round_rect_path(px, py_t, plen, pthk, pthk / 2.0) +
+              round_rect_path(px, py_b, plen, pthk, pthk / 2.0)
+          }
+          if fh >= 54.0 * k {
+            let py = my - plen / 2.0
+            let px_l = fx0 - pthk / 2.0
+            let px_r = fx1 - pthk / 2.0
+            pills_case = pills_case +
+              round_rect_path(px_l - pcase, py - pcase, pthk + pcase * 2.0, plen + pcase * 2.0, (pthk + pcase * 2.0) / 2.0) +
+              round_rect_path(px_r - pcase, py - pcase, pthk + pcase * 2.0, plen + pcase * 2.0, (pthk + pcase * 2.0) / 2.0)
+            pills = pills +
+              round_rect_path(px_l, py, pthk, plen, pthk / 2.0) +
+              round_rect_path(px_r, py, pthk, plen, pthk / 2.0)
+          }
+          if pills != "" {
+            layers.push(fill_layer(pills_case, 0x00000080L))
+            layers.push(fill_layer(pills, 0xFFFFFFFFL))
           }
         }
-        layers.push(fill_layer(dots, 0xFFFFFFFFL))
-        layers.push(stroke_layer(dots, accent, line))
       }
     }
-    None => layers.push(fill_layer(rect_path(0.0, 0.0, w, h), 0x00000078L))
+    None => layers.push(fill_layer(rect_path(0.0, 0.0, w, h), 0x00000072L))
   }
   Some({ w, h, layers })
 }
@@ -408,10 +462,12 @@ fn size_label(stage : @view.View) -> Unit {
       })
       l
       .row(Is(true))
-      .height(Is(Some(22.0)))
-      .padding(Is((7.0, 0.0, 7.0, 0.0)))
-      .radius(Is(5.0))
-      .ground(Is(0x17181BE6L))
+      .height(Is(Some(24.0)))
+      .padding(Is((9.0, 0.0, 9.0, 0.0)))
+      .radius(Is(7.5))
+      .ground(Is(0x18191DF2L))
+      .edge(Is((1.0, 0xFFFFFF2AL)))
+      .shadow(Is((10.0, 3.0, 0x00000060L)))
       .alpha(By(fn() { badge_in.shown(l) }))
       .lines_up(Is(Some(Middle)))
       .laid_nowhere(By(fn() { clear_part() is None }))
@@ -421,7 +477,7 @@ fn size_label(stage : @view.View) -> Unit {
           Some(r) => {
             let x = r.x.to_double() / k
             let y = r.y.to_double() / k
-            (x, if y >= 28.0 { y - 28.0 } else { y + 6.0 })
+            (x, if y >= 34.0 { y - 32.0 } else { y + 8.0 })
           }
           None => (0.0, 0.0)
         }
@@ -436,7 +492,7 @@ fn size_label(stage : @view.View) -> Unit {
             _ => ""
           }
         }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-        .ink(Is(0xEDEEF0FFL))
+        .ink(Is(0xF5F6F8FFL))
         |> ignore
       })
       |> ignore

@@ -226,8 +226,7 @@ static int copy_file_to_clipboard(const std::wstring &path) {
 
 // ---- recording border frame (UI thread) ----
 
-#define REC_FRAME_LINE 2
-#define REC_FRAME_KEY RGB(1, 2, 3)
+extern "C" void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed);
 
 static struct {
   int prepared;
@@ -236,6 +235,7 @@ static struct {
   int mx, my, mw, mh;      // monitor bounds
   HWND frame;
   COLORREF frame_color;
+  int frame_dashed;
 
   HANDLE rec_thread;
   HANDLE exp_thread;
@@ -367,25 +367,11 @@ static void rec_exclude_hwnd(HWND h) {
 }
 
 static LRESULT CALLBACK rec_frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
-  if (msg == WM_PAINT) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(h, &ps);
-    RECT r;
-    GetClientRect(h, &r);
-    HBRUSH key = CreateSolidBrush(REC_FRAME_KEY);
-    HBRUSH line = CreateSolidBrush(R.frame_color ? R.frame_color : RGB(0x2F, 0x9B, 0xFF));
-    FillRect(dc, &r, line);
-    RECT in = {REC_FRAME_LINE, REC_FRAME_LINE, r.right - REC_FRAME_LINE, r.bottom - REC_FRAME_LINE};
-    FillRect(dc, &in, key);
-    DeleteObject(key);
-    DeleteObject(line);
-    EndPaint(h, &ps);
-    return 0;
-  }
+  if (msg == WM_NCHITTEST) return HTTRANSPARENT;
   return DefWindowProcW(h, msg, wp, lp);
 }
 
-static void rec_frame_show(COLORREF color) {
+static void rec_frame_show(COLORREF color, int dashed) {
   const char *cl = getenv("PINSHOT_TEST_CLOAKED");
   if (cl && cl[0]) return;
   static int registered = 0;
@@ -400,17 +386,14 @@ static void rec_frame_show(COLORREF color) {
     registered = 1;
   }
   R.frame_color = color;
-  if (R.frame) {
-    InvalidateRect(R.frame, NULL, FALSE);
-    return;
+  R.frame_dashed = dashed;
+  if (!R.frame) {
+    R.frame = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                              L"PinShot.RecFrame", L"", WS_POPUP, R.x, R.y, 16, 16, NULL, NULL, GetModuleHandleW(NULL), NULL);
+    if (!R.frame) return;
+    rec_exclude_hwnd(R.frame);
   }
-  int fx = R.x - REC_FRAME_LINE, fy = R.y - REC_FRAME_LINE;
-  int fw = R.w + REC_FRAME_LINE * 2, fh = R.h + REC_FRAME_LINE * 2;
-  R.frame = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                            L"PinShot.RecFrame", L"", WS_POPUP, fx, fy, fw, fh, NULL, NULL, GetModuleHandleW(NULL), NULL);
-  if (!R.frame) return;
-  SetLayeredWindowAttributes(R.frame, REC_FRAME_KEY, 255, LWA_COLORKEY);
-  rec_exclude_hwnd(R.frame);
+  ps_update_region_frame(R.frame, R.x, R.y, R.w, R.h, color, dashed);
   ShowWindow(R.frame, SW_SHOWNOACTIVATE);
 }
 
@@ -2932,7 +2915,7 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   R.mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
   // (the clicks' and keys' overlay only told where: nothing of it is made until a recording asks for it)
   rec_draw_open(x, y, w, h);
-  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) rec_frame_show(RGB(0x2F, 0x9B, 0xFF));
+  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) rec_frame_show(RGB(0x2F, 0x9B, 0xFF), 0);
   return 1;
 }
 
@@ -2965,7 +2948,7 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
     return 0;
   }
   // (the red frame and the overlay's hooks only once the worker is there: none left behind where it is not)
-  rec_frame_show(RGB(0xEF, 0x44, 0x44));
+  rec_frame_show(RGB(0xEF, 0x44, 0x44), 0);
   rec_draw_set_recording(1);
   return 1;
 }
@@ -2976,7 +2959,7 @@ void ps_rec_pause(int32_t on) {
   InterlockedExchange(&R.pause_req, p);
   if (R.wake_ev) SetEvent(R.wake_ev);
   rec_draw_set_recording(p ? 0 : 1);
-  rec_frame_show(p ? RGB(0xF5, 0xA5, 0x24) : RGB(0xEF, 0x44, 0x44));
+  rec_frame_show(p ? RGB(0xF5, 0xA5, 0x24) : RGB(0xEF, 0x44, 0x44), p);
 }
 
 void ps_rec_stop(int32_t cancel) {

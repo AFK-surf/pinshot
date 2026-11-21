@@ -1817,3 +1817,216 @@ void ps_shutter(void) {
 
 // Whether Windows' own language (the user's, as its menus are in) is Chinese.
 int32_t ps_ui_chinese(void) { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE; }
+
+// ---- anti-aliased per-pixel alpha viewfinder region frame (shared by recording & longshot) ----
+
+static inline float rf_clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+static inline float rf_aa(float d, float r, float feather) {
+  float t = rf_clampf((r + feather - d) / (2.0f * feather), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+// Paints a static premultiplied-alpha rounded viewfinder frame (soft outer glow + subtle dark contrast casing +
+// sleek main stroke [optionally dashed when paused] + bright rounded L-corner brackets) onto a WS_EX_LAYERED HWND
+// via UpdateLayeredWindow. Only the thin outer border band is iterated (< 0.5 ms); 0% ongoing CPU.
+void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed) {
+  if (!hwnd || rw <= 0 || rh <= 0) return;
+  UINT dpi = GetDpiForWindow(hwnd);
+  if (dpi < 96) dpi = 96;
+  float s = (float)dpi / 96.0f;
+  int pad = (int)roundf(10.0f * s);
+  if (pad < 8) pad = 8;
+
+  RECT rc = {rx, ry, rx + rw, ry + rh};
+  MONITORINFO mi = {sizeof mi};
+  int have_mon = 0;
+  HMONITOR mon = MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST);
+  if (mon && GetMonitorInfoW(mon, &mi)) have_mon = 1;
+
+  int wx = rx - pad, wy = ry - pad;
+  int fw = rw + pad * 2, fh = rh + pad * 2;
+
+  // Frame centerline sits cleanly outside (rx, ry, rw, rh), clamped inside monitor bounds so full-screen edges stay visible.
+  float outset = 2.0f * s;
+  float fx0 = (float)rx - outset;
+  float fy0 = (float)ry - outset;
+  float fx1 = (float)(rx + rw) + outset;
+  float fy1 = (float)(ry + rh) + outset;
+  if (have_mon) {
+    float inset = 2.0f * s;
+    if (fx0 < (float)mi.rcMonitor.left + inset) fx0 = (float)mi.rcMonitor.left + inset;
+    if (fy0 < (float)mi.rcMonitor.top + inset) fy0 = (float)mi.rcMonitor.top + inset;
+    if (fx1 > (float)mi.rcMonitor.right - inset) fx1 = (float)mi.rcMonitor.right - inset;
+    if (fy1 > (float)mi.rcMonitor.bottom - inset) fy1 = (float)mi.rcMonitor.bottom - inset;
+  }
+  float lx0 = fx0 - (float)wx, ly0 = fy0 - (float)wy;
+  float lx1 = fx1 - (float)wx, ly1 = fy1 - (float)wy;
+  float cx = (lx0 + lx1) * 0.5f, cy = (ly0 + ly1) * 0.5f;
+  float hx = fmaxf(4.0f, (lx1 - lx0) * 0.5f);
+  float hy = fmaxf(4.0f, (ly1 - ly0) * 0.5f);
+  float rad = fminf(6.0f * s, fminf(hx, hy) * 0.35f);
+  float blen = fminf(fminf((float)rw, (float)rh) * 0.16f, 16.0f * s);
+  blen = fmaxf(blen, rad + 3.0f * s);
+  blen = fminf(blen, fminf(hx, hy) * 0.45f);
+
+  float cr = (float)GetRValue(color) / 255.0f;
+  float cg = (float)GetGValue(color) / 255.0f;
+  float cb = (float)GetBValue(color) / 255.0f;
+  float hr = fminf(1.0f, cr + 0.22f);
+  float hg = fminf(1.0f, cg + 0.22f);
+  float hb = fminf(1.0f, cb + 0.22f);
+
+  BITMAPINFO bi;
+  memset(&bi, 0, sizeof bi);
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = fw;
+  bi.bmiHeader.biHeight = -fh;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+
+  HDC scr = GetDC(NULL);
+  HDC mem = CreateCompatibleDC(scr);
+  void *bits = NULL;
+  HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+  if (!bmp || !bits) {
+    if (bmp) DeleteObject(bmp);
+    DeleteDC(mem);
+    ReleaseDC(NULL, scr);
+    return;
+  }
+  HGDIOBJ old = SelectObject(mem, bmp);
+  uint32_t *pix = (uint32_t *)bits;
+
+  float sigma = 3.0f * s;
+  float inv2s2 = 1.0f / (2.0f * sigma * sigma);
+  float half_w = 0.95f * s;
+  float brk_hw = 1.65f * s;
+  float dash_per = 13.0f * s;
+  float dash_len = 7.0f * s;
+
+  int band_l = (int)ceilf(lx0 + brk_hw + 3.0f * s);
+  int band_t = (int)ceilf(ly0 + brk_hw + 3.0f * s);
+  int band_r = (int)floorf(lx1 - brk_hw - 3.0f * s);
+  int band_b = (int)floorf(ly1 - brk_hw - 3.0f * s);
+  if (band_l < 0) band_l = 0;
+  if (band_t < 0) band_t = 0;
+  if (band_r > fw) band_r = fw;
+  if (band_b > fh) band_b = fh;
+
+  for (int py = 0; py < fh; py++) {
+    int in_y = (py >= band_t && py < band_b);
+    float ay = fabsf((float)py + 0.5f - cy);
+    uint32_t *row = pix + (size_t)py * (size_t)fw;
+    for (int px = 0; px < fw; px++) {
+      if (in_y && px == band_l && band_r > band_l) {
+        px = band_r - 1;
+        continue;
+      }
+      float ax = fabsf((float)px + 0.5f - cx);
+      float qx = ax - (hx - rad);
+      float qy = ay - (hy - rad);
+      float ox = qx > 0.0f ? qx : 0.0f;
+      float oy = qy > 0.0f ? qy : 0.0f;
+      float mq = qx > qy ? qx : qy;
+      float sd = sqrtf(ox * ox + oy * oy) + (mq < 0.0f ? mq : 0.0f) - rad;
+      float d = fabsf(sd);
+
+      // Rounded L-corner bracket distance (exact rounded arc + both straight arms + rounded endcaps)
+      float d_brk;
+      if (ax >= hx - blen && ay >= hy - blen) {
+        d_brk = d;
+      } else if (ax < hx - blen && ay >= hy - blen) {
+        float ex = ax - (hx - blen);
+        float ey = ay - hy;
+        d_brk = sqrtf(ex * ex + ey * ey);
+      } else if (ay < hy - blen && ax >= hx - blen) {
+        float ex = ax - hx;
+        float ey = ay - (hy - blen);
+        d_brk = sqrtf(ex * ex + ey * ey);
+      } else {
+        d_brk = 1e6f;
+      }
+
+      // Layer 1: soft outward glow
+      float out_r = 0.0f, out_g = 0.0f, out_b = 0.0f, out_a = 0.0f;
+      if (sd >= -0.8f * s && d < 3.2f * sigma) {
+        float ga = 0.28f * expf(-(d * d) * inv2s2);
+        out_r = cr;
+        out_g = cg;
+        out_b = cb;
+        out_a = ga;
+      }
+
+      // Layer 2: delicate dark outer contrast casing (keeps frame crisp on pure white windows)
+      float da1 = 0.32f * rf_aa(d, half_w + 1.35f * s, 0.7f);
+      float da2 = 0.40f * rf_aa(d_brk, brk_hw + 1.35f * s, 0.7f);
+      float da = da1 > da2 ? da1 : da2;
+      if (da > 0.001f) {
+        float na = da + out_a * (1.0f - da);
+        if (na > 0.0001f) {
+          float keep = out_a * (1.0f - da) / na;
+          out_r *= keep;
+          out_g *= keep;
+          out_b *= keep;
+        }
+        out_a = na;
+      }
+
+      // Layer 3: sleek main rounded border (dashed when paused)
+      float sa = 0.90f * rf_aa(d, half_w, 0.65f);
+      if (dashed && sa > 0.001f) {
+        float coord = (qx < qy) ? ax : ay;
+        float ph = fmodf(coord, dash_per);
+        sa *= rf_aa(fabsf(ph - dash_len * 0.5f), dash_len * 0.5f, 0.7f);
+      }
+      if (sa > 0.001f) {
+        float na = sa + out_a * (1.0f - sa);
+        if (na > 0.0001f) {
+          float inv = 1.0f / na;
+          out_r = (cr * sa + out_r * out_a * (1.0f - sa)) * inv;
+          out_g = (cg * sa + out_g * out_a * (1.0f - sa)) * inv;
+          out_b = (cb * sa + out_b * out_a * (1.0f - sa)) * inv;
+        }
+        out_a = na;
+      }
+
+      // Layer 4: bright rounded L-corner viewfinder brackets
+      float ba = rf_aa(d_brk, brk_hw, 0.65f);
+      if (ba > 0.001f) {
+        float na = ba + out_a * (1.0f - ba);
+        if (na > 0.0001f) {
+          float inv = 1.0f / na;
+          out_r = (hr * ba + out_r * out_a * (1.0f - ba)) * inv;
+          out_g = (hg * ba + out_g * out_a * (1.0f - ba)) * inv;
+          out_b = (hb * ba + out_b * out_a * (1.0f - ba)) * inv;
+        }
+        out_a = na;
+      }
+
+      if (out_a > 0.001f) {
+        uint32_t a8 = (uint32_t)(out_a * 255.0f + 0.5f);
+        uint32_t r8 = (uint32_t)(out_r * out_a * 255.0f + 0.5f);
+        uint32_t g8 = (uint32_t)(out_g * out_a * 255.0f + 0.5f);
+        uint32_t b8 = (uint32_t)(out_b * out_a * 255.0f + 0.5f);
+        if (a8 > 255) a8 = 255;
+        if (r8 > a8) r8 = a8;
+        if (g8 > a8) g8 = a8;
+        if (b8 > a8) b8 = a8;
+        row[px] = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
+      }
+    }
+  }
+
+  POINT ptDst = {wx, wy};
+  SIZE sz = {fw, fh};
+  POINT ptSrc = {0, 0};
+  BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+  UpdateLayeredWindow(hwnd, scr, &ptDst, &sz, mem, &ptSrc, 0, &bf, ULW_ALPHA);
+
+  SelectObject(mem, old);
+  DeleteObject(bmp);
+  DeleteDC(mem);
+  ReleaseDC(NULL, scr);
+}

@@ -86,21 +86,26 @@ static struct {
   UINT_PTR timer;
   HWND frame;
   COLORREF frame_color;
+  int frame_dashed;
   int told_h, told_lost, told_full, told_paused, told_pics, told_at, told_dir;
   ULONGLONG begun;         // when it began (GetTickCount64)
 } L;
 
+extern void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed);
+
 static COLORREF frame_want_color(void) {
-  if (L.paused) return RGB(0x8C, 0x91, 0x99);
+  if (L.paused) return RGB(0x9E, 0xA4, 0xB2);
   if (L.full || L.lost) return RGB(0xF5, 0xA5, 0x24);
   return RGB(0x2F, 0x9B, 0xFF);
 }
 
 static void frame_sync_color(void) {
   COLORREF c = frame_want_color();
-  if (c != L.frame_color) {
+  int d = L.paused ? 1 : 0;
+  if (c != L.frame_color || d != L.frame_dashed) {
     L.frame_color = c;
-    if (L.frame) InvalidateRect(L.frame, NULL, FALSE);
+    L.frame_dashed = d;
+    if (L.frame) ps_update_region_frame(L.frame, L.x, L.y, L.w, L.h, c, d);
   }
 }
 
@@ -570,26 +575,8 @@ static void CALLBACK tick_timer(HWND h, UINT msg, UINT_PTR id, DWORD t) {
 
 // ---- the frame round the part ----
 
-#define FRAME_LINE 2
-#define FRAME_KEY RGB(255, 0, 255)
-
 static LRESULT CALLBACK frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_NCHITTEST) return HTTRANSPARENT;
-  if (msg == WM_PAINT) {
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(h, &ps);
-    RECT r;
-    GetClientRect(h, &r);
-    HBRUSH key = CreateSolidBrush(FRAME_KEY);
-    HBRUSH line = CreateSolidBrush(L.frame_color ? L.frame_color : RGB(0x2F, 0x9B, 0xFF));
-    FillRect(dc, &r, line);
-    RECT in = {FRAME_LINE, FRAME_LINE, r.right - FRAME_LINE, r.bottom - FRAME_LINE};
-    FillRect(dc, &in, key);
-    DeleteObject(key);
-    DeleteObject(line);
-    EndPaint(h, &ps);
-    return 0;
-  }
   return DefWindowProcW(h, msg, wp, lp);
 }
 
@@ -612,12 +599,11 @@ static void frame_show(void) {
     made = 1;
   }
   // (just outside the part: never in what is taken; and kept out of any capture besides)
-  int x = L.x - FRAME_LINE, y = L.y - FRAME_LINE, w = L.w + FRAME_LINE * 2, h = L.h + FRAME_LINE * 2;
   L.frame = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                            L"PinShot.LongFrame", L"", WS_POPUP, x, y, w, h, NULL, NULL, GetModuleHandleW(NULL), NULL);
+                            L"PinShot.LongFrame", L"", WS_POPUP, L.x, L.y, 16, 16, NULL, NULL, GetModuleHandleW(NULL), NULL);
   if (!L.frame) return;
-  SetLayeredWindowAttributes(L.frame, FRAME_KEY, 255, LWA_COLORKEY);
   exclude(L.frame);
+  ps_update_region_frame(L.frame, L.x, L.y, L.w, L.h, L.frame_color ? L.frame_color : RGB(0x2F, 0x9B, 0xFF), L.frame_dashed);
   ShowWindow(L.frame, SW_SHOWNOACTIVATE);
 }
 
