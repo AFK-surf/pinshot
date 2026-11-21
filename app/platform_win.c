@@ -709,6 +709,8 @@ static void capture_asked(const char *by) {
   ps_tell(json);
 }
 
+void ps_quit(void);
+
 static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (taskbar_created && msg == taskbar_created) {
     tray_put();
@@ -795,8 +797,10 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case NIN_BALLOONUSERCLICK: ps_tell("{\"do\":\"menu\",\"item\":\"settings\"}"); break;
       }
       return 0;
+    case WM_QUERYENDSESSION:
+      return TRUE;
     case WM_ENDSESSION:
-      if (wp) tray_gone();
+      if (wp) ps_quit();
       return 0;
   }
   return DefWindowProcW(h, msg, wp, lp);
@@ -863,6 +867,10 @@ int32_t ps_start(int32_t again) {
   ChangeWindowMessageFilterEx(tray_hwnd, taskbar_created, MSGFLT_ALLOW, NULL);
   tray_put();
   atexit(tray_gone);
+  // Register with Windows Restart Manager so silent Microsoft Store / Windows updates cleanly relaunch PinShot.
+  if (!test_run()) {
+    RegisterApplicationRestart(L"", RESTART_NO_CRASH | RESTART_NO_HANG);
+  }
   // (recordings' temporary files left by runs gone: deleted on a pool thread, record_win.cpp)
   ps_rec_sweep_temp();
   // (each monitor's capture kept on from now: capture_wgc.cpp; PINSHOT_CAPTURE=gdi none, GDI's every time)
@@ -1038,6 +1046,11 @@ moonbit_bytes_t ps_key_name(int32_t vk) {
 static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR wid) {
   (void)id;
   switch (msg) {
+    case WM_QUERYENDSESSION:
+      return TRUE;
+    case WM_ENDSESSION:
+      if (wp) ps_quit();
+      return 0;
     case WM_DPICHANGED:
       InvalidateRect(h, NULL, FALSE);
       return 0;

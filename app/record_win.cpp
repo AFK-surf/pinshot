@@ -1178,6 +1178,11 @@ struct Mp4Encoder {
   ComPtr<ID3D11Texture2D> in_view_tex;
   UINT in_view_sub = 0;
 
+  // Most recent rendered NV12 pool texture and its WGC sequence number: when the desktop is static (same seq),
+  // we skip VideoProcessorBlt and copy this NV12 surface directly, zero extra copy or allocation on moving frames.
+  ComPtr<ID3D11Texture2D> last_vp_nv12;
+  uint64_t last_vp_seq = 0;
+
   // NV12 surfaces handed to the encoder: 8 at first, grown one at a time (to 24 at most) only where the encoder holds
   // them all for a while, then reused
   static const int POOL_MAX = 24;
@@ -1321,7 +1326,7 @@ struct Mp4Encoder {
     UINT32 gop = (UINT32)(fps * (gop_secs > 0 ? gop_secs : 2));
     UINT32 qvs = export_mode ? (codec_mode == 3 ? 20 : 35) : 25;
     ComPtr<IMFAttributes> enc_params;
-    if (SUCCEEDED(MFCreateAttributes(&enc_params, 7))) {
+    if (SUCCEEDED(MFCreateAttributes(&enc_params, 8))) {
       enc_params->SetUINT32(CODECAPI_AVEncCommonMeanBitRate, bps);
       enc_params->SetUINT32(CODECAPI_AVEncMPVGOPSize, gop);
       enc_params->SetUINT32(CODECAPI_AVEncMPVDefaultBPictureCount, 0);
@@ -1329,6 +1334,9 @@ struct Mp4Encoder {
       enc_params->SetUINT32(CODECAPI_AVEncCommonMaxBitRate, max_bps);
       enc_params->SetUINT32(CODECAPI_AVEncCommonBufferSize, max_bps);
       enc_params->SetUINT32(CODECAPI_AVEncCommonQualityVsSpeed, qvs);
+      // NVIDIA AV1 MFT pads static frames up to target bitrate unless a MinQP floor is set (ScreenReplay RTX 5080
+      // calibration: MinQP=14 shrinks 30s still desktop from ~15 MB to ~2.2 MB at 51 dB with dynamic scenes unchanged).
+      if (codec_mode == 3) enc_params->SetUINT32(CODECAPI_AVEncVideoMinQP, 14);
     }
     if (FAILED(writer->SetInputMediaType(video_stream, in_mt.Get(), enc_params.Get()))) {
       ComPtr<IMFAttributes> basic_params;
@@ -1360,6 +1368,7 @@ struct Mp4Encoder {
       set_u32(CODECAPI_AVEncCommonBufferSize, max_bps);
       set_u32(CODECAPI_AVEncMPVGOPSize, gop);
       set_u32(CODECAPI_AVEncCommonQualityVsSpeed, qvs);
+      if (codec_mode == 3) set_u32(CODECAPI_AVEncVideoMinQP, 14);
     }
 
     if (want_audio) add_aac_stream(passthrough_audio);
@@ -1381,6 +1390,8 @@ struct Mp4Encoder {
 
   bool ensure_vp(ID3D11Device *dev, ID3D11DeviceContext *ctx, int in_w, int in_h, bool in_yuv) {
     if (vp && vp_in_w == in_w && vp_in_h == in_h && vp_in_yuv == in_yuv) return true;
+    last_vp_nv12.Reset();
+    last_vp_seq = 0;
     for (int i = 0; i < POOL_MAX; i++) {
       ov_pool[i].Reset();
       nv12_pool[i].Reset();
@@ -1562,7 +1573,12 @@ struct Mp4Encoder {
 
   bool write_gpu_frame(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *src_tex, UINT src_sub,
                        bool src_is_yuv, int sx, int sy, int sw, int sh, LONGLONG pts, LONGLONG dur,
-                       bool keep_view = false) {
+                       bool keep_view = false, uint64_t cache_seq = 0) {
+    if (cache_seq != 0 && cache_seq == last_vp_seq && last_vp_nv12) {
+      // Static frame fast path: reuse the previously converted NV12 surface via pure GPU DMA copy, skipping
+      // VideoProcessorBlt + BT.709 RGB->NV12 conversion while keeping 100% CFR compatibility.
+      return write_gpu_nv12_direct(dev, ctx, last_vp_nv12.Get(), 0, pts, dur);
+    }
     D3D11_TEXTURE2D_DESC sd = {};
     src_tex->GetDesc(&sd);
     if (!ensure_vp(dev, ctx, (int)sd.Width, (int)sd.Height, src_is_yuv)) return false;
@@ -1603,6 +1619,10 @@ struct Mp4Encoder {
     in_view.Reset();
     out_view.Reset();
     if (FAILED(hr)) return false;
+    if (cache_seq != 0) {
+      last_vp_nv12 = nv12;
+      last_vp_seq = cache_seq;
+    }
     return submit_nv12_sample(nv12.Get(), pts, dur);
   }
 
@@ -1663,6 +1683,8 @@ struct Mp4Encoder {
       if (!cancel) hr = writer->Finalize();
       writer.Reset();
     }
+    last_vp_nv12.Reset();
+    last_vp_seq = 0;
     for (int i = 0; i < POOL_MAX; i++) {
       ov_pool[i].Reset();
       nv12_pool[i].Reset();
@@ -1687,6 +1709,31 @@ struct Mp4Encoder {
   }
 };
 
+// ---- MMCSS real-time scheduling guard (loaded dynamically only while recording; zero idle DLL footprint) ----
+
+struct MmcssGuard {
+  typedef HANDLE(WINAPI *SetFn)(LPCWSTR, LPDWORD);
+  typedef BOOL(WINAPI *RevertFn)(HANDLE);
+  HMODULE mod = NULL;
+  HANDLE task = NULL;
+  RevertFn revert_fn = NULL;
+
+  explicit MmcssGuard(const wchar_t *name) {
+    mod = LoadLibraryW(L"avrt.dll");
+    if (!mod) return;
+    SetFn set_fn = (SetFn)GetProcAddress(mod, "AvSetMmThreadCharacteristicsW");
+    revert_fn = (RevertFn)GetProcAddress(mod, "AvRevertMmThreadCharacteristics");
+    if (set_fn && revert_fn) {
+      DWORD idx = 0;
+      task = set_fn(name, &idx);
+    }
+  }
+  ~MmcssGuard() {
+    if (task && revert_fn) revert_fn(task);
+    if (mod) FreeLibrary(mod);
+  }
+};
+
 // ---- WASAPI System Audio Loopback Capture Thread ----
 
 struct SysAudioPump {
@@ -1704,6 +1751,7 @@ struct SysAudioPump {
 
   static DWORD WINAPI audio_proc(LPVOID arg) {
     SysAudioPump *self = (SysAudioPump *)arg;
+    MmcssGuard mmcss(L"Audio");
     HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
     ComPtr<IMMDeviceEnumerator> enumerator;
@@ -1968,6 +2016,7 @@ static std::wstring make_temp_master_path() {
 
 static DWORD WINAPI rec_worker(LPVOID arg) {
   LONG my_session = (LONG)(intptr_t)arg;
+  MmcssGuard mmcss(L"Capture");
   HRESULT ro_hr = RoInitialize(RO_INIT_MULTITHREADED);
   timeBeginPeriod(1);
 
@@ -2426,7 +2475,7 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
           staging_tex.Reset();
         }
         wrote = mp4.write_gpu_frame(dev.Get(), ctx.Get(), rgb_tex, 0, false, sx, sy, rw, rh, next_slot_hns, dur_hns,
-                                    is_hdr);
+                                    is_hdr, fr_seq);
       }
     } else {
       int pitch = 0;
