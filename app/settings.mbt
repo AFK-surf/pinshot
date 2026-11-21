@@ -267,6 +267,8 @@ fn load_settings() -> Unit {
       rec_exp_qual.set(clampi(rnum("rec_exp_qual", 2), 0, 3))
       let rs = rnum("rec_exp_scale", 0)
       rec_exp_scale.set(if rs == 75 || rs == 50 { rs } else { 0 })
+      let rgs = rnum("rec_exp_gif_scale", 1080)
+      rec_exp_gif_scale.set(if rgs == 0 || rgs == 720 { rgs } else { 1080 })
       let rg = rnum("rec_exp_gif_fps", 15)
       rec_exp_gif_fps.set(if rg == 10 || rg == 20 { rg } else { 15 })
     }
@@ -308,6 +310,7 @@ fn save_settings() -> Unit {
   o["rec_exp_fmt"] = Json::number(rec_exp_fmt.untracked().to_double())
   o["rec_exp_qual"] = Json::number(rec_exp_qual.untracked().to_double())
   o["rec_exp_scale"] = Json::number(rec_exp_scale.untracked().to_double())
+  o["rec_exp_gif_scale"] = Json::number(rec_exp_gif_scale.untracked().to_double())
   o["rec_exp_gif_fps"] = Json::number(rec_exp_gif_fps.untracked().to_double())
   ps_write_file(cstr(settings_path()), @utf8.encode(Json::object(o).stringify(indent=2))) |> ignore
 }

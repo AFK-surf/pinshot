@@ -105,8 +105,22 @@ let rec_exp_fmt : @signals.Signal[Int] = @signals.signal(0)
 let rec_exp_qual : @signals.Signal[Int] = @signals.signal(2)
 
 ///|
-/// max_side: 0 = Original, 1920 = 1080p, 1280 = 720p, 854 = 480p (GIF)
+/// MP4 scale: 0 = 100%, 75 = 75%, 50 = 50%
 let rec_exp_scale : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// GIF max long edge: 1080 = <=1080px (default), 720 = <=720px, 0 = Original (100%)
+let rec_exp_gif_scale : @signals.Signal[Int] = @signals.signal(1080)
+
+///|
+fn rec_active_scale(fmt : Int) -> Int {
+  if fmt == 2 { rec_exp_gif_scale.get() } else { rec_exp_scale.get() }
+}
+
+///|
+fn rec_active_scale_now(fmt : Int) -> Int {
+  if fmt == 2 { rec_exp_gif_scale.untracked() } else { rec_exp_scale.untracked() }
+}
 
 ///|
 /// GIF fps: 10, 15 (default), 20
@@ -187,10 +201,11 @@ fn rec_combo_key(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> String
 
 ///|
 fn rec_current_key() -> String {
+  let fmt = rec_exp_fmt.untracked()
   rec_combo_key(
-    rec_exp_fmt.untracked(),
+    fmt,
     rec_exp_qual.untracked(),
-    rec_exp_scale.untracked(),
+    rec_active_scale_now(fmt),
     rec_exp_gif_fps.untracked(),
   )
 }
@@ -594,7 +609,7 @@ fn rec_run_export(ask_dialog : Bool) -> Unit {
   }
   let fmt = rec_exp_fmt.untracked()
   let qual = rec_exp_qual.untracked()
-  let max_side = rec_exp_scale.untracked()
+  let max_side = rec_active_scale_now(fmt)
   let gif_fps = rec_exp_gif_fps.untracked()
   let key = rec_combo_key(fmt, qual, max_side, gif_fps)
   let mut chosen_dest = ""
@@ -879,7 +894,8 @@ fn rec_fmt_size(bytes : Double) -> String {
 
 ///|
 fn rec_current_est_bytes() -> Double {
-  rec_est_bytes(rec_exp_fmt.get(), rec_exp_qual.get(), rec_exp_scale.get(), rec_exp_gif_fps.get())
+  let fmt = rec_exp_fmt.get()
+  rec_est_bytes(fmt, rec_exp_qual.get(), rec_active_scale(fmt), rec_exp_gif_fps.get())
 }
 
 ///|
@@ -1259,6 +1275,7 @@ fn rec_window(root : @view.View) -> Unit {
       rec_exp_fmt.get(),
       rec_exp_qual.get(),
       rec_exp_scale.get(),
+      rec_exp_gif_scale.get(),
       rec_exp_gif_fps.get(),
       rec_master_audio.get(),
       rec_exports_ver.get(),
@@ -1637,7 +1654,7 @@ fn rec_window(root : @view.View) -> Unit {
                 By(fn() {
                   let sw = rec_part.val.w
                   let sh = rec_part.val.h
-                  let (ow, oh) = rec_out_dims(rec_exp_scale.get())
+                  let (ow, oh) = rec_out_dims(rec_active_scale(rec_exp_fmt.get()))
                   if ow != sw || oh != sh {
                     "\{sw}×\{sh} → \{ow}×\{oh}"
                   } else {
@@ -1838,7 +1855,7 @@ fn rec_window(root : @view.View) -> Unit {
                   fn() { "10 fps" },
                   fn() { rec_exp_gif_fps.get() == 10 },
                   fn() { rec_exp_gif_fps.set(10) },
-                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_scale.get(), 10) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_gif_scale.get(), 10) },
                 )
                 rec_inline_opt(
                   opts,
@@ -1847,7 +1864,7 @@ fn rec_window(root : @view.View) -> Unit {
                   fn() { "15 fps" },
                   fn() { rec_exp_gif_fps.get() == 15 },
                   fn() { rec_exp_gif_fps.set(15) },
-                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_scale.get(), 15) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_gif_scale.get(), 15) },
                 )
                 rec_inline_opt(
                   opts,
@@ -1856,41 +1873,80 @@ fn rec_window(root : @view.View) -> Unit {
                   fn() { "20 fps" },
                   fn() { rec_exp_gif_fps.get() == 20 },
                   fn() { rec_exp_gif_fps.set(20) },
-                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_scale.get(), 20) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_gif_scale.get(), 20) },
                 )
               })
             }, at_once=true)
 
-            // Size row: Proportional scaling (100% / 75% / 50%) — always clickable on every recording!
-            rec_prop_row(rows, "尺寸", fn() { rec_exp_scale.get() }, fn(opts, views) {
-              rec_inline_opt(
-                opts,
-                0,
-                views,
-                fn() { "100%" },
-                fn() { rec_exp_scale.get() == 0 },
-                fn() { rec_exp_scale.set(0) },
-                done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 0, rec_exp_gif_fps.get()) },
-              )
-              rec_inline_opt(
-                opts,
-                75,
-                views,
-                fn() { "75%" },
-                fn() { rec_exp_scale.get() == 75 },
-                fn() { rec_exp_scale.set(75) },
-                done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 75, rec_exp_gif_fps.get()) },
-              )
-              rec_inline_opt(
-                opts,
-                50,
-                views,
-                fn() { "50%" },
-                fn() { rec_exp_scale.get() == 50 },
-                fn() { rec_exp_scale.set(50) },
-                done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 50, rec_exp_gif_fps.get()) },
-              )
-            })
+            // Size row (MP4): Proportional scaling (100% / 75% / 50%)
+            rows.show(fn() { rec_exp_fmt.get() != 2 }, fn(swrap) {
+              enter_reveal(swrap, ms=125.0, dy=3.0, from_scale=0.99)
+              swrap.shrink(Is(0.0)) |> ignore
+              rec_prop_row(swrap, "尺寸", fn() { rec_exp_scale.get() }, fn(opts, views) {
+                rec_inline_opt(
+                  opts,
+                  0,
+                  views,
+                  fn() { "100%" },
+                  fn() { rec_exp_scale.get() == 0 },
+                  fn() { rec_exp_scale.set(0) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 0, rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  75,
+                  views,
+                  fn() { "75%" },
+                  fn() { rec_exp_scale.get() == 75 },
+                  fn() { rec_exp_scale.set(75) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 75, rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  50,
+                  views,
+                  fn() { "50%" },
+                  fn() { rec_exp_scale.get() == 50 },
+                  fn() { rec_exp_scale.set(50) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 50, rec_exp_gif_fps.get()) },
+                )
+              })
+            }, at_once=true)
+
+            // Size row (GIF): Max long-edge cap (1080px default / 720px / Original 100%)
+            rows.show(fn() { rec_exp_fmt.get() == 2 }, fn(gswrap) {
+              enter_reveal(gswrap, ms=125.0, dy=3.0, from_scale=0.99)
+              gswrap.shrink(Is(0.0)) |> ignore
+              rec_prop_row(gswrap, "尺寸", fn() { rec_exp_gif_scale.get() }, fn(opts, views) {
+                rec_inline_opt(
+                  opts,
+                  1080,
+                  views,
+                  fn() { "1080px" },
+                  fn() { rec_exp_gif_scale.get() == 1080 },
+                  fn() { rec_exp_gif_scale.set(1080) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, 1080, rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  720,
+                  views,
+                  fn() { "720px" },
+                  fn() { rec_exp_gif_scale.get() == 720 },
+                  fn() { rec_exp_gif_scale.set(720) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, 720, rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  0,
+                  views,
+                  fn() { tr("原尺寸") },
+                  fn() { rec_exp_gif_scale.get() == 0 },
+                  fn() { rec_exp_gif_scale.set(0) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, 0, rec_exp_gif_fps.get()) },
+                )
+              })
+            }, at_once=true)
           })
           |> ignore
 
