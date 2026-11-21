@@ -599,6 +599,8 @@ static void exclude(HWND h) {
 }
 
 static void frame_show(void) {
+  // (a test run kept out of sight: no frame on the person's screen)
+  if (getenv("PINSHOT_TEST") && getenv("PINSHOT_TEST_CLOAKED")) return;
   static int made;
   if (!made) {
     WNDCLASSEXW wc = {sizeof wc};

@@ -1135,10 +1135,22 @@ void ps_let_close(int32_t wid) {
   if (h) SetPropW(h, L"PinShot.Closing", (HANDLE)1);
 }
 
+// A test run kept out of sight (PINSHOT_TEST_CLOAKED): each window beside the overlay cloaked as it is placed (a pin,
+// a panel, the OCR window, a toast, the settings), drawn and driven, never on the person's screen.
+static void test_cloak(HWND h, int wid) {
+  static int cloaked = -1;
+  if (cloaked < 0) cloaked = getenv("PINSHOT_TEST") && getenv("PINSHOT_TEST_CLOAKED") ? 1 : 0;
+  if (!cloaked || !h || wid == 0) return;
+  BOOL b = TRUE;
+  DwmSetWindowAttribute(h, DWMWA_CLOAK, &b, sizeof b);
+  SetPropW(h, L"PinShot.Cloaked", (HANDLE)1);
+}
+
 // Window `wid` made one of PinShot's own (as said above), out of sight: 1 done.
 int32_t ps_own(int32_t wid, int32_t topmost) {
   HWND h = own_window(wid);
   if (!h) return 0;
+  test_cloak(h, wid);
   LONG_PTR style = GetWindowLongPtrW(h, GWL_STYLE);
   style &= ~(LONG_PTR)(WS_OVERLAPPEDWINDOW);
   style |= WS_POPUP;
@@ -1174,6 +1186,7 @@ void ps_shadow(int32_t wid) {
 void ps_toast_place(int32_t wid, int32_t w, int32_t h) {
   HWND hw = own_window(wid);
   if (!hw) return;
+  test_cloak(hw, wid);
   POINT p;
   GetCursorPos(&p);
   HMONITOR mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
@@ -1195,6 +1208,7 @@ void ps_toast_place(int32_t wid, int32_t w, int32_t h) {
 void ps_place(int32_t wid, int32_t x, int32_t y, int32_t w, int32_t h, int32_t show, int32_t focus) {
   HWND hw = own_window(wid);
   if (!hw) return;
+  if (show) test_cloak(hw, wid);
   // (shown: over every other window that is over the others, as it is put there, a notification's too)
   UINT f = SWP_NOACTIVATE | (show ? SWP_SHOWWINDOW : SWP_NOZORDER);
   HWND after = show && (GetWindowLongPtrW(hw, GWL_EXSTYLE) & WS_EX_TOPMOST) ? HWND_TOPMOST : (show ? HWND_TOP : NULL);
@@ -1209,6 +1223,7 @@ void ps_place(int32_t wid, int32_t x, int32_t y, int32_t w, int32_t h, int32_t s
 void ps_center(int32_t wid, int32_t w, int32_t h) {
   HWND hw = own_window(wid);
   if (!hw) return;
+  test_cloak(hw, wid);
   POINT p;
   GetCursorPos(&p);
   HMONITOR mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
