@@ -193,7 +193,15 @@ fn picture_size(b : Bytes) -> (Int, Int)? {
 ///|
 /// A picture `pw` × `ph` (pixels) laid in `box` to cover all of it (`w` × `h`, points), as large as it must be and
 /// centred: none of the box left bare, the picture never stretched.
-fn covered(box : @view.View, key : String, pw : Double, ph : Double, w : Double, h : Double) -> Unit {
+fn covered(
+  box : @view.View,
+  key : String,
+  pw : Double,
+  ph : Double,
+  w : Double,
+  h : Double,
+  max_px? : Int = 2560,
+) -> Unit {
   let k = dmax(w / pw, h / ph)
   let (cw, ch) = (pw * k, ph * k)
   box.box(fn(o) {
@@ -204,7 +212,7 @@ fn covered(box : @view.View, key : String, pw : Double, ph : Double, w : Double,
       .height(Is(Some(ch)))
       .shrink(Is(0.0))
       .offset(Is(((w - cw) / 2.0, (h - ch) / 2.0)))
-      .image(Is(Some((key, "", 2560))))
+      .image(Is(Some((key, "", max_px))))
       |> ignore
     })
     |> ignore
@@ -332,29 +340,41 @@ fn beauty_drawn(b : @view.View, w : Double, h : Double, part : (@view.View) -> U
 fn beauty_layer(stage : @view.View) -> Unit {
   stage.box(fn(o) {
     o.over(Is(true)).presses(Is(false)).lines_up(Is(Some(Start))) |> ignore
+    // (made again only as what it draws changes: the part's size, the background, the room, the shadow, the picture;
+    // the part moved, it is only moved, its offsets bound, not the whole of it made again at each pixel)
     o.pick(fn() {
-      match beauty_frame() {
-        Some(f) => Some((f, sel.get(), beauty.get(), frozen_key.get(), wallpaper.get()))
-        None => None
+      match (beauty_frame(), sel.get()) {
+        (Some(f), Some(r)) => Some((f.w, f.h, r.w, r.h, beauty.get(), frozen_key.get(), wallpaper.get()))
+        _ => None
       }
     }, fn(b, now) {
-      guard now is Some((f, Some(r), _, key, _)) else { return }
+      guard now is Some((fw, fh, rw, rh, _, key, _)) else { return }
       let k = mon_scale.untracked()
       let (mw, mh) = (mon.val.w.to_double() / k, mon.val.h.to_double() / k)
       let px = dmax(mon.val.w.to_double(), mon.val.h.to_double()).to_int()
       b
       .alpha(By(fn() { beauty_fade.shown_on(b) }))
-      .width(Is(Some(f.w.to_double() / k)))
-      .height(Is(Some(f.h.to_double() / k)))
-      .offset(Is((f.x.to_double() / k, f.y.to_double() / k)))
+      .width(Is(Some(fw.to_double() / k)))
+      .height(Is(Some(fh.to_double() / k)))
+      .offset(By(fn() {
+        match beauty_frame() {
+          Some(f) => (f.x.to_double() / k, f.y.to_double() / k)
+          None => (0.0, 0.0)
+        }
+      }))
       |> ignore
-      beauty_drawn(b, r.w.to_double() / k, r.h.to_double() / k, fn(c) {
+      beauty_drawn(b, rw.to_double() / k, rh.to_double() / k, fn(c) {
         c.box(fn(s) {
           s
           .width(Is(Some(mw)))
           .height(Is(Some(mh)))
           .shrink(Is(0.0))
-          .offset(Is((-r.x.to_double() / k, -r.y.to_double() / k)))
+          .offset(By(fn() {
+            match sel.get() {
+              Some(r) => (-r.x.to_double() / k, -r.y.to_double() / k)
+              None => (0.0, 0.0)
+            }
+          }))
           |> ignore
           s.box(fn(p) { p.over(Is(true)).image(Is(Some((key, "", px)))) |> ignore }) |> ignore
         })
@@ -427,7 +447,8 @@ fn beauty_row(row : @view.View) -> Unit {
             sw.pick(fn() { wallpaper.get() }, fn(c, wall) {
               c.width(Is(Some(18.0))).height(Is(Some(18.0))) |> ignore
               match wall {
-                Some((key, pw, ph)) => covered(c, key, pw, ph, 18.0, 18.0)
+                // (an 18-point swatch: the picture decoded small for it, not at 2560 pixels)
+                Some((key, pw, ph)) => covered(c, key, pw, ph, 18.0, 18.0, max_px=96)
                 None => ()
               }
             }, at_once=true)

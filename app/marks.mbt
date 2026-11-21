@@ -350,7 +350,6 @@ fn mosaic_layers(m : Mark, k : Double, blur~ : Bool) -> Array[@pixels.VectorPath
   } else {
     cell
   }
-  let off = (sample - cell) / 2
   // (squares on the monitor's grid of them, so one dragged further keeps the squares it had)
   let gx0 = r.x / cell
   let gy0 = r.y / cell
@@ -382,7 +381,7 @@ fn mosaic_layers(m : Mark, k : Double, blur~ : Bool) -> Array[@pixels.VectorPath
     }
     ignore(ch)
     for gx in gx0..<gx1 {
-      let c = mean_color(gx * cell - off, cy - off, sample)
+      let c = cell_mean(gx, gy, cell, sample)
       if c == run_color {
         run_n += 1
       } else {
@@ -418,16 +417,38 @@ fn mosaic_brush_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
   let gy1 = clampi(((by1 + cell.to_double() - 1.0) / cell.to_double()).ceil().to_int(), 0, max_gy)
   let by_color : Map[Int, StringBuilder] = Map([])
   let half = cell.to_double() / 2.0
-  let hits_cell = fn(cx : Double, cy : Double) -> Bool {
-    if m.pts.length() == 1 {
-      return to_segment(cx, cy, m.pts[0], m.pts[0]) <= rad
-    }
-    for i in 1..<m.pts.length() {
-      if to_segment(cx, cy, m.pts[i - 1], m.pts[i]) <= rad {
-        return true
+  // (which squares the stroke covers, found segment by segment over the squares near each, not every square of the
+  // box against every segment: the same squares, as a square's centre within `rad` of any segment)
+  let gw = gx1 - gx0
+  let gh = gy1 - gy0
+  let hit : FixedArray[Bool] = FixedArray::make(if gw > 0 && gh > 0 { gw * gh } else { 0 }, false)
+  let cover = fn(a : (Double, Double), b : (Double, Double)) {
+    let lo_x = dmin(a.0, b.0) - rad
+    let hi_x = dmax(a.0, b.0) + rad
+    let lo_y = dmin(a.1, b.1) - rad
+    let hi_y = dmax(a.1, b.1) + rad
+    let sx0 = clampi(((lo_x - half) / cell.to_double()).floor().to_int(), gx0, gx1)
+    let sx1 = clampi(((hi_x - half) / cell.to_double()).ceil().to_int() + 1, gx0, gx1)
+    let sy0 = clampi(((lo_y - half) / cell.to_double()).floor().to_int(), gy0, gy1)
+    let sy1 = clampi(((hi_y - half) / cell.to_double()).ceil().to_int() + 1, gy0, gy1)
+    for gy in sy0..<sy1 {
+      let py = (gy * cell).to_double() + half
+      for gx in sx0..<sx1 {
+        let i = (gy - gy0) * gw + (gx - gx0)
+        if !hit[i] && to_segment((gx * cell).to_double() + half, py, a, b) <= rad {
+          hit[i] = true
+        }
       }
     }
-    false
+  }
+  if gw > 0 && gh > 0 {
+    if m.pts.length() == 1 {
+      cover(m.pts[0], m.pts[0])
+    } else {
+      for i in 1..<m.pts.length() {
+        cover(m.pts[i - 1], m.pts[i])
+      }
+    }
   }
   for gy in gy0..<gy1 {
     let mut run_color = -1
@@ -453,11 +474,9 @@ fn mosaic_brush_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
         }
       }
     }
-    let py = cy.to_double() + half
     for gx in gx0..<gx1 {
-      let px = (gx * cell).to_double() + half
-      if hits_cell(px, py) {
-        let c = mean_color(gx * cell, cy, cell)
+      if hit[(gy - gy0) * gw + (gx - gx0)] {
+        let c = cell_mean(gx, gy, cell, cell)
         if c == run_color {
           run_n += 1
         } else {
@@ -485,6 +504,59 @@ fn mosaic_brush_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
 /// The mean colour (0xRRGGBB) of the `cell` square at (x, y) of the picture taken (read where the native side keeps it).
 fn mean_color(x : Int, y : Int, cell : Int) -> Int {
   ps_mean(x, y, cell)
+}
+
+///|
+/// The squares' means asked of the picture taken, kept by square (grid `cell`, each `sample` pixels round it) for the
+/// capture: a mosaic or a blur dragged out asks each square once, not again at each pixel the drag moves. The last few
+/// grids kept (a mosaic and a blur of other sizes beside each other), let go as the capture closes (mean_cache_clear).
+priv struct MeanGrid {
+  key : String
+  cell : Int
+  sample : Int
+  gw : Int
+  gh : Int
+  means : FixedArray[Int] // -1: not asked yet
+}
+
+///|
+let mean_grids : Array[MeanGrid] = []
+
+///|
+fn mean_cache_clear() -> Unit {
+  mean_grids.clear()
+  mean_grids.shrink_to_fit()
+}
+
+///|
+/// The mean of grid square (gx, gy): the `sample` pixels square centred on the `cell` square there.
+fn cell_mean(gx : Int, gy : Int, cell : Int, sample : Int) -> Int {
+  let off = (sample - cell) / 2
+  let key = frozen_key.untracked()
+  let gw = (mon.val.w + cell - 1) / cell + 1
+  let gh = (mon.val.h + cell - 1) / cell + 1
+  if gx < 0 || gy < 0 || gx >= gw || gy >= gh || key == "" {
+    return mean_color(gx * cell - off, gy * cell - off, sample)
+  }
+  let g = match mean_grids.iter().find_first(fn(g) { g.key == key && g.cell == cell && g.sample == sample && g.gw == gw && g.gh == gh }) {
+    Some(g) => g
+    None => {
+      let g = { key, cell, sample, gw, gh, means: FixedArray::make(gw * gh, -1) }
+      if mean_grids.length() >= 3 {
+        mean_grids.remove(0) |> ignore
+      }
+      mean_grids.push(g)
+      g
+    }
+  }
+  let i = gy * gw + gx
+  let v = g.means[i]
+  if v >= 0 {
+    return v
+  }
+  let c = mean_color(gx * cell - off, gy * cell - off, sample)
+  g.means[i] = c
+  c
 }
 
 ///|

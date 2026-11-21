@@ -182,7 +182,9 @@ fn settings_path() -> String {
 ///|
 fn load_settings() -> Unit {
   let d = default_settings()
-  let s = match json_of(text_of(ps_read_file(cstr(settings_path())))) {
+  // (the file read and parsed once, for the settings and the recording's choices both)
+  let read = json_of(text_of(ps_read_file(cstr(settings_path()))))
+  let s = match read {
     Some(Json::Object(o)) => {
       let num = fn(name : String, dflt : Int) {
         match o.get(name) {
@@ -241,7 +243,7 @@ fn load_settings() -> Unit {
     _ => d
   }
   // Restore persisted screen-recording & export preferences
-  match json_of(text_of(ps_read_file(cstr(settings_path())))) {
+  match read {
     Some(Json::Object(o)) => {
       let rnum = fn(name : String, dflt : Int) {
         match o.get(name) {
@@ -425,6 +427,7 @@ fn record_key(which : Int) -> Unit {
 fn clear_key(which : Int) -> Unit {
   stop_recording()
   key_trouble.set((0, ""))
+  let before = settings.untracked()
   if which == 1 {
     change_settings(fn(s) { { ..s, capture_key: { mods: 0, vk: 0 } } })
   } else if which == 2 {
@@ -432,7 +435,17 @@ fn clear_key(which : Int) -> Unit {
   } else {
     change_settings(fn(s) { { ..s, confirm_key: { mods: 0, vk: 0 } } })
   }
-  apply_keys()
+  keys_set_again(before)
+}
+
+///|
+/// The shortcuts set again after one was asked for (they were let go meanwhile), unless change_settings did that
+/// already as they changed: once, not twice (twice said a shortcut another program holds twice over).
+fn keys_set_again(before : Settings) -> Unit {
+  let s = settings.untracked()
+  if s.capture_key == before.capture_key && s.pin_key == before.pin_key && s.language == before.language {
+    apply_keys()
+  }
 }
 
 ///|
@@ -502,7 +515,7 @@ fn key_pressed(how : String, mods : Int, vk : Int) -> Unit {
   } else {
     change_settings(fn(s) { { ..s, pin_key: h } })
   }
-  apply_keys()
+  keys_set_again(was)
 }
 
 ///|

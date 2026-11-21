@@ -96,11 +96,13 @@ fn window_at(x : Double, y : Double) -> Rect? {
         let c = ws[j]
         // (only a part of it, and only where it shows: a window behind it that lies within it, or a part covered there by
         // another part of it, is not seen: not picked)
-        if c.contains(x, y) && ps_window_shows(i, j, x.to_int(), y.to_int()) == 1 {
-          match found {
-            Some(f) if c.w * c.h < f.w * f.h => found = c.within(full.w, full.h)
-            _ => ()
-          }
+        // (the cheap tests first: the system asked where a part shows only for one that would be picked over it)
+        let smaller = match found {
+          Some(f) => c.w * c.h < f.w * f.h
+          None => false
+        }
+        if smaller && c.contains(x, y) && ps_window_shows(i, j, x.to_int(), y.to_int()) == 1 {
+          found = c.within(full.w, full.h)
         }
         j += 1
       }
@@ -176,14 +178,16 @@ fn prepare_capture(x : Int, y : Int, w : Int, h : Int, dpi : Double) -> Unit {
 ///|
 /// The picture taken: shown in the overlay once it is a texture (overlay.mbt's reveal).
 fn capture_taken() -> Unit {
-  let info = numbers_of(text_of(ps_capture_info()))
+  // (asked once: the native side formats it each time)
+  let said = text_of(ps_capture_info())
+  let info = numbers_of(said)
   let bytes = ps_capture_take()
   if info.length() < 6 || bytes.length() == 0 {
     close_capture()
     return
   }
   took_ms.val = info[5]
-  took_how.val = match text_of(ps_capture_info()).split(",").last() {
+  took_how.val = match said.split(",").last() {
     Some(h) => h.to_owned()
     None => ""
   }
@@ -245,6 +249,7 @@ fn close_capture() -> Unit {
   @signals.end_batch()
   // (the wallpaper's picture, if it was read for a background, not kept between captures)
   wallpaper_let_go()
+  mean_cache_clear()
   ps_capture_release()
   windows_on.set([])
   if key != "" {

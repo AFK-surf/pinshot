@@ -230,9 +230,12 @@ fn zoom_pin(p : Pin, zx : Double, zy : Double) -> Unit {
   }
   let nx = ax - (ax - x) * nw / w
   let ny = ay - (ay - y) * nh / h
+  // (one change, not three: what reads them worked out once)
+  @signals.start_batch()
   p.zx.set(zx)
   p.zy.set(zy)
   p.zoomed_at.set(now_of(p))
+  @signals.end_batch()
   ps_place(p.wid.val, nx.round().to_int(), ny.round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
   // (the pointer's shape as what is under it now is: it moved nothing itself)
   p.edge.set(pin_edge(p))
@@ -298,9 +301,12 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   let zy = clamp(zy, 0.1, 8.0)
   let nw = dmax(16.0, (p.w.to_double() * zx).round())
   let nh = dmax(16.0, (p.h.to_double() * zy).round())
+  // (one change, not three: what reads them worked out once)
+  @signals.start_batch()
   p.zx.set(zx)
   p.zy.set(zy)
   p.zoomed_at.set(now_of(p))
+  @signals.end_batch()
   ps_place(p.wid.val, (cx - nw / 2.0).round().to_int(), (cy - nh / 2.0).round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
   p.edge.set(pin_edge(p))
 }
@@ -595,9 +601,12 @@ fn size_pin(p : Pin, s : PinSizing) -> Unit {
   } else {
     s.y
   }
+  // (one change, not three: what reads them worked out once)
+  @signals.start_batch()
   p.zx.set(zx)
   p.zy.set(zy)
   p.zoomed_at.set(now_of(p))
+  @signals.end_batch()
   ps_place(p.wid.val, nx.round().to_int(), ny.round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
 }
 

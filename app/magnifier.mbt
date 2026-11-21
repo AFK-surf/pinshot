@@ -151,6 +151,10 @@ fn magnifier(stage : @view.View) -> Unit {
       .lines_up(Is(Some(Start)))
       .laid_nowhere(By(fn() { !mag_shown() }))
       .offset(By(fn() {
+        // (out of sight, as it is while marks are made: the pointer not followed, nothing worked out at each pixel)
+        if !mag_shown() {
+          return (0.0, 0.0)
+        }
         let k = mon_scale.get()
         let (sw, sh) = mon_pt()
         let (px, py) = pointer_px.get()
@@ -199,6 +203,9 @@ fn magnifier(stage : @view.View) -> Unit {
           }))
           |> ignore
           mag_text(l, fn() {
+            if !mag_shown() {
+              return ""
+            }
             // (the part's size while one is dragged out, else where the pointer is)
             match clear_part() {
               Some(r) if sel.get() is Some(_) => "\{r.w} × \{r.h}"
@@ -230,6 +237,9 @@ fn magnifier(stage : @view.View) -> Unit {
             .radius(Is(2.5))
             .edge(By(fn() { (1.0 / mon_scale.get(), 0xFFFFFF73L) }))
             .ground(By(fn() {
+              if !mag_shown() {
+                return 0L
+              }
               let (px, py) = pointer_px.get()
               let c = pixel_at(px.to_int(), py.to_int())
               if c < 0 {
@@ -242,6 +252,9 @@ fn magnifier(stage : @view.View) -> Unit {
           })
           |> ignore
           mag_text(r, fn() {
+            if !mag_shown() {
+              return ""
+            }
             let (px, py) = pointer_px.get()
             let c = pixel_at(px.to_int(), py.to_int())
             if c < 0 {

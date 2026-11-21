@@ -107,11 +107,19 @@ fn overlay_cursor() -> @view.Cursor? {
 ///|
 /// What the veil leaves clear: the part picked, else the window the pointer is over.
 fn clear_part() -> Rect? {
+  clear_part_now.get()
+}
+
+///|
+/// What clear_part says, worked out once as the pointer or the part changes and kept: its readers (the veil, the
+/// badge, the frame's motion, the magnifier's tag) read it, and are told only where it came to another rectangle; the
+/// windows under the pointer, and the system asked whether a pane shows there, looked up once a move, not by each.
+let clear_part_now : @signals.Computed[Rect?] = @signals.computed(fn(_) {
   match sel.get() {
     Some(r) => Some(r)
     None => window_under()
   }
-}
+})
 
 ///|
 /// The veil, the frame of what is clear and, a part picked, its eight handles: one picture in the monitor's pixels.
@@ -559,6 +567,7 @@ fn press_down(x : Double, y : Double) -> Unit {
             selected.set(None)
             let before = marks.untracked()
             let hit = erase_pen_segment(x, y, x, y)
+            erase_at.val = (x, y, hit)
             hand.set(Erasing(before, x, y, hit))
           } else if cur_tool == Pen {
             selected.set(None)
@@ -604,6 +613,10 @@ fn press_down(x : Double, y : Double) -> Unit {
 }
 
 ///|
+/// The eraser's last point and whether it has erased anything yet, while it is dragged (Erasing).
+let erase_at : Ref[(Double, Double, Bool)] = Ref((0.0, 0.0, false))
+
+///|
 fn press_moved(x : Double, y : Double) -> Unit {
   let (_, _, moved) = down_at.val
   let w = mon.val.w
@@ -632,10 +645,13 @@ fn press_moved(x : Double, y : Double) -> Unit {
       }
     }
     Dragging(x0, y0, m, _, _, hx, hy) => if moved { draft.set(Some(held_to(m, hx, hy, x0, y0, x, y))) }
-    Erasing(before, lx, ly, hit) => {
+    Erasing(_, _, _, _) => {
+      // (where it is and whether it erased kept apart, not in `hand`: set at each pixel it moved every binding that
+      // reads `hand` again, comparing the marks as they were each time)
+      let (lx, ly, hit) = erase_at.val
       let (cx, cy) = clamp_to_sel(x, y)
       let hit2 = erase_pen_segment(lx, ly, cx, cy)
-      hand.set(Erasing(before, cx, cy, hit || hit2))
+      erase_at.val = (cx, cy, hit || hit2)
     }
     Marking =>
       match draft.untracked() {
@@ -666,14 +682,16 @@ fn press_moved(x : Double, y : Double) -> Unit {
             (cx, cy)
           }
           let pts = if m.tool == Pen || m.tool == MosaicBrush {
-            let p = m.pts.copy()
-            let (lx, ly) = p[p.length() - 1]
+            let (lx, ly) = m.pts[m.pts.length() - 1]
             let dx = cx - lx
             let dy = cy - ly
             let min_step = if m.tool == MosaicBrush { 2.0 * mon_scale.untracked() } else { 0.5 }
-            if dx * dx + dy * dy >= min_step * min_step {
-              p.push((cx, cy))
+            // (no point added: nothing copied, nothing set, nothing drawn again)
+            if dx * dx + dy * dy < min_step * min_step {
+              return
             }
+            let p = m.pts.copy()
+            p.push((cx, cy))
             p
           } else {
             [m.pts[0], (cx, cy)]
@@ -774,7 +792,8 @@ fn press_up(x : Double, y : Double) -> Unit {
       @signals.end_batch()
       return
     }
-    Erasing(before, _, _, hit) => {
+    Erasing(before, _, _, _) => {
+      let (_, _, hit) = erase_at.val
       if hit {
         done_before.val.push(before)
         undone.val = []
