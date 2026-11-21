@@ -382,6 +382,16 @@ fn open_settings(tab? : Int = -1) -> Unit {
   if settings_wid.val > 0 && @ui.window_front_here(settings_wid.val) {
     return
   }
+  // (a test run may open it on a page of its own choosing: PINSHOT_TEST_SETTINGS_TAB, 0 to 3)
+  if @ui.env("PINSHOT_TEST") != "" {
+    match @ui.env("PINSHOT_TEST_SETTINGS_TAB") {
+      "0" => settings_tab.set(0)
+      "1" => settings_tab.set(1)
+      "2" => settings_tab.set(2)
+      "3" => settings_tab.set(3)
+      _ => ()
+    }
+  }
   let wid = @ui.window_open_here("settings")
   if wid <= 0 {
     return
@@ -886,13 +896,9 @@ fn capture_page(p : @view.View) -> Unit {
 fn about_page(p : @view.View) -> Unit {
   set_group(p, "", fn(g) {
     update_settings(g)
-    // (the sponsor's page: the user, 2026-11-19 「给 PinShot 也加一个赞助链接」)
-    set_row(g, "赞助作者", fn(r) {
-      small_button(r, fn() { tr("赞助") }, fn() {
-        ps_open_url(cstr(site_url + "/support?lang=" + (if english.get() { "en" } else { "zh" })))
-      })
-    }, note=fn() { tr("PinShot 免费使用，觉得好用可以请我喝杯咖啡") }, note_ink=fn() { set_muted })
   })
+  // (the sponsor's page: the user, 2026-11-19 「给 PinShot 也加一个赞助链接」; a card of its own, 2026-11-21 「B」)
+  sponsor_card(p)
   p.box(fn(b) {
     b.padding(Is((4.0, 0.0, 4.0, 0.0))).gap(Is(2.0)) |> ignore
     set_words(b, fn() {
@@ -903,6 +909,203 @@ fn about_page(p : @view.View) -> Unit {
       }
     }, 12.0, set_muted)
     set_words(b, fn() { "© 2026 pengx17" }, 12.0, set_muted)
+  })
+  |> ignore
+}
+
+///|
+/// The sponsor's card on the About page (the user's choice B, 2026-11-21, its spec the ScreenReplay mock's
+/// `.sponsor-b`): a warm card, a coffee cup's badge whose steam rises, the words, a warm button; pressed anywhere, the
+/// support page. Its motions are ways of the node's own (no timer, no clock): as the page opens the steam rises for
+/// two and a half seconds, the card's edge glows once and a sheen crosses the button once, then all is still; hovered,
+/// the badge lifts, a small heart floats off once and the steam rises again while the pointer stays. Off the page, or
+/// the settings closed, the node is gone and so is all of it.
+fn sponsor_card(parent : @view.View) -> Unit {
+  let amber = 0xE5A545FFL
+  let amber_hi = 0xF5C36BFFL
+  let steam = @motion.NodeWay::new(0.0) // 0 -> 1: one rise of the three wisps, staggered
+  let glow = @motion.NodeWay::new(1.0) // 0 -> 1: the edge's glow, once as it opens
+  let sheen = @motion.NodeWay::new(1.0) // 0 -> 1: the sheen across the button
+  let heart = @motion.NodeWay::new(1.0) // 0 -> 1: the heart floating off
+  let open_url = fn() {
+    ps_open_url(cstr(site_url + "/support?lang=" + (if english.get() { "en" } else { "zh" })))
+  }
+  parent.box(fn(card) {
+    let hov = smooth_hover(card, ms=180.0)
+    tactile_press(card, sink_px=0.6)
+    // (as it opens: the steam, the glow, then the sheen 240 ms later)
+    steam.go_from(card, 0.0, 1.0, @motion.tween(2600.0, ease=Linear))
+    glow.go_from(card, 0.0, 1.0, @motion.tween(900.0, ease=Out))
+    sheen.go_from(card, 0.0, 1.0, @motion.tween(820.0, ease=Out), at=card.cause_at() + 240.0)
+    // (hovered: the heart once, the sheen once, the steam again for as long as the pointer stays)
+    let rise_again : Ref[() -> Unit] = Ref(fn() {  })
+    fn keep_rising() {
+      steam.go_from(card, 0.0, 1.0, @motion.tween(2200.0, ease=Linear))
+      rise_again.val = card.at_moment(card.cause_at() + 2200.0, fn() {
+        if card.pointed() {
+          keep_rising()
+        }
+      }, later=true)
+    }
+    card.reacts(fn() { card.pointed() }, at_start=false, fn(on) {
+      if on {
+        heart.go_from(card, 0.0, 1.0, @motion.tween(1100.0, ease=Out))
+        sheen.go_from(card, 0.0, 1.0, @motion.tween(820.0, ease=Out))
+        keep_rising()
+      } else {
+        (rise_again.val)()
+        rise_again.val = fn() {  }
+      }
+    })
+    |> ignore
+    card
+    .row(Is(true))
+    .gap(Is(12.0))
+    .padding(Is((14.0, 12.0, 14.0, 12.0)))
+    .radius(Is(10.0))
+    .lines_up(Is(Some(Middle)))
+    .presses(Is(true))
+    .cursor(Is(Some(Hand)))
+    .says(By(fn() { Some(@view.said(Button, label=tr("赞助作者"))) }))
+    .on_press(open_url)
+    // (the card's own ground warmed a little by the amber, more as it is hovered)
+    .ground(By(fn() { mix_rgba(mix_rgba(set_card, amber, 0.07), mix_rgba(set_card, amber, 0.13), hov()) }))
+    .edge(By(fn() {
+      let g = glow.shown(card)
+      // (the glow: up to 40% of its time, then away)
+      let lit = if g < 0.4 { g / 0.4 } else { (1.0 - g) / 0.6 }
+      let rest = mix_rgba(0xE5A54538L, 0xF5C36B75L, hov())
+      (1.0 + lit, mix_rgba(rest, 0xE5A54580L, lit))
+    }))
+    |> ignore
+    // the badge: a cup, its steam, and the heart that floats off it
+    card.box(fn(b) {
+      b
+      .width(Is(Some(36.0)))
+      .height(Is(Some(36.0)))
+      .shrink(Is(0.0))
+      .radius(Is(9.0))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      .ground(By(fn() { mix_rgba(0xE5A54521L, 0xE5A54533L, hov()) }))
+      .edge(Is((1.0, 0xE5A54538L)))
+      .scale(By(fn() { 1.0 + 0.06 * hov() }))
+      .drawn_off(By(fn() { (0.0, -1.0 * hov()) }))
+      |> ignore
+      b.box(fn(cup) {
+        cup
+        .width(Is(Some(18.0)))
+        .height(Is(Some(18.0)))
+        .picture(By(fn() {
+          let t = steam.shown(cup)
+          let still = !steam.goes_at(cup.cause_at())
+          let layers = [
+            stroke_layer("M2.6 6.4h8.4v3.4a3.2 3.2 0 0 1-3.2 3.2H5.8a3.2 3.2 0 0 1-3.2-3.2Z", amber_hi, 1.45),
+            stroke_layer("M11 7.3h0.8a1.6 1.6 0 0 1 0 3.2H11", amber_hi, 1.45),
+          ]
+          // (each wisp's rise: 2.2 s, the second 0.4 s after the first, the third 0.8 s; at rest, faint, in place)
+          for i, x in [(5.0, 2.4, 1.8), (7.4, 2.1, 2.1), (9.8, 2.4, 1.8)] {
+            let (wx, wy, wl) = x
+            let (op, dy) = if still {
+              (0.55, 0.0)
+            } else {
+              let ms = t * 2600.0 - i.to_double() * 400.0
+              let ph = if ms < 0.0 { 0.0 } else { ms / 2200.0 - (ms / 2200.0).floor() }
+              if ph < 0.45 {
+                let u = ph / 0.45
+                (0.15 + 0.8 * u, 1.2 - 2.0 * u)
+              } else {
+                let u = (ph - 0.45) / 0.55
+                (0.95 - 0.85 * u, -0.8 - 1.6 * u)
+              }
+            }
+            let a = (op * 255.0).round().to_int64()
+            layers.push(stroke_layer("M\{num(wx)} \{num(wy + dy)}v\{num(wl)}", (amber_hi & 0xFFFFFF00L) | a, 1.45))
+          }
+          Some({ w: 16.0, h: 16.0, layers })
+        }))
+        |> ignore
+      })
+      |> ignore
+      b.box(fn(h) {
+        h
+        .over(Is(true))
+        .points(Is(false))
+        .width(Is(Some(12.0)))
+        .height(Is(Some(12.0)))
+        .offset(Is((28.0, -4.0)))
+        .alpha(By(fn() {
+          let t = heart.shown(h)
+          if t < 0.35 {
+            t / 0.35
+          } else if t < 0.75 {
+            1.0 - 0.05 * (t - 0.35) / 0.4
+          } else {
+            0.95 * (1.0 - t) / 0.25
+          }
+        }))
+        .drawn_off(By(fn() {
+          let t = heart.shown(h)
+          let y = if t < 0.35 { 5.0 - 7.0 * t / 0.35 } else if t < 0.75 { -2.0 - 3.0 * (t - 0.35) / 0.4 } else { -5.0 - 5.0 * (t - 0.75) / 0.25 }
+          (0.0, y)
+        }))
+        .picture(Is(Some({ w: 16.0, h: 16.0, layers: [fill_layer("M8 13.7S2 9.8 2 5.6A3.2 3.2 0 0 1 8 3.8a3.2 3.2 0 0 1 6 1.8c0 4.2-6 8.1-6 8.1Z", 0xFF6B7AFFL)] })))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // the words
+    card.box(fn(c) {
+      c.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
+      set_words(c, fn() { tr("赞助作者") }, 13.0, set_ink, weight=600)
+      c.box(fn(d) {
+        d
+        .words(By(fn() { tr("PinShot 免费使用，觉得好用可以请我喝杯咖啡") }), look={ ..@view.words_plain, size: 11.5, weight: 400, line: 15.5, wrap: true })
+        .ink(Is(0x8C9199FFL))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // the button: warm gold, its sheen
+    card.box(fn(btn) {
+      btn
+      .row(Is(true))
+      .height(Is(Some(28.0)))
+      .padding(Is((10.0, 0.0, 10.0, 0.0)))
+      .gap(Is(4.0))
+      .radius(Is(7.0))
+      .shrink(Is(0.0))
+      .clips(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .ground(By(fn() { mix_rgba(amber, amber_hi, hov()) }))
+      .drawn_off(By(fn() { (hov(), 0.0) }))
+      |> ignore
+      btn.box(fn(t) {
+        t.words(By(fn() { tr("请喝咖啡") }), look={ ..@view.words_plain, size: 12.0, weight: 600, line: 16.0, wrap: false }).ink(Is(0x16120BFFL)) |> ignore
+      })
+      |> ignore
+      btn.box(fn(a) {
+        a.width(Is(Some(12.0))).height(Is(Some(12.0))).picture(Is(Some({ w: 16.0, h: 16.0, layers: [stroke_layer("M5 11L11 5M6 5h5v5", 0x16120BFFL, 1.8)] }))) |> ignore
+      })
+      |> ignore
+      btn.box(fn(s) {
+        s
+        .over(Is(true))
+        .points(Is(false))
+        .width(Is(Some(36.0)))
+        .alpha(By(fn() {
+          let t = sheen.shown(s)
+          if t <= 0.0 || t >= 1.0 { 0.0 } else { 1.0 }
+        }))
+        .drawn_off(By(fn() { (-40.0 + 150.0 * sheen.shown(s), 0.0) }))
+        .picture(Is(Some({ w: 36.0, h: 28.0, layers: [fill_layer("M14 0h10l-12 28h-10z", 0xFFFFFF6BL)] })))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
   })
   |> ignore
 }

@@ -212,6 +212,7 @@ let en_words : Map[String, String] = {
   "赞助作者": "Sponsor",
   "赞助": "Sponsor",
   "PinShot 免费使用，觉得好用可以请我喝杯咖啡": "PinShot is free. If it helps you, buy me a coffee",
+  "请喝咖啡": "Buy a coffee",
   "免费、无广告，不联网、不收集任何数据。": "Free, no ads. Works offline and collects no data.",
   "免费、无广告，不收集任何数据；只在检查更新时联网。": "Free, no ads, collects no data. Goes online only to check for updates.",
   // updates
