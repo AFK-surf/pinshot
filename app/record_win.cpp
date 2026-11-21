@@ -1319,7 +1319,7 @@ struct Mp4Encoder {
     UINT32 bps = pick_bitrate(codec_mode);
     UINT32 max_bps = (UINT32)std::min<uint64_t>((uint64_t)bps * (export_mode ? 125ULL : 140ULL) / 100ULL, 40000000ULL);
     UINT32 gop = (UINT32)(fps * (gop_secs > 0 ? gop_secs : 2));
-    UINT32 qvs = export_mode ? 38 : 25;
+    UINT32 qvs = export_mode ? (codec_mode == 3 ? 20 : 35) : 25;
     ComPtr<IMFAttributes> enc_params;
     if (SUCCEEDED(MFCreateAttributes(&enc_params, 7))) {
       enc_params->SetUINT32(CODECAPI_AVEncCommonMeanBitRate, bps);
@@ -1488,7 +1488,7 @@ struct Mp4Encoder {
     // for each such frame was gigabytes of video memory, 2026-11-21's audit), the pool grown by one where that is not
     // enough (an encoder that keeps more frames than 8 before it gives any back), up to POOL_MAX; past that a
     // recording drops the frame after a frame's time (its slot is caught up by the next), an export waits 10 s.
-    DWORD waited = 0, grow_after = export_mode ? 50 : 2;
+    DWORD waited = 0, yields = 0, grow_after = export_mode ? 4 : 2;
     DWORD most = export_mode ? 10000 : (DWORD)std::max(1, 1000 / std::max(1, fps));
     for (;;) {
       for (int k = 0; k < pool_n; k++) {
@@ -1516,11 +1516,18 @@ struct Mp4Encoder {
       if (waited >= grow_after && pool_n < POOL_MAX) {
         pool_cursor = pool_n++;
         waited = 0;
+        yields = 0;
         continue;
       }
       if (waited >= most) return false;
-      Sleep(1);
-      waited++;
+      if (yields < 4) {
+        SwitchToThread();
+        yields++;
+      } else {
+        Sleep(1);
+        waited++;
+        yields = 0;
+      }
     }
   }
 
@@ -1905,12 +1912,17 @@ struct RecWorkerState {
   SRWLOCK lock = SRWLOCK_INIT;
   std::shared_ptr<WgcFrameHold> last_frame;
   HANDLE first_frame_ev = NULL;
+  HANDLE new_frame_ev = NULL;
   uint64_t frame_seq = 0;
   bool got_frame = false;
   bool stopped = false;
-  RecWorkerState() { first_frame_ev = CreateEventW(NULL, TRUE, FALSE, NULL); }
+  RecWorkerState() {
+    first_frame_ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    new_frame_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+  }
   ~RecWorkerState() {
     if (first_frame_ev) CloseHandle(first_frame_ev);
+    if (new_frame_ev) CloseHandle(new_frame_ev);
   }
   // The last frame let go (closed once no worker holds it) and no other kept from now.
   void stop() {
@@ -2075,6 +2087,7 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
                 }
                 ReleaseSRWLockExclusive(&ws->lock);
                 SetEvent(ws->first_frame_ev);
+                SetEvent(ws->new_frame_ev);
               }
               return S_OK;
             });
@@ -2298,11 +2311,13 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
   int64_t last_elapsed_ms = 0;
   std::vector<uint8_t> cpu_bgra;
   uint64_t last_shaded_seq = 0;
+  uint64_t last_encoded_seq = 0;
   ID3D11Texture2D *cached_hdr_srgb = NULL;
 
   // Sub-millisecond waitable timer keeps 60fps (16.67ms) and 120fps (8.33ms) pacing locked without Sleep jitter.
   HANDLE pace_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
   HANDLE wait_handles[2] = {R.wake_ev, pace_timer};
+  HANDLE grace_handles[2] = {R.wake_ev, ws->new_frame_ev};
 
   rec_trace_vram("rec_start", dev.Get());
   rec_post("recording", 0, 0, 0, 0, 0, mp4.has_audio ? 1 : 0, mp4.codec_name.c_str(), L"", "");
@@ -2359,6 +2374,22 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
       fr = ws->last_frame;
       fr_seq = ws->frame_seq;
       ReleaseSRWLockShared(&ws->lock);
+      // Phase-lock grace wait: if no fresh WGC frame has arrived since the last slot and we are still on time,
+      // wait briefly (2-3ms) for the imminent frame instead of duplicating the previous frame on CFR/VSync beat drift.
+      if (fr_seq == last_encoded_seq && ws->new_frame_ev && elapsed_hns - next_slot_hns < 20000LL) {
+        ResetEvent(ws->new_frame_ev);
+        AcquireSRWLockShared(&ws->lock);
+        fr = ws->last_frame;
+        fr_seq = ws->frame_seq;
+        ReleaseSRWLockShared(&ws->lock);
+        if (fr_seq == last_encoded_seq) {
+          WaitForMultipleObjects(2, grace_handles, FALSE, fps > 60 ? 2 : 3);
+          AcquireSRWLockShared(&ws->lock);
+          fr = ws->last_frame;
+          fr_seq = ws->frame_seq;
+          ReleaseSRWLockShared(&ws->lock);
+        }
+      }
       if (fr && fr->frame) {
         ComPtr<WD3D::IDirect3DSurface> surf;
         ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> acc;
@@ -2426,6 +2457,7 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
     }
 
     if (wrote) {
+      last_encoded_seq = fr_seq;
       frames++;
       slot++;
       int64_t behind_slots = (elapsed_hns - (slot * 10000000LL) / fps) * fps / 10000000LL;
@@ -2540,7 +2572,10 @@ static DWORD export_work(const ExportJob &job);
 
 static DWORD WINAPI export_worker(LPVOID arg) {
   ExportJob *job = (ExportJob *)arg;
+  // High-res 1ms timer prevents Sleep(1) in acquire_nv12 from stalling 15.6ms per full-pool wait during HW transcode.
+  timeBeginPeriod(1);
   DWORD r = export_work(*job);
+  timeEndPeriod(1);
   delete job;
   mf_end();
   return r;
