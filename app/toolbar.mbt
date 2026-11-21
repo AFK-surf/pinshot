@@ -203,6 +203,26 @@ fn main_tool_slot() -> Int {
 }
 
 ///|
+/// The main screenshot toolbar row view, used to hand its exact screen rect to the recording bar on transition.
+let toolbar_main_view : Ref[@view.View?] = Ref(None)
+
+///|
+/// Exact screen rect (x, y, w, h in monitor-local points) of the main screenshot toolbar row, if mounted and laid out.
+fn toolbar_main_rect() -> (Double, Double, Double, Double)? {
+  match toolbar_main_view.val {
+    Some(v) if v.alive() => {
+      let (x, y, w, h) = v.laid_window_now()
+      if w > 20.0 && h > 10.0 {
+        Some((x, y, w, h))
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
 fn toolbar(stage : @view.View) -> Unit {
   stage.box(fn(o) {
     o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
@@ -234,6 +254,8 @@ fn toolbar(stage : @view.View) -> Unit {
       .laid_nowhere(By(fn() { !bar_shown() }))
       |> ignore
       col.box(fn(bar) {
+        toolbar_main_view.val = Some(bar)
+        bar.owns(fn() { toolbar_main_view.val = None }) |> ignore
         bar_panel(bar, bar_corner)
         bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(bar_width()))) |> ignore
         // Left tool group (0..6) with a gliding active-tool pill underneath the icons
