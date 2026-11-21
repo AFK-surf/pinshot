@@ -947,6 +947,8 @@ fn sponsor_card(parent : @view.View) -> Unit {
         }
       }, later=true)
     }
+    // (the next rise called off as the card goes, whatever is pending then)
+    card.owns(fn() { (rise_again.val)() }) |> ignore
     card.reacts(fn() { card.pointed() }, at_start=false, fn(on) {
       if on {
         heart.go_from(card, 0.0, 1.0, @motion.tween(1100.0, ease=Out))
