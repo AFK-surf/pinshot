@@ -480,7 +480,22 @@ static int test_run(void) {
   if (t < 0) t = getenv("PINSHOT_TEST") != NULL;
   return t;
 }
-static const wchar_t *ps_class(void) { return test_run() ? L"PinShot.TestTray" : PS_CLASS; }
+// (PINSHOT_TEST_ID: a test run's own name beside another test run's: its mutex, window class, settings and log)
+static const wchar_t *test_id(void) {
+  static wchar_t id[32];
+  static int done;
+  if (!done) {
+    done = 1;
+    if (!GetEnvironmentVariableW(L"PINSHOT_TEST_ID", id, 32)) id[0] = 0;
+  }
+  return id;
+}
+static const wchar_t *ps_class(void) {
+  static wchar_t cls[64];
+  if (!test_run()) return PS_CLASS;
+  if (!cls[0]) _snwprintf(cls, 63, L"PinShot.TestTray%ls", test_id());
+  return cls;
+}
 #define WM_PS_TRAY (WM_APP + 40)
 #define WM_PS_AGAIN (WM_APP + 41)
 static NOTIFYICONDATAW tray;
@@ -710,7 +725,10 @@ void ps_capture_ask(void) { capture_asked("menu"); }
 // the screen, as its shortcut does; 1 open the settings; 2 quit): this one ends.
 int32_t ps_start(int32_t again) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-  one_run = CreateMutexW(NULL, TRUE, test_run() ? L"Local\\PinShot.TestRun" : L"Local\\PinShot.OneRun");
+  wchar_t run_name[96];
+  _snwprintf(run_name, 95, L"Local\\PinShot.TestRun%ls", test_id());
+  run_name[95] = 0;
+  one_run = CreateMutexW(NULL, TRUE, test_run() ? run_name : L"Local\\PinShot.OneRun");
   if (one_run && GetLastError() == ERROR_ALREADY_EXISTS) {
     HWND other = FindWindowW(ps_class(), NULL);
     if (other) {
@@ -1216,7 +1234,8 @@ moonbit_bytes_t ps_data_dir(void) {
   wchar_t dir[MAX_PATH * 2] = {0};
   if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &p))) {
     // (a test run's settings its own: the person's left as they are)
-    _snwprintf(dir, MAX_PATH * 2 - 1, test_run() ? L"%ls\\PinShot-test" : L"%ls\\PinShot", p);
+    if (test_run()) _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot-test%ls", p, test_id());
+    else _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
     CoTaskMemFree(p);
   }
   CreateDirectoryW(dir, NULL);
@@ -1353,7 +1372,14 @@ void ps_log(moonbit_bytes_t line) {
     _snwprintf(path, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
     CoTaskMemFree(p);
     CreateDirectoryW(path, NULL);
-    wcscat_s(path, MAX_PATH * 2, test_run() ? L"\\pinshot-test.log" : L"\\pinshot.log");
+    if (test_run()) {
+      wchar_t name[64];
+      _snwprintf(name, 63, L"\\pinshot-test%ls.log", test_id());
+      name[63] = 0;
+      wcscat_s(path, MAX_PATH * 2, name);
+    } else {
+      wcscat_s(path, MAX_PATH * 2, L"\\pinshot.log");
+    }
     WIN32_FILE_ATTRIBUTE_DATA a;
     if (GetFileAttributesExW(path, GetFileExInfoStandard, &a) && a.nFileSizeLow > 1024 * 1024) DeleteFileW(path);
   }
