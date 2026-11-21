@@ -390,12 +390,21 @@ fn size_label(stage : @view.View) -> Unit {
   stage.box(fn(o) {
     o.over(Is(true)).presses(Is(false)).lines_up(Is(Some(Start))) |> ignore
     o.box(fn(l) {
+      let badge_in = @motion.NodeWay::new(if @signals.untracked(fn() { clear_part() is Some(_) }) { 1.0 } else { 0.0 })
+      l.reacts(fn() { clear_part() is Some(_) }, at_start=false, fn(on) {
+        if on {
+          badge_in.go_from(l, 0.0, 1.0, @motion.tween(110.0, ease=Out))
+        } else {
+          badge_in.put(0.0)
+        }
+      })
       l
       .row(Is(true))
       .height(Is(Some(22.0)))
       .padding(Is((7.0, 0.0, 7.0, 0.0)))
       .radius(Is(5.0))
       .ground(Is(0x17181BE6L))
+      .alpha(By(fn() { badge_in.shown(l) }))
       .lines_up(Is(Some(Middle)))
       .laid_nowhere(By(fn() { clear_part() is None }))
       .offset(By(fn() {

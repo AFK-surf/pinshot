@@ -366,63 +366,100 @@ fn beauty_layer(stage : @view.View) -> Unit {
 }
 
 ///|
-/// The row under the bar while it is on: the backgrounds, the room, the shadow.
+/// The row under the bar while it is on: the backgrounds, the room, the shadow (with gliding thumbs & tactile feel).
 fn beauty_row(row : @view.View) -> Unit {
   bar_panel(row, style_corner)
   row.row(Is(true)).height(Is(Some(style_height))).gap(Is(bar_gap)) |> ignore
-  for i, name in beauty_back_names {
-    row.box(fn(b) {
-      b
-      // (the wallpaper's only where there is one to be had)
-      .laid_nowhere(By(fn() { i == beauty_wall && wallpaper.get() is None }))
-      .width(Is(Some(28.0)))
-      .height(Is(Some(28.0)))
-      .radius(Is(style_btn_corner))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      .presses(Is(true))
-      .says(By(fn() { Some(@view.said(Radio, label=tr(name), selected=beauty.get().back == i)) }))
-      .on_press(fn() {
-        tip_off()
-        beauty_change(fn(s) { { ..s, back: i } })
-      })
-      .ground(By(fn() {
-        if beauty.get().back == i {
-          0xFFFFFF2EL
-        } else if b.pointed() {
-          0xFFFFFF17L
-        } else {
-          0L
-        }
-      }))
-      |> ignore
-      tip_follows(b, fn() { name }, @view.Bottom)
-      b.box(fn(sw) {
-        sw.width(Is(Some(18.0))).height(Is(Some(18.0))).radius(Is(6.0)).clips(Is(true)).edge(Is((1.0, 0xFFFFFF33L))) |> ignore
-        if i == beauty_wall {
-          // (the wallpaper as it was read this capture, a little of it)
-          sw.pick(fn() { wallpaper.get() }, fn(c, wall) {
-            c.width(Is(Some(18.0))).height(Is(Some(18.0))) |> ignore
-            match wall {
-              Some((key, pw, ph)) => covered(c, key, pw, ph, 18.0, 18.0)
-              None => ()
-            }
-          }, at_once=true)
-        } else {
-          sw.box(fn(g) {
-            g.over(Is(true)).image(By(fn() { Some((beauty_back_key(i), "", 96)) })) |> ignore
-          })
+  row.box(fn(bgs) {
+    bgs.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
+    let bg_views : Map[Int, @view.View] = Map([])
+    sliding_thumb(
+      bgs,
+      fn() { beauty.get().back },
+      bg_views,
+      style_btn_corner,
+      fn() { 0xFFFFFF2EL },
+      extra_watch=fn() { if wallpaper.get() is Some(_) { 1 } else { 0 } },
+    )
+    for i, name in beauty_back_names {
+      bgs.box(fn(b) {
+        bg_views[i] = b
+        let hov = smooth_hover(b, ms=100.0)
+        tactile_press(b, sink_px=0.9)
+        b
+        // (the wallpaper's only where there is one to be had)
+        .laid_nowhere(By(fn() { i == beauty_wall && wallpaper.get() is None }))
+        .width(Is(Some(28.0)))
+        .height(Is(Some(28.0)))
+        .radius(Is(style_btn_corner))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .presses(Is(true))
+        .says(By(fn() { Some(@view.said(Radio, label=tr(name), selected=beauty.get().back == i)) }))
+        .on_press(fn() {
+          tip_off()
+          beauty_change(fn(s) { { ..s, back: i } })
+        })
+        .ground(By(fn() {
+          if beauty.get().back == i {
+            0L
+          } else {
+            mix_rgba(0L, 0xFFFFFF17L, hov())
+          }
+        }))
+        |> ignore
+        tip_follows(b, fn() { name }, @view.Bottom)
+        b.box(fn(sw) {
+          let on_bg = @motion.eased_on(sw, fn() { beauty.get().back == i }, @motion.tween(120.0, ease=Out))
+          sw
+          .width(Is(Some(18.0)))
+          .height(Is(Some(18.0)))
+          .radius(Is(6.0))
+          .clips(Is(true))
+          .scale(By(fn() { 1.0 + 0.06 * on_bg.shown(sw) }))
+          .edge(By(fn() {
+            let p = on_bg.shown(sw)
+            (1.0 + 0.5 * p, mix_rgba(0xFFFFFF33L, 0xFFFFFFFFL, p))
+          }))
           |> ignore
-        }
+          if i == beauty_wall {
+            // (the wallpaper as it was read this capture, a little of it)
+            sw.pick(fn() { wallpaper.get() }, fn(c, wall) {
+              c.width(Is(Some(18.0))).height(Is(Some(18.0))) |> ignore
+              match wall {
+                Some((key, pw, ph)) => covered(c, key, pw, ph, 18.0, 18.0)
+                None => ()
+              }
+            }, at_once=true)
+          } else {
+            sw.box(fn(g) {
+              g.over(Is(true)).image(By(fn() { Some((beauty_back_key(i), "", 96)) })) |> ignore
+            })
+            |> ignore
+          }
+        })
+        |> ignore
       })
       |> ignore
-    })
-    |> ignore
-  }
+    }
+  })
+  |> ignore
   bar_rule_node(row)
-  for i, name in ["小", "中", "大"] {
-    beauty_word_button(row, name, fn() { beauty.get().room == i }, fn() { beauty_change(fn(s) { { ..s, room: i } }) })
-  }
+  row.box(fn(rooms) {
+    rooms.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
+    let rm_views : Map[Int, @view.View] = Map([])
+    sliding_thumb(rooms, fn() { beauty.get().room }, rm_views, style_btn_corner, fn() { 0xFFFFFF2EL })
+    for i, name in ["小", "中", "大"] {
+      beauty_word_button(
+        rooms,
+        name,
+        fn() { beauty.get().room == i },
+        fn() { beauty_change(fn(s) { { ..s, room: i } }) },
+        slot_views=Some((i, rm_views)),
+      )
+    }
+  })
+  |> ignore
   bar_rule_node(row)
   beauty_word_button(row, "阴影", fn() { beauty.get().shadow }, fn() {
     beauty_change(fn(s) { { ..s, shadow: !s.shadow } })
@@ -430,8 +467,24 @@ fn beauty_row(row : @view.View) -> Unit {
 }
 
 ///|
-fn beauty_word_button(row : @view.View, name : String, on : () -> Bool, press : () -> Unit) -> Unit {
+fn beauty_word_button(
+  row : @view.View,
+  name : String,
+  on : () -> Bool,
+  press : () -> Unit,
+  slot_views? : (Int, Map[Int, @view.View])? = None,
+) -> Unit {
   row.box(fn(b) {
+    let has_slider = match slot_views {
+      Some((idx, views)) => {
+        views[idx] = b
+        true
+      }
+      None => false
+    }
+    let hov = smooth_hover(b, ms=100.0)
+    let act = @motion.eased_on(b, on, @motion.tween(120.0, ease=Out))
+    tactile_press(b, sink_px=0.9)
     b
     .height(Is(Some(28.0)))
     .padding(Is((9.0, 0.0, 9.0, 0.0)))
@@ -445,19 +498,18 @@ fn beauty_word_button(row : @view.View, name : String, on : () -> Bool, press : 
       press()
     })
     .ground(By(fn() {
-      if on() {
-        0xFFFFFF2EL
-      } else if b.pointed() {
-        0xFFFFFF17L
-      } else {
+      if has_slider && on() {
         0L
+      } else {
+        let rest = mix_rgba(0L, 0xFFFFFF17L, hov())
+        if has_slider { rest } else { mix_rgba(rest, 0xFFFFFF2EL, act.shown(b)) }
       }
     }))
     |> ignore
     b.box(fn(t) {
       t
       .words(By(fn() { tr(name) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-      .ink(By(fn() { if on() { 0xFFFFFFFFL } else { 0xFFFFFFB3L } }))
+      .ink(By(fn() { mix_rgba(0xFFFFFFB3L, 0xFFFFFFFFL, dmax(act.shown(t), hov() * 0.5)) }))
       |> ignore
     })
     |> ignore

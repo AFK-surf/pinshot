@@ -455,8 +455,13 @@ fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
 }
 
 ///|
-/// Measure the inner content box (including its transparent shadow halo) and resize snugly around its center.
-fn rec_fit_window(focus : Bool) -> Unit {
+let rec_shrink_cancel : Ref[() -> Unit] = Ref(fn() {  })
+
+///|
+/// Measure the inner content box (including its transparent shadow halo) and resize snugly.
+/// When shrinking (e.g. Ready bar -> Recording bar), defer HWND tightening until after the 185ms pill morph finishes
+/// and preserve the left edge so the morphing superellipse never clips or jumps.
+fn rec_fit_window(focus : Bool, allow_shrink? : Bool = false) -> Unit {
   if rec_wid.val == 0 {
     return
   }
@@ -473,15 +478,39 @@ fn rec_fit_window(focus : Bool) -> Unit {
   if (w - pw).abs() <= 1 && (h - ph).abs() <= 1 && !focus {
     return
   }
+  let shrinking = pw > 0 && ph > 0 && (w < pw - 1 || h < ph - 1)
+  if shrinking && !focus && !allow_shrink {
+    (rec_shrink_cancel.val)()
+    match rec_root.val {
+      Some(root) =>
+        rec_shrink_cancel.val = root.at_moment(
+          root.cause_at() + 215.0,
+          fn() {
+            rec_shrink_cancel.val = fn() {  }
+            rec_fit_window(false, allow_shrink=true)
+          },
+          later=true,
+        )
+      None => ()
+    }
+    return
+  }
+  (rec_shrink_cancel.val)()
+  rec_shrink_cancel.val = fn() {  }
   let r = numbers_of(text_of(ps_window_rect(rec_wid.val)))
-  let (cx, top) = if r.length() >= 4 && r[2] > 0.0 && r[3] > 0.0 {
-    ((r[0] + r[2] / 2.0).round().to_int(), r[1].round().to_int())
+  let (x, y) = if r.length() >= 4 && r[2] > 0.0 && r[3] > 0.0 {
+    let cur_x = r[0].round().to_int()
+    let cur_y = r[1].round().to_int()
+    if shrinking {
+      (clampi(cur_x, m.x, m.right() - w), clampi(cur_y, m.y, m.bottom() - h))
+    } else {
+      let cx = (r[0] + r[2] / 2.0).round().to_int()
+      (clampi(cx - w / 2, m.x, m.right() - w), clampi(cur_y, m.y, m.bottom() - h))
+    }
   } else {
     let p = rec_part.val
-    (p.x + p.w / 2, p.bottom())
+    (clampi(p.x + p.w / 2 - w / 2, m.x, m.right() - w), clampi(p.bottom(), m.y, m.bottom() - h))
   }
-  let x = clampi(cx - w / 2, m.x, m.right() - w)
-  let y = clampi(top, m.y, m.bottom() - h)
   rec_placed_size.val = (w, h)
   let do_focus = focus && @ui.env("PINSHOT_TEST_CLOAKED") == ""
   ps_place(rec_wid.val, x, y, w, h, 1, if do_focus { 1 } else { 0 })
@@ -675,6 +704,8 @@ fn rec_gone() -> Unit {
     ps_rec_end()
     ps_capture_open(0)
   }
+  (rec_shrink_cancel.val)()
+  rec_shrink_cancel.val = fn() {  }
   rec_root.val = None
   rec_content.val = None
   rec_placed_size.val = (0, 0)
@@ -736,7 +767,6 @@ fn rec_told(
     "recorded" => {
       ps_capture_open(0)
       rec_load_preview()
-      let long_side = if rec_part.val.w > rec_part.val.h { rec_part.val.w } else { rec_part.val.h }
       @signals.start_batch()
       rec_ms.set(ms)
       rec_frames.set(frames)
@@ -744,9 +774,6 @@ fn rec_told(
       rec_master_audio.set(audio != 0)
       if codec != "" {
         rec_codec.set(codec)
-      }
-      if rec_exp_scale.untracked() > 0 && rec_exp_scale.untracked() >= long_side {
-        rec_exp_scale.set(0)
       }
       rec_phase.set(4)
       @signals.end_batch()
@@ -834,21 +861,6 @@ fn rec_current_est_bytes() -> Double {
 }
 
 ///|
-fn rec_current_est_str() -> String {
-  let fmt = rec_exp_fmt.get()
-  let qual = rec_exp_qual.get()
-  let ms = rec_exp_scale.get()
-  let b = rec_current_est_bytes()
-  if b <= 0.0 {
-    "—"
-  } else if rec_is_direct_copy_for(fmt, qual, ms) {
-    rec_fmt_size(b)
-  } else {
-    "~" + rec_fmt_size(b)
-  }
-}
-
-///|
 fn rec_est_saved_pct() -> Int {
   let orig = rec_master_bytes.get()
   let est = rec_current_est_bytes()
@@ -901,6 +913,8 @@ fn rec_icon_btn(
   bg_lit? : Int64 = 0x2F9BFF29L,
 ) -> Unit {
   row.box(fn(b) {
+    let hov = smooth_hover(b, live=fn() { !dim() })
+    tactile_press(b, live=fn() { !dim() })
     b
     .width(Is(Some(size)))
     .height(Is(Some(size)))
@@ -918,11 +932,9 @@ fn rec_icon_btn(
       } else if b.pressed() {
         0xFFFFFF2EL
       } else if lit() {
-        bg_lit
-      } else if b.pointed() {
-        0xFFFFFF17L
+        mix_rgba(bg_lit, 0x2F9BFF3DL, hov())
       } else {
-        0L
+        mix_rgba(0L, 0xFFFFFF17L, hov())
       }
     }))
     |> ignore
@@ -936,10 +948,8 @@ fn rec_icon_btn(
           0xFFFFFF40L
         } else if lit() {
           tint_lit
-        } else if b.pointed() {
-          0xFFFFFFFFL
         } else {
-          0xD6DAE0FFL
+          mix_rgba(0xD6DAE0FFL, 0xFFFFFFFFL, hov())
         }
       }))
       |> ignore
@@ -964,6 +974,8 @@ fn rec_action_btn(
   dim? : () -> Bool = fn() { false },
 ) -> Unit {
   row.box(fn(b) {
+    let hov = smooth_hover(b, live=fn() { !dim() })
+    tactile_press(b, live=fn() { !dim() })
     b
     .row(Is(true))
     .gap(Is(6.0))
@@ -982,10 +994,8 @@ fn rec_action_btn(
         0xFFFFFF14L
       } else if b.pressed() {
         bg_press
-      } else if b.pointed() {
-        bg_hover
       } else {
-        bg
+        mix_rgba(bg, bg_hover, hov())
       }
     }))
     |> ignore
@@ -1019,15 +1029,22 @@ fn rec_action_btn(
 }
 
 ///|
-/// Crisp white-thumb format tab inside the Studio HUD top strip.
+/// Crisp format tab inside the Studio HUD top strip (white active pill glides underneath via sliding_thumb).
 fn rec_tab_item(
   track : @view.View,
+  key : Int,
+  views : Map[Int, @view.View],
   label_fn : () -> String,
   active : () -> Bool,
   press : () -> Unit,
   done_dot? : () -> Bool = fn() { false },
 ) -> Unit {
   track.box(fn(b) {
+    views[key] = b
+    let live = fn() { rec_phase.get() != 5 }
+    let hov = smooth_hover(b, live~)
+    let act = @motion.eased_on(b, active, @motion.tween(130.0, ease=Out))
+    tactile_press(b, live~, sink_px=0.9)
     b
     .row(Is(true))
     .height(Is(Some(24.0)))
@@ -1049,11 +1066,9 @@ fn rec_tab_item(
     })
     .ground(By(fn() {
       if active() {
-        0xF2F3F6FFL
-      } else if b.pointed() {
-        0xFFFFFF0FL
-      } else {
         0L
+      } else {
+        mix_rgba(0L, 0xFFFFFF0FL, hov())
       }
     }))
     |> ignore
@@ -1062,24 +1077,20 @@ fn rec_tab_item(
       .shrink(Is(0.0))
       .words(By(label_fn), look={ ..@view.words_plain, size: 11.0, weight: 600, line: 14.0, wrap: false })
       .ink(By(fn() {
-        if active() {
-          0x121317FFL
-        } else if b.pointed() {
-          0xD5DAE4FFL
-        } else {
-          0x838998FFL
-        }
+        let rest = mix_rgba(0x838998FFL, 0xD5DAE4FFL, hov())
+        mix_rgba(rest, 0x121317FFL, act.shown(t))
       }))
       |> ignore
     })
     |> ignore
     b.show(done_dot, fn(d) {
+      enter_reveal(d, ms=130.0, dy=0.0, from_scale=0.4)
       d
       .width(Is(Some(4.5)))
       .height(Is(Some(4.5)))
       .shrink(Is(0.0))
       .radius(Is(2.25))
-      .ground(By(fn() { if active() { 0x10B981FFL } else { 0x34D399FFL } }))
+      .ground(By(fn() { mix_rgba(0x34D399FFL, 0x10B981FFL, act.shown(d)) }))
       |> ignore
     }, at_once=true)
   })
@@ -1087,15 +1098,22 @@ fn rec_tab_item(
 }
 
 ///|
-/// Borderless lightweight inline option pill (no heavy recessed track around rows).
+/// Borderless lightweight inline option pill (glass active pill glides smoothly underneath via sliding_thumb).
 fn rec_inline_opt(
   row : @view.View,
+  key : Int,
+  views : Map[Int, @view.View],
   label_fn : () -> String,
   active : () -> Bool,
   press : () -> Unit,
   done_dot? : () -> Bool = fn() { false },
 ) -> Unit {
   row.box(fn(b) {
+    views[key] = b
+    let live = fn() { rec_phase.get() != 5 }
+    let hov = smooth_hover(b, live~)
+    let act = @motion.eased_on(b, active, @motion.tween(130.0, ease=Out))
+    tactile_press(b, live~, sink_px=0.9)
     b
     .row(Is(true))
     .height(Is(Some(24.0)))
@@ -1117,11 +1135,9 @@ fn rec_inline_opt(
     })
     .ground(By(fn() {
       if active() {
-        0xFFFFFF1CL
-      } else if b.pointed() {
-        0xFFFFFF0CL
-      } else {
         0L
+      } else {
+        mix_rgba(0L, 0xFFFFFF0CL, hov())
       }
     }))
     |> ignore
@@ -1130,18 +1146,14 @@ fn rec_inline_opt(
       .shrink(Is(0.0))
       .words(By(label_fn), look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
       .ink(By(fn() {
-        if active() {
-          0xF4F6FAFFL
-        } else if b.pointed() {
-          0xCFD4DEFFL
-        } else {
-          0x838998FFL
-        }
+        let rest = mix_rgba(0x838998FFL, 0xCFD4DEFFL, hov())
+        mix_rgba(rest, 0xF4F6FAFFL, act.shown(t))
       }))
       |> ignore
     })
     |> ignore
     b.show(done_dot, fn(d) {
+      enter_reveal(d, ms=130.0, dy=0.0, from_scale=0.4)
       d.width(Is(Some(4.5))).height(Is(Some(4.5))).shrink(Is(0.0)).radius(Is(2.25)).ground(Is(0x34D399FFL)) |> ignore
     }, at_once=true)
   })
@@ -1149,8 +1161,13 @@ fn rec_inline_opt(
 }
 
 ///|
-/// Airy horizontal property row: muted label left, lightweight borderless inline pills right.
-fn rec_prop_row(parent : @view.View, label_key : String, build : (@view.View) -> Unit) -> Unit {
+/// Airy horizontal property row: muted label left, lightweight borderless inline pills right with gliding thumb.
+fn rec_prop_row(
+  parent : @view.View,
+  label_key : String,
+  active_key : () -> Int,
+  build : (@view.View, Map[Int, @view.View]) -> Unit,
+) -> Unit {
   parent.box(fn(r) {
     r.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
     r.box(fn(t) {
@@ -1164,7 +1181,16 @@ fn rec_prop_row(parent : @view.View, label_key : String, build : (@view.View) ->
     r.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
     r.box(fn(opts) {
       opts.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
-      build(opts)
+      let views : Map[Int, @view.View] = Map([])
+      sliding_thumb(
+        opts,
+        active_key,
+        views,
+        6.5,
+        fn() { 0xFFFFFF1CL },
+        extra_watch=fn() { rec_exports_ver.get() + (if english.get() { 1000 } else { 0 }) },
+      )
+      build(opts, views)
     })
     |> ignore
   })
@@ -1232,248 +1258,269 @@ fn rec_window(root : @view.View) -> Unit {
       .lines_up(Is(Some(Start)))
       |> ignore
 
-      // ---- Phases 0..3: Concentric superellipse floating recording bar (matches toolbar.mbt) ----
-      content.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
-        bar_panel(bar, bar_corner)
-        bar
-        .shadow(Is((9.0, 3.0, 0x00000058L)))
-        .row(Is(true))
-        .gap(Is(bar_gap))
-        .height(Is(Some(bar_height)))
+      // Unified morphing superellipse shell: smoothly reshapes across Ready bar -> Recording bar -> Finalizing pill -> Studio HUD card
+      content.box(fn(shell) {
+        let is_exp = fn() { rec_phase.get() >= 4 }
+        let exp_p = @motion.eased_on(shell, is_exp, @motion.tween(185.0, ease=Out))
+        let rec_moves_ref : Ref[@motion.Moves?] = Ref(None)
+        let rec_parts : Array[@view.View] = []
+        let track_part = fn(v : @view.View) {
+          match rec_moves_ref.val {
+            Some(m) => m.moves_with(v)
+            None => rec_parts.push(v)
+          }
+        }
+        enter_reveal(shell, ms=145.0, dy=4.0, from_scale=0.975)
+        shell
         .shrink(Is(0.0))
-        .padding(Is((10.0, bar_pad, bar_pad, bar_pad)))
-        .lines_up(Is(Some(Middle)))
+        .radius(By(fn() { if is_exp() { 18.0 } else { bar_corner } }))
+        .ground(By(fn() { mix_rgba(0x1E1F23F7L, 0x141519F8L, exp_p.shown(shell)) }))
+        .edge(By(fn() { (1.0, mix_rgba(0xFFFFFF1FL, 0xFFFFFF17L, exp_p.shown(shell))) }))
+        .shadow(By(fn() { if is_exp() { (11.0, 4.0, 0x0000007AL) } else { (9.0, 3.0, 0x00000058L) } }))
         |> ignore
 
-        // Phase 3: Finalizing master
-        bar.show(fn() { rec_phase.get() == 3 }, fn(r) {
-          r
+        // ---- Phases 0..3: Concentric superellipse floating recording bar (matches toolbar.mbt) ----
+        shell.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
+          bar
           .row(Is(true))
-          .min_width(Is(Some(180.0)))
-          .padding(Is((6.0, 0.0, 10.0, 0.0)))
+          .gap(Is(bar_gap))
+          .height(Is(Some(bar_height)))
           .shrink(Is(0.0))
+          .padding(Is((10.0, bar_pad, bar_pad, bar_pad)))
           .lines_up(Is(Some(Middle)))
-          .lies_along(Is(Middle))
           |> ignore
-          r.box(fn(w) {
-            w
-            .shrink(Is(0.0))
-            .words(By(fn() { tr("正在收尾录屏…") }), look={
-              ..@view.words_plain,
-              size: 13.0,
-              weight: 500,
-              line: 18.0,
-              wrap: false,
-            })
-            .ink(Is(0xD6DAE0FFL))
-            |> ignore
-          })
-          |> ignore
-        }, at_once=true)
 
-        // Phases 0, 1, 2: Ready / Recording / Paused
-        bar.show(fn() { rec_phase.get() <= 2 }, fn(r) {
-          r.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
-
-          // Draggable left status + tabular timer
-          r.box(fn(drag) {
-            drag
+          // Phase 3: Finalizing master
+          bar.show(fn() { rec_phase.get() == 3 }, fn(r) {
+            enter_reveal(r, ms=130.0, dy=0.0, from_scale=0.97)
+            r
             .row(Is(true))
-            .gap(Is(7.0))
-            .height(Is(Some(bar_button)))
+            .min_width(Is(Some(180.0)))
+            .padding(Is((6.0, 0.0, 10.0, 0.0)))
             .shrink(Is(0.0))
-            .padding(Is((0.0, 0.0, 4.0, 0.0)))
             .lines_up(Is(Some(Middle)))
-            .presses(Is(true))
-            .on_drag(fn(d) {
-              if d.kind == Down && rec_wid.val != 0 {
-                ps_move_window(rec_wid.val)
-              }
-            }, whole=true)
+            .lies_along(Is(Middle))
             |> ignore
-            drag.box(fn(dot) {
-              dot
-              .width(Is(Some(8.0)))
-              .height(Is(Some(8.0)))
+            r.box(fn(w) {
+              w
               .shrink(Is(0.0))
-              .radius(Is(4.0))
-              .ground(By(fn() {
-                match rec_phase.get() {
-                  1 => 0xEF4444FFL
-                  2 => 0xF5A524FFL
-                  _ => accent
-                }
-              }))
+              .words(By(fn() { tr("正在收尾录屏…") }), look={
+                ..@view.words_plain,
+                size: 13.0,
+                weight: 500,
+                line: 18.0,
+                wrap: false,
+              })
+              .ink(Is(0xD6DAE0FFL))
               |> ignore
             })
             |> ignore
-            // Fixed min-width + tabular theme guarantees 0px horizontal jitter on ticks
-            drag.box(fn(tm_box) {
-              tm_box.min_width(Is(Some(40.0))).shrink(Is(0.0)).lines_up(Is(Some(Start))) |> ignore
-              tm_box.box(fn(tm) {
-                tm
+          }, at_once=true)
+
+          // Phases 0, 1, 2: Ready / Recording / Paused
+          bar.show(fn() { rec_phase.get() <= 2 }, fn(r) {
+            r.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+
+            // Draggable left status + tabular timer
+            r.box(fn(drag) {
+              track_part(drag)
+              drag
+              .row(Is(true))
+              .gap(Is(7.0))
+              .height(Is(Some(bar_button)))
+              .shrink(Is(0.0))
+              .padding(Is((0.0, 0.0, 4.0, 0.0)))
+              .lines_up(Is(Some(Middle)))
+              .presses(Is(true))
+              .on_drag(fn(d) {
+                if d.kind == Down && rec_wid.val != 0 {
+                  ps_move_window(rec_wid.val)
+                }
+              }, whole=true)
+              |> ignore
+              drag.box(fn(dot) {
+                let pulse = @motion.breathe_alpha(
+                  dot,
+                  period_ms=1100.0,
+                  low=0.35,
+                  still=fn() { rec_phase.get() != 1 },
+                )
+                dot
+                .width(Is(Some(8.0)))
+                .height(Is(Some(8.0)))
                 .shrink(Is(0.0))
-                .words(By(fn() { rec_fmt_time(rec_ms.get()) }), look={
-                  ..@view.words_plain,
-                  size: 13.0,
-                  weight: 600,
-                  line: 18.0,
-                  wrap: false,
-                })
-                .ink(By(fn() { if rec_phase.get() == 0 { 0xB8BDC6FFL } else { 0xFFFFFFFFL } }))
+                .radius(Is(4.0))
+                .alpha(By(pulse))
+                .ground(By(fn() {
+                  match rec_phase.get() {
+                    1 => 0xEF4444FFL
+                    2 => 0xF5A524FFL
+                    _ => accent
+                  }
+                }))
+                |> ignore
+              })
+              |> ignore
+              // Fixed min-width + odometer rolling tabular timer
+              drag.box(fn(tm_box) {
+                tm_box.min_width(Is(Some(40.0))).shrink(Is(0.0)).lines_up(Is(Some(Start))) |> ignore
+                rolling_label(
+                  tm_box,
+                  fn() { (rec_ms.get() / 1000).to_double() },
+                  fn(sec) { rec_fmt_time(sec.to_int() * 1000) },
+                  13.0,
+                  18.0,
+                  600,
+                  fn() { if rec_phase.get() == 0 { 0xB8BDC6FFL } else { 0xFFFFFFFFL } },
+                )
+              })
+              |> ignore
+            })
+            |> ignore
+
+            // FPS / codec pill (clickable in Ready to switch 30 / 60fps; persisted in settings.json)
+            r.box(fn(fps_b) {
+              track_part(fps_b)
+              let hov = smooth_hover(fps_b, live=fn() { rec_phase.get() == 0 })
+              tactile_press(fps_b, live=fn() { rec_phase.get() == 0 }, sink_px=0.9)
+              fps_b
+              .height(Is(Some(26.0)))
+              .shrink(Is(0.0))
+              .padding(Is((8.0, 0.0, 8.0, 0.0)))
+              .radius(Is(style_btn_corner))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .presses(Is(true))
+              .cursor(By(fn() { if rec_phase.get() == 0 { Some(Hand) } else { None } }))
+              .says(By(fn() { Some(@view.said(Button, label="\{rec_fps.get()}fps")) }))
+              .on_press(fn() {
+                if rec_phase.untracked() == 0 {
+                  rec_fps.set(if rec_fps.untracked() == 30 { 60 } else { 30 })
+                  save_settings()
+                }
+              })
+              .ground(By(fn() { mix_rgba(0xFFFFFF10L, 0xFFFFFF1CL, hov()) }))
+              |> ignore
+              fps_b.box(fn(w) {
+                w
+                .shrink(Is(0.0))
+                .words(
+                  By(fn() {
+                    if rec_phase.get() == 2 {
+                      tr("已暂停")
+                    } else if rec_phase.get() == 1 {
+                      "\{rec_short_codec()}·\{rec_fps.get()}"
+                    } else {
+                      "\{rec_fps.get()}fps"
+                    }
+                  }),
+                  look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false },
+                )
+                .ink(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0xB8BDC6FFL } }))
                 |> ignore
               })
               |> ignore
             })
             |> ignore
-          })
-          |> ignore
 
-          // FPS / codec pill (clickable in Ready to switch 30 / 60fps; persisted in settings.json)
-          r.box(fn(fps_b) {
-            fps_b
-            .height(Is(Some(26.0)))
-            .shrink(Is(0.0))
-            .padding(Is((8.0, 0.0, 8.0, 0.0)))
-            .radius(Is(style_btn_corner))
-            .lines_up(Is(Some(Middle)))
-            .lies_along(Is(Middle))
-            .presses(Is(true))
-            .cursor(By(fn() { if rec_phase.get() == 0 { Some(Hand) } else { None } }))
-            .says(By(fn() { Some(@view.said(Button, label="\{rec_fps.get()}fps")) }))
-            .on_press(fn() {
-              if rec_phase.untracked() == 0 {
-                rec_fps.set(if rec_fps.untracked() == 30 { 60 } else { 30 })
-                save_settings()
-              }
-            })
-            .ground(By(fn() {
-              if rec_phase.get() == 0 && fps_b.pointed() {
-                0xFFFFFF1CL
-              } else {
-                0xFFFFFF10L
-              }
-            }))
-            |> ignore
-            fps_b.box(fn(w) {
-              w
-              .shrink(Is(0.0))
-              .words(
-                By(fn() {
-                  if rec_phase.get() == 2 {
-                    tr("已暂停")
-                  } else if rec_phase.get() == 1 {
-                    "\{rec_short_codec()}·\{rec_fps.get()}"
-                  } else {
-                    "\{rec_fps.get()}fps"
-                  }
-                }),
-                look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false },
+            // Pre-recording switches (System audio, Cursor, Click & keycap overlay): hidden once recording starts
+            r.show(fn() { rec_phase.get() == 0 }, fn(opts) {
+              opts.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+              rec_icon_btn(
+                opts,
+                fn() { if rec_audio.get() { "speaker" } else { "speaker-off" } },
+                fn() { if rec_audio.get() { tr("系统声音：开") } else { tr("系统声音：关") } },
+                fn() { rec_audio.get() },
+                fn() {
+                  rec_audio.set(!rec_audio.untracked())
+                  save_settings()
+                },
               )
-              .ink(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0xB8BDC6FFL } }))
-              |> ignore
+              rec_icon_btn(
+                opts,
+                fn() { "select" },
+                fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
+                fn() { rec_cursor.get() },
+                fn() {
+                  rec_cursor.set(!rec_cursor.untracked())
+                  save_settings()
+                },
+              )
+              rec_icon_btn(
+                opts,
+                fn() { "keycap" },
+                fn() { if rec_input.get() { tr("按键与点击显示：开") } else { tr("按键与点击显示：关") } },
+                fn() { rec_input.get() },
+                fn() {
+                  let next = !rec_input.untracked()
+                  rec_input.set(next)
+                  ps_rec_input_show(if next { 1 } else { 0 })
+                  save_settings()
+                },
+              )
+            }, at_once=true)
+
+            bar_rule_node(r)
+            r.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(pb) {
+              enter_reveal(pb, ms=130.0, dy=0.0, from_scale=0.92)
+              pb.shrink(Is(0.0)) |> ignore
+              rec_icon_btn(
+                pb,
+                fn() { if rec_phase.get() == 2 { "play" } else { "pause" } },
+                fn() { if rec_phase.get() == 2 { tr("继续 Space") } else { tr("暂停 Space") } },
+                fn() { rec_phase.get() == 2 },
+                rec_toggle_pause,
+                tint_lit=0xF5A524FFL,
+                bg_lit=0xF5A52426L,
+              )
+            }, at_once=true)
+            // Right-edge action pair (constant width -> rides lock-step 4pt inside the morphing pill right edge!)
+            r.box(fn(acts) {
+              track_part(acts)
+              acts.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+              rec_icon_btn(acts, fn() { "close" }, fn() { tr("取消 Esc") }, fn() { false }, rec_cancel)
+              acts.show(fn() { rec_phase.get() == 0 }, fn(sb) {
+                sb.shrink(Is(0.0)) |> ignore
+                rec_action_btn(
+                  sb,
+                  Some(0xFFFFFFFFL),
+                  None,
+                  fn() { tr("录制") },
+                  0xE5484DFFL,
+                  0xF0585DFFL,
+                  0xCC3A3FFFL,
+                  rec_start_now,
+                )
+              }, at_once=true)
+              acts.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(sb) {
+                sb.shrink(Is(0.0)) |> ignore
+                rec_action_btn(
+                  sb,
+                  None,
+                  Some("stop"),
+                  fn() { tr("停止") },
+                  0xE5484DFFL,
+                  0xF0585DFFL,
+                  0xCC3A3FFFL,
+                  rec_finish_capture,
+                )
+              }, at_once=true)
             })
             |> ignore
-          })
-          |> ignore
-
-          // Pre-recording switches (System audio, Cursor, Click & keycap overlay): hidden once recording starts
-          r.show(fn() { rec_phase.get() == 0 }, fn(opts) {
-            opts.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
-            rec_icon_btn(
-              opts,
-              fn() { if rec_audio.get() { "speaker" } else { "speaker-off" } },
-              fn() { if rec_audio.get() { tr("系统声音：开") } else { tr("系统声音：关") } },
-              fn() { rec_audio.get() },
-              fn() {
-                rec_audio.set(!rec_audio.untracked())
-                save_settings()
-              },
-            )
-            rec_icon_btn(
-              opts,
-              fn() { "select" },
-              fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
-              fn() { rec_cursor.get() },
-              fn() {
-                rec_cursor.set(!rec_cursor.untracked())
-                save_settings()
-              },
-            )
-            rec_icon_btn(
-              opts,
-              fn() { "keycap" },
-              fn() { if rec_input.get() { tr("按键与点击显示：开") } else { tr("按键与点击显示：关") } },
-              fn() { rec_input.get() },
-              fn() {
-                let next = !rec_input.untracked()
-                rec_input.set(next)
-                ps_rec_input_show(if next { 1 } else { 0 })
-                save_settings()
-              },
-            )
-          }, at_once=true)
-
-          bar_rule_node(r)
-
-          // Pause / Resume (recording or paused)
-          r.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(pb) {
-            pb.shrink(Is(0.0)) |> ignore
-            rec_icon_btn(
-              pb,
-              fn() { if rec_phase.get() == 2 { "play" } else { "pause" } },
-              fn() { if rec_phase.get() == 2 { tr("继续 Space") } else { tr("暂停 Space") } },
-              fn() { rec_phase.get() == 2 },
-              rec_toggle_pause,
-              tint_lit=0xF5A524FFL,
-              bg_lit=0xF5A52426L,
-            )
-          }, at_once=true)
-          rec_icon_btn(r, fn() { "close" }, fn() { tr("取消 Esc") }, fn() { false }, rec_cancel)
-          // Start (Ready) or Stop (Recording / Paused)
-          r.show(fn() { rec_phase.get() == 0 }, fn(sb) {
-            sb.shrink(Is(0.0)) |> ignore
-            rec_action_btn(
-              sb,
-              Some(0xFFFFFFFFL),
-              None,
-              fn() { tr("录制") },
-              0xE5484DFFL,
-              0xF0585DFFL,
-              0xCC3A3FFFL,
-              rec_start_now,
-            )
-          }, at_once=true)
-          r.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(sb) {
-            sb.shrink(Is(0.0)) |> ignore
-            rec_action_btn(
-              sb,
-              None,
-              Some("stop"),
-              fn() { tr("停止") },
-              0xE5484DFFL,
-              0xF0585DFFL,
-              0xCC3A3FFFL,
-              rec_finish_capture,
-            )
           }, at_once=true)
         }, at_once=true)
-      }, at_once=true)
 
-      // ---- Phases 4..7: Landscape Studio HUD floating export card (456 x ~204pt) ----
-      content.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
-        exp
-        .row(Is(true))
-        .gap(Is(12.0))
-        .width(Is(Some(456.0)))
-        .shrink(Is(0.0))
-        .padding(Is((10.0, 10.0, 10.0, 10.0)))
-        .radius(Is(18.0))
-        .ground(Is(0x141519F8L))
-        .edge(Is((1.0, 0xFFFFFF17L)))
-        .shadow(Is((11.0, 4.0, 0x0000007AL)))
-        .lines_up(Is(Some(Middle)))
-        |> ignore
+        // ---- Phases 4..7: Landscape Studio HUD floating export card (456 x ~204pt) ----
+        shell.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
+          enter_reveal(exp, ms=165.0, dy=0.0, from_scale=0.985)
+          exp
+          .row(Is(true))
+          .gap(Is(12.0))
+          .width(Is(Some(456.0)))
+          .shrink(Is(0.0))
+          .padding(Is((10.0, 10.0, 10.0, 10.0)))
+          .lines_up(Is(Some(Middle)))
+          |> ignore
 
         // 1. Left: Rounded full-bleed first-frame clip card (158 x 184pt, draggable)
         exp.box(fn(left) {
@@ -1609,8 +1656,23 @@ fn rec_window(root : @view.View) -> Unit {
               .lines_up(Is(Some(Middle)))
               .shrink(Is(0.0))
               |> ignore
+              let fmt_views : Map[Int, @view.View] = Map([])
+              sliding_thumb(
+                tabs,
+                fn() { rec_exp_fmt.get() },
+                fmt_views,
+                6.5,
+                fn() { 0xF2F3F6FFL },
+                extra_watch=fn() {
+                  rec_exports_ver.get() +
+                  (if rec_has_av1.get() { 1000 } else { 0 }) +
+                  (if english.get() { 10000 } else { 0 })
+                },
+              )
               rec_tab_item(
                 tabs,
+                0,
+                fmt_views,
                 fn() { "H.265" },
                 fn() { rec_exp_fmt.get() == 0 },
                 fn() { rec_exp_fmt.set(0) },
@@ -1618,6 +1680,8 @@ fn rec_window(root : @view.View) -> Unit {
               )
               rec_tab_item(
                 tabs,
+                1,
+                fmt_views,
                 fn() { "H.264" },
                 fn() { rec_exp_fmt.get() == 1 },
                 fn() { rec_exp_fmt.set(1) },
@@ -1627,6 +1691,8 @@ fn rec_window(root : @view.View) -> Unit {
                 av1_slot.row(Is(true)).shrink(Is(0.0)) |> ignore
                 rec_tab_item(
                   av1_slot,
+                  3,
+                  fmt_views,
                   fn() { "AV1" },
                   fn() { rec_exp_fmt.get() == 3 },
                   fn() { rec_exp_fmt.set(3) },
@@ -1635,6 +1701,8 @@ fn rec_window(root : @view.View) -> Unit {
               }, at_once=true)
               rec_tab_item(
                 tabs,
+                2,
+                fmt_views,
                 fn() { "GIF" },
                 fn() { rec_exp_fmt.get() == 2 },
                 fn() { rec_exp_fmt.set(2) },
@@ -1658,6 +1726,8 @@ fn rec_window(root : @view.View) -> Unit {
             |> ignore
 
             top.box(fn(cb) {
+              let hov = smooth_hover(cb)
+              tactile_press(cb, sink_px=0.9)
               cb
               .width(Is(Some(24.0)))
               .height(Is(Some(24.0)))
@@ -1669,22 +1739,14 @@ fn rec_window(root : @view.View) -> Unit {
               .cursor(Is(Some(Hand)))
               .says(By(fn() { Some(@view.said(Button, label=tr("关闭 Esc"))) }))
               .on_press(rec_close)
-              .ground(By(fn() {
-                if cb.pressed() {
-                  0xFFFFFF1EL
-                } else if cb.pointed() {
-                  0xFFFFFF12L
-                } else {
-                  0L
-                }
-              }))
+              .ground(By(fn() { if cb.pressed() { 0xFFFFFF1EL } else { mix_rgba(0L, 0xFFFFFF12L, hov()) } }))
               |> ignore
               cb.box(fn(g) {
                 g
                 .width(Is(Some(11.5)))
                 .height(Is(Some(11.5)))
                 .picture(Is(Some(glyph("close"))))
-                .tint(By(fn() { if cb.pointed() { 0xFFFFFFFFL } else { 0x737988FFL } }))
+                .tint(By(fn() { mix_rgba(0x737988FFL, 0xFFFFFFFFL, hov()) }))
                 |> ignore
               })
               |> ignore
@@ -1699,10 +1761,13 @@ fn rec_window(root : @view.View) -> Unit {
 
             // Quality row (MP4: H.265 / H.264 / AV1)
             rows.show(fn() { rec_exp_fmt.get() != 2 }, fn(qwrap) {
+              enter_reveal(qwrap, ms=125.0, dy=3.0, from_scale=0.99)
               qwrap.shrink(Is(0.0)) |> ignore
-              rec_prop_row(qwrap, "画质", fn(opts) {
+              rec_prop_row(qwrap, "画质", fn() { rec_exp_qual.get() }, fn(opts, views) {
                 rec_inline_opt(
                   opts,
+                  0,
+                  views,
                   fn() { tr("原画") },
                   fn() { rec_exp_qual.get() == 0 },
                   fn() { rec_exp_qual.set(0) },
@@ -1710,6 +1775,8 @@ fn rec_window(root : @view.View) -> Unit {
                 )
                 rec_inline_opt(
                   opts,
+                  1,
+                  views,
                   fn() { tr("高") },
                   fn() { rec_exp_qual.get() == 1 },
                   fn() { rec_exp_qual.set(1) },
@@ -1717,6 +1784,8 @@ fn rec_window(root : @view.View) -> Unit {
                 )
                 rec_inline_opt(
                   opts,
+                  2,
+                  views,
                   fn() { tr("标准") },
                   fn() { rec_exp_qual.get() == 2 },
                   fn() { rec_exp_qual.set(2) },
@@ -1724,6 +1793,8 @@ fn rec_window(root : @view.View) -> Unit {
                 )
                 rec_inline_opt(
                   opts,
+                  3,
+                  views,
                   fn() { tr("小体积") },
                   fn() { rec_exp_qual.get() == 3 },
                   fn() { rec_exp_qual.set(3) },
@@ -1734,10 +1805,13 @@ fn rec_window(root : @view.View) -> Unit {
 
             // FPS row (GIF)
             rows.show(fn() { rec_exp_fmt.get() == 2 }, fn(fwrap) {
+              enter_reveal(fwrap, ms=125.0, dy=3.0, from_scale=0.99)
               fwrap.shrink(Is(0.0)) |> ignore
-              rec_prop_row(fwrap, "帧率", fn(opts) {
+              rec_prop_row(fwrap, "帧率", fn() { rec_exp_gif_fps.get() }, fn(opts, views) {
                 rec_inline_opt(
                   opts,
+                  10,
+                  views,
                   fn() { "10 fps" },
                   fn() { rec_exp_gif_fps.get() == 10 },
                   fn() { rec_exp_gif_fps.set(10) },
@@ -1745,6 +1819,8 @@ fn rec_window(root : @view.View) -> Unit {
                 )
                 rec_inline_opt(
                   opts,
+                  15,
+                  views,
                   fn() { "15 fps" },
                   fn() { rec_exp_gif_fps.get() == 15 },
                   fn() { rec_exp_gif_fps.set(15) },
@@ -1752,6 +1828,8 @@ fn rec_window(root : @view.View) -> Unit {
                 )
                 rec_inline_opt(
                   opts,
+                  20,
+                  views,
                   fn() { "20 fps" },
                   fn() { rec_exp_gif_fps.get() == 20 },
                   fn() { rec_exp_gif_fps.set(20) },
@@ -1761,9 +1839,11 @@ fn rec_window(root : @view.View) -> Unit {
             }, at_once=true)
 
             // Size row: Proportional scaling (100% / 75% / 50%) — always clickable on every recording!
-            rec_prop_row(rows, "尺寸", fn(opts) {
+            rec_prop_row(rows, "尺寸", fn() { rec_exp_scale.get() }, fn(opts, views) {
               rec_inline_opt(
                 opts,
+                0,
+                views,
                 fn() { "100%" },
                 fn() { rec_exp_scale.get() == 0 },
                 fn() { rec_exp_scale.set(0) },
@@ -1771,6 +1851,8 @@ fn rec_window(root : @view.View) -> Unit {
               )
               rec_inline_opt(
                 opts,
+                75,
+                views,
                 fn() { "75%" },
                 fn() { rec_exp_scale.get() == 75 },
                 fn() { rec_exp_scale.set(75) },
@@ -1778,6 +1860,8 @@ fn rec_window(root : @view.View) -> Unit {
               )
               rec_inline_opt(
                 opts,
+                50,
+                views,
                 fn() { "50%" },
                 fn() { rec_exp_scale.get() == 50 },
                 fn() { rec_exp_scale.set(50) },
@@ -1800,21 +1884,29 @@ fn rec_window(root : @view.View) -> Unit {
 
               // Phase 4 (Ready)
               st.show(fn() { rec_phase.get() == 4 }, fn(rdy) {
+                enter_reveal(rdy, ms=130.0, dy=3.0, from_scale=0.985)
                 rdy.gap(Is(1.5)).lines_up(Is(Some(Start))) |> ignore
-                rdy.box(fn(big) {
-                  big
-                  .shrink(Is(0.0))
-                  .words(By(rec_current_est_str), look={
-                    ..@view.words_plain,
-                    size: 13.5,
-                    weight: 600,
-                    line: 17.0,
-                    wrap: false,
-                  })
-                  .ink(Is(0xF2F4F8FFL))
-                  |> ignore
-                })
-                |> ignore
+                rolling_label(
+                  rdy,
+                  rec_current_est_bytes,
+                  fn(b) {
+                    if b <= 0.0 {
+                      "—"
+                    } else if rec_is_direct_copy_for(
+                      rec_exp_fmt.untracked(),
+                      rec_exp_qual.untracked(),
+                      rec_exp_scale.untracked(),
+                    ) {
+                      rec_fmt_size(b)
+                    } else {
+                      "~" + rec_fmt_size(b)
+                    }
+                  },
+                  13.5,
+                  17.0,
+                  600,
+                  fn() { 0xF2F4F8FFL },
+                )
                 rdy.box(fn(sub) {
                   sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))) |> ignore
                   sub.box(fn(t1) {
@@ -1870,7 +1962,12 @@ fn rec_window(root : @view.View) -> Unit {
 
               // Phase 5 (Encoding)
               st.show(fn() { rec_phase.get() == 5 }, fn(enc) {
+                enter_reveal(enc, ms=130.0, dy=3.0, from_scale=0.985)
                 enc.gap(Is(5.0)).lines_up(Is(Some(Start))) |> ignore
+                let prog_w = @motion.NodeWay::new(dmax(4.0, 104.0 * rec_exp_pct.untracked().to_double() / 100.0))
+                enc.reacts(fn() { rec_exp_pct.get() }, at_start=false, fn(p) {
+                  prog_w.go_ms(enc, dmax(4.0, 104.0 * p.to_double() / 100.0), 160.0)
+                })
                 enc.box(fn(t) {
                   t
                   .shrink(Is(0.0))
@@ -1891,9 +1988,12 @@ fn rec_window(root : @view.View) -> Unit {
                   bar_bg.box(fn(bar_fg) {
                     bar_fg
                     .height(Is(Some(3.5)))
-                    .width(By(fn() { Some(dmax(4.0, 104.0 * rec_exp_pct.get().to_double() / 100.0)) }))
+                    .width(Is(Some(0.0)))
                     .radius(Is(1.75))
                     .ground(Is(0xF2F3F6FFL))
+                    .ground_drawn(By(fn() {
+                      { dx: 0.0, dy: 0.0, dw: prog_w.shown(bar_fg), dh: 0.0, corners: None }
+                    }))
                     |> ignore
                   })
                   |> ignore
@@ -1903,21 +2003,17 @@ fn rec_window(root : @view.View) -> Unit {
 
               // Phase 6 (Exported / Reused)
               st.show(fn() { rec_phase.get() == 6 }, fn(done_v) {
+                enter_reveal(done_v, ms=140.0, dy=3.0, from_scale=0.985)
                 done_v.gap(Is(1.5)).lines_up(Is(Some(Start))) |> ignore
-                done_v.box(fn(big) {
-                  big
-                  .shrink(Is(0.0))
-                  .words(By(fn() { rec_fmt_size(rec_exp_bytes.get()) }), look={
-                    ..@view.words_plain,
-                    size: 13.5,
-                    weight: 600,
-                    line: 17.0,
-                    wrap: false,
-                  })
-                  .ink(Is(0x4ADE80FFL))
-                  |> ignore
-                })
-                |> ignore
+                rolling_label(
+                  done_v,
+                  fn() { rec_exp_bytes.get() },
+                  rec_fmt_size,
+                  13.5,
+                  17.0,
+                  600,
+                  fn() { 0x4ADE80FFL },
+                )
                 done_v.box(fn(sub) {
                   sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))) |> ignore
                   sub.box(fn(t) {
@@ -1932,6 +2028,7 @@ fn rec_window(root : @view.View) -> Unit {
                   })
                   |> ignore
                   sub.box(fn(op) {
+                    let hov = smooth_hover(op)
                     op
                     .shrink(Is(0.0))
                     .presses(Is(true))
@@ -1954,7 +2051,7 @@ fn rec_window(root : @view.View) -> Unit {
                         line: 13.0,
                         wrap: false,
                       })
-                      .ink(By(fn() { if op.pointed() { 0xFFFFFFFFL } else { 0xA6AEBEFFL } }))
+                      .ink(By(fn() { mix_rgba(0xA6AEBEFFL, 0xFFFFFFFFL, hov()) }))
                       |> ignore
                     })
                     |> ignore
@@ -1966,6 +2063,7 @@ fn rec_window(root : @view.View) -> Unit {
 
               // Phase 7 (Error)
               st.show(fn() { rec_phase.get() == 7 }, fn(err_v) {
+                enter_reveal(err_v, ms=130.0, dy=3.0, from_scale=0.985)
                 err_v
                 .shrink(Is(0.0))
                 .words(By(fn() { rec_err.get() }), look={
@@ -1986,6 +2084,9 @@ fn rec_window(root : @view.View) -> Unit {
               btns.row(Is(true)).gap(Is(6.0)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
 
               btns.box(fn(sa) {
+                let live = fn() { rec_phase.get() != 5 }
+                let hov = smooth_hover(sa, live~)
+                tactile_press(sa, live~)
                 sa
                 .width(Is(Some(32.0)))
                 .height(Is(Some(32.0)))
@@ -2002,10 +2103,8 @@ fn rec_window(root : @view.View) -> Unit {
                     0xFFFFFF08L
                   } else if sa.pressed() {
                     0xFFFFFF22L
-                  } else if sa.pointed() {
-                    0xFFFFFF18L
                   } else {
-                    0xFFFFFF0FL
+                    mix_rgba(0xFFFFFF0FL, 0xFFFFFF18L, hov())
                   }
                 }))
                 .edge(Is((1.0, 0xFFFFFF12L)))
@@ -2018,10 +2117,8 @@ fn rec_window(root : @view.View) -> Unit {
                   .tint(By(fn() {
                     if rec_phase.get() == 5 {
                       0xFFFFFF40L
-                    } else if sa.pointed() {
-                      0xFFFFFFFFL
                     } else {
-                      0xC4CAD8FFL
+                      mix_rgba(0xC4CAD8FFL, 0xFFFFFFFFL, hov())
                     }
                   }))
                   |> ignore
@@ -2031,6 +2128,10 @@ fn rec_window(root : @view.View) -> Unit {
               |> ignore
 
               btns.box(fn(pri) {
+                let live = fn() { rec_phase.get() != 5 }
+                let hov = smooth_hover(pri, live~)
+                let ok_p = @motion.eased_on(pri, fn() { rec_phase.get() == 6 }, @motion.tween(160.0, ease=Out))
+                tactile_press(pri, live~)
                 pri
                 .row(Is(true))
                 .gap(Is(5.5))
@@ -2047,27 +2148,19 @@ fn rec_window(root : @view.View) -> Unit {
                 }))
                 .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(false) } })
                 .ground(By(fn() {
-                  match rec_phase.get() {
-                    5 => 0xFFFFFF12L
-                    6 =>
-                      if pri.pressed() {
-                        0x34D39944L
-                      } else if pri.pointed() {
-                        0x34D39933L
-                      } else {
-                        0x34D39924L
-                      }
-                    _ =>
-                      if pri.pressed() {
-                        0xDDE0E6FFL
-                      } else if pri.pointed() {
-                        0xFFFFFFFFL
-                      } else {
-                        0xF3F4F6FFL
-                      }
+                  if rec_phase.get() == 5 {
+                    0xFFFFFF12L
+                  } else {
+                    let p = ok_p.shown(pri)
+                    let rdy_bg = if pri.pressed() { 0xDDE0E6FFL } else { mix_rgba(0xF3F4F6FFL, 0xFFFFFFFFL, hov()) }
+                    let ok_bg = if pri.pressed() { 0x34D39944L } else { mix_rgba(0x34D39924L, 0x34D39934L, hov()) }
+                    mix_rgba(rdy_bg, ok_bg, p)
                   }
                 }))
-                .edge(By(fn() { if rec_phase.get() == 6 { (1.0, 0x34D39948L) } else { (0.0, 0L) } }))
+                .edge(By(fn() {
+                  let p = ok_p.shown(pri)
+                  if p > 0.01 { (1.0, mix_rgba(0x34D39900L, 0x34D39948L, p)) } else { (0.0, 0L) }
+                }))
                 |> ignore
                 pri.show(fn() { rec_phase.get() != 5 }, fn(ic) {
                   ic
@@ -2075,7 +2168,7 @@ fn rec_window(root : @view.View) -> Unit {
                   .height(Is(Some(13.0)))
                   .shrink(Is(0.0))
                   .picture(Is(Some(glyph("copy"))))
-                  .tint(By(fn() { if rec_phase.get() == 6 { 0x6EE7B7FFL } else { 0x111216FFL } }))
+                  .tint(By(fn() { mix_rgba(0x111216FFL, 0x6EE7B7FFL, ok_p.shown(ic)) }))
                   |> ignore
                 }, at_once=true)
                 pri.box(fn(t) {
@@ -2092,10 +2185,10 @@ fn rec_window(root : @view.View) -> Unit {
                     look={ ..@view.words_plain, size: 12.0, weight: 600, line: 15.0, wrap: false },
                   )
                   .ink(By(fn() {
-                    match rec_phase.get() {
-                      5 => 0xFFFFFF55L
-                      6 => 0x6EE7B7FFL
-                      _ => 0x111216FFL
+                    if rec_phase.get() == 5 {
+                      0xFFFFFF55L
+                    } else {
+                      mix_rgba(0x111216FFL, 0x6EE7B7FFL, ok_p.shown(t))
                     }
                   }))
                   |> ignore
@@ -2109,7 +2202,19 @@ fn rec_window(root : @view.View) -> Unit {
           |> ignore
         })
         |> ignore
-      }, at_once=true)
+        }, at_once=true)
+
+        // Register moves_for LAST so all .show() structural additions/removals complete BEFORE FLIP measures the new length/size!
+        let rec_moves = @motion.moves_for(shell, fn() { rec_phase.get() }, spec=@motion.tween(185.0, ease=Out))
+        rec_moves_ref.val = Some(rec_moves)
+        rec_moves.reshapes(shell)
+        for p in rec_parts {
+          if p.alive() {
+            rec_moves.moves_with(p)
+          }
+        }
+      })
+      |> ignore
     })
     |> ignore
   })

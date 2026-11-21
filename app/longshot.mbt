@@ -1161,6 +1161,9 @@ fn long_pill_button(
   press : () -> Unit,
 ) -> Unit {
   row.box(fn(b) {
+    let live = fn() { !dim() }
+    let hov = smooth_hover(b, live~)
+    tactile_press(b, live~)
     b
     .row(Is(true))
     .gap(Is(5.0))
@@ -1177,13 +1180,11 @@ fn long_pill_button(
       if dim() {
         0xFFFFFF06L
       } else if lit() {
-        if b.pointed() { 0x2F9BFF3DL } else { 0x2F9BFF29L }
+        mix_rgba(0x2F9BFF29L, 0x2F9BFF3DL, hov())
       } else if b.pressed() {
         0xFFFFFF24L
-      } else if b.pointed() {
-        0xFFFFFF18L
       } else {
-        0xFFFFFF0DL
+        mix_rgba(0xFFFFFF0DL, 0xFFFFFF18L, hov())
       }
     }))
     .edge(By(fn() {
@@ -1234,6 +1235,9 @@ fn long_pill_button(
 /// The panel's copy: the accent's, its glyph and its name.
 fn long_copy_button(bar : @view.View) -> Unit {
   bar.box(fn(b) {
+    let live = fn() { long_h.get() > 0 }
+    let hov = smooth_hover(b, live~)
+    tactile_press(b, live~)
     b
     .row(Is(true))
     .gap(Is(6.0))
@@ -1250,10 +1254,8 @@ fn long_copy_button(bar : @view.View) -> Unit {
         0x2F9BFF59L
       } else if b.pressed() {
         0x1F7FDDFFL
-      } else if b.pointed() {
-        0x48A8FFFFL
       } else {
-        accent
+        mix_rgba(accent, 0x48A8FFFFL, hov())
       }
     }))
     |> ignore

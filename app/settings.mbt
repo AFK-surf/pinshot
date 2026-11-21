@@ -528,8 +528,21 @@ fn settings_window(root : @view.View) -> Unit {
     w.over(Is(true)).ground(Is(set_ground)).row(Is(true)) |> ignore
     w.box(fn(side) {
       side.width(Is(Some(168.0))).shrink(Is(0.0)).padding(Is((12.0, 16.0, 12.0, 16.0))).gap(Is(2.0)) |> ignore
+      let tab_views : Map[Int, @view.View] = Map([])
+      sliding_thumb(
+        side,
+        fn() { settings_tab.get() },
+        tab_views,
+        7.0,
+        fn() { set_card },
+        extra_watch=fn() { if english.get() { 1 } else { 0 } },
+      )
       for i, name in settings_tabs {
         side.box(fn(t) {
+          tab_views[i] = t
+          let hov = smooth_hover(t)
+          let act = @motion.eased_on(t, fn() { settings_tab.get() == i }, @motion.tween(130.0, ease=Out))
+          tactile_press(t, sink_px=0.9)
           t
           .row(Is(true))
           .height(Is(Some(34.0)))
@@ -541,18 +554,16 @@ fn settings_window(root : @view.View) -> Unit {
           .on_press(fn() { settings_tab.set(i) })
           .ground(By(fn() {
             if settings_tab.get() == i {
-              set_card
-            } else if t.pointed() {
-              0xFFFFFF0FL
-            } else {
               0L
+            } else {
+              mix_rgba(0L, 0xFFFFFF0FL, hov())
             }
           }))
           |> ignore
           t.box(fn(x) {
             x
             .words(By(fn() { tr(name) }), look={ ..@view.words_plain, size: 13.0, weight: 500, line: 18.0, wrap: false })
-            .ink(By(fn() { if settings_tab.get() == i { set_ink } else { set_muted } }))
+            .ink(By(fn() { mix_rgba(set_muted, set_ink, dmax(act.shown(x), hov() * 0.45)) }))
             |> ignore
           })
           |> ignore
@@ -570,7 +581,20 @@ fn settings_window(root : @view.View) -> Unit {
           let pages : Array[(@view.View) -> Unit] = [general_page, keys_page, capture_page, about_page]
           for i, make in pages {
             page.box(fn(p) {
-              p.laid_nowhere(By(fn() { settings_tab.get() != i })).gap(Is(12.0)) |> ignore
+              let page_in = @motion.NodeWay::new(if settings_tab.untracked() == i { 1.0 } else { 0.0 })
+              p.reacts(fn() { settings_tab.get() == i }, at_start=false, fn(on) {
+                if on {
+                  page_in.go_from(p, 0.0, 1.0, @motion.tween(140.0, ease=Out))
+                } else {
+                  page_in.put(0.0)
+                }
+              })
+              p
+              .laid_nowhere(By(fn() { settings_tab.get() != i }))
+              .alpha(By(fn() { page_in.shown(p) }))
+              .drawn_off(By(fn() { (0.0, 5.0 * (1.0 - page_in.shown(p))) }))
+              .gap(Is(12.0))
+              |> ignore
               set_words(p, fn() { tr(settings_tabs[i]) }, 16.0, set_ink, weight=600)
               make(p)
             })
@@ -926,12 +950,25 @@ fn set_row(
 }
 
 ///|
-/// A row of choices, the one in force lit.
+/// A row of choices, the one in force lit with a smooth gliding thumb.
 fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (Int) -> Unit) -> Unit {
   parent.box(fn(seg) {
     seg.row(Is(true)).pad(Is(2.0)).radius(Is(8.0)).ground(Is(0x17181BFFL)).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
+    let views : Map[Int, @view.View] = Map([])
+    sliding_thumb(
+      seg,
+      at,
+      views,
+      6.0,
+      fn() { 0x3A3C42FFL },
+      extra_watch=fn() { if english.get() { 1 } else { 0 } },
+    )
     for i, name in names {
       seg.box(fn(b) {
+        views[i] = b
+        let hov = smooth_hover(b)
+        let act = @motion.eased_on(b, fn() { at() == i }, @motion.tween(130.0, ease=Out))
+        tactile_press(b, sink_px=0.9)
         b
         .height(Is(Some(26.0)))
         .padding(Is((9.0, 0.0, 9.0, 0.0)))
@@ -943,18 +980,16 @@ fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (In
         .on_press(fn() { pick(i) })
         .ground(By(fn() {
           if at() == i {
-            0x3A3C42FFL
-          } else if b.pointed() {
-            0xFFFFFF0FL
-          } else {
             0L
+          } else {
+            mix_rgba(0L, 0xFFFFFF0FL, hov())
           }
         }))
         |> ignore
         b.box(fn(t) {
           t
           .words(By(fn() { tr(name) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-          .ink(By(fn() { if at() == i { set_ink } else { set_muted } }))
+          .ink(By(fn() { mix_rgba(set_muted, set_ink, dmax(act.shown(t), hov() * 0.45)) }))
           |> ignore
         })
         |> ignore
@@ -968,6 +1003,9 @@ fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (In
 ///|
 fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
   parent.box(fn(s) {
+    let knob = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+    s.reacts(on, at_start=false, fn(now) { knob.go(s, if now { 1.0 } else { 0.0 }, @motion.knob_spring) })
+    tactile_press(s, sink_px=1.0)
     s
     .width(Is(Some(36.0)))
     .height(Is(Some(20.0)))
@@ -976,7 +1014,7 @@ fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Switch, label="", check=if on() { On } else { Off })) }))
     .on_press(fn() { set(!on()) })
-    .ground(By(fn() { if on() { 0x2F9BFFFFL } else { 0x3A3C42FFL } }))
+    .ground(By(fn() { mix_rgba(0x3A3C42FFL, 0x2F9BFFFFL, knob.shown(s)) }))
     .lines_up(Is(Some(Start)))
     .lies_along(Is(Middle))
     |> ignore
@@ -986,7 +1024,8 @@ fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
       .height(Is(Some(16.0)))
       .radius(Is(8.0))
       .ground(Is(0xFFFFFFFFL))
-      .offset(By(fn() { (if on() { 18.0 } else { 2.0 }, 0.0) }))
+      .offset(Is((2.0, 0.0)))
+      .drawn_off(By(fn() { (16.0 * knob.shown(k), 0.0) }))
       |> ignore
     })
     |> ignore
@@ -1004,6 +1043,8 @@ fn small_button(
   min_width? : () -> Double? = fn() { None },
 ) -> Unit {
   parent.box(fn(b) {
+    let hov = smooth_hover(b)
+    tactile_press(b)
     b
     .laid_nowhere(By(fn() { !shown() }))
     .min_width(By(min_width))
@@ -1016,7 +1057,7 @@ fn small_button(
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Button, label=label())) }))
     .on_press(press)
-    .ground(By(fn() { if b.pointed() { 0x45474EFFL } else { 0x3A3C42FFL } }))
+    .ground(By(fn() { if b.pressed() { 0x4E5159FFL } else { mix_rgba(0x3A3C42FFL, 0x464952FFL, hov()) } }))
     |> ignore
     b.box(fn(t) {
       t.words(By(label), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false }).ink(Is(set_ink)) |> ignore

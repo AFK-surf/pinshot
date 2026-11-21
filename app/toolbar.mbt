@@ -179,116 +179,182 @@ fn pick_tool(which : Tool) -> Unit {
 }
 
 ///|
+///|
+/// Active tool slot index on the main bar's left tool strip (0..6).
+fn main_tool_slot() -> Int {
+  let t = tool.get()
+  if t == Move {
+    0
+  } else if is_shape_tool(t) {
+    1
+  } else if is_line_tool(t) {
+    2
+  } else if is_pen_tool(t) {
+    3
+  } else if is_mosaic_tool(t) {
+    4
+  } else if t == Number {
+    5
+  } else if t == Words {
+    6
+  } else {
+    -1
+  }
+}
+
+///|
 fn toolbar(stage : @view.View) -> Unit {
   stage.box(fn(o) {
     o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
     o.box(fn(col) {
+      let bar_shown = fn() {
+        sel.get() is Some(_) &&
+        (match hand.get() {
+          Drawing(_, _) | Moving(_, _, _) | Sizing(_, _, _) => false
+          _ => true
+        })
+      }
+      let bar_in = @motion.NodeWay::new(if @signals.untracked(bar_shown) { 1.0 } else { 0.0 })
+      col.reacts(bar_shown, at_start=false, fn(on) {
+        if on {
+          bar_in.go_from(col, 0.0, 1.0, @motion.tween(130.0, ease=Out))
+        } else {
+          bar_in.put(0.0)
+        }
+      })
+      let col_moves_ref : Ref[@motion.Moves?] = Ref(None)
       col
       .gap(Is(4.0))
       // (each row as wide as what it holds, from the bar's left: the style row is not stretched to the bar's width)
       .lines_up(Is(Some(Start)))
       .offset(By(fn() { bar_place(col) }))
+      .alpha(By(fn() { bar_in.shown(col) }))
+      .drawn_off(By(fn() { (0.0, 4.0 * (1.0 - bar_in.shown(col))) }))
       // (out of the way while the part is dragged or resized)
-      .laid_nowhere(By(fn() {
-        sel.get() is None ||
-        (match hand.get() {
-          Drawing(_, _) | Moving(_, _, _) | Sizing(_, _, _) => true
-          _ => false
-        })
-      }))
+      .laid_nowhere(By(fn() { !bar_shown() }))
       |> ignore
       col.box(fn(bar) {
         bar_panel(bar, bar_corner)
         bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(bar_width()))) |> ignore
-        // 1. Select (Move)
-        tool_button(bar, "select", "选择", fn() { tool.get() == Move }, fn() { pick_tool(Move) }, keys=fn() { "V" })
-        // 2. Folded Shape group (Box / Oval / Focus)
-        tool_group_button(
-          bar,
-          fn() {
-            let t = tool.get()
-            tool_glyph(if is_shape_tool(t) { t } else { shape_tool.get() })
-          },
-          fn() {
-            let t = tool.get()
-            tool_label(if is_shape_tool(t) { t } else { shape_tool.get() })
-          },
-          fn() { is_shape_tool(tool.get()) },
-          fn() {
-            if words_open.untracked() is Some(_) {
-              commit_words()
-            }
-            if is_shape_tool(tool.untracked()) {
-              tool.set(Move)
-            } else {
-              tool.set(shape_tool.untracked())
-            }
-          },
-        )
-        // 3. Folded Line/Arrow group (Arrow / Line)
-        tool_group_button(
-          bar,
-          fn() {
-            let t = tool.get()
-            tool_glyph(if is_line_tool(t) { t } else { line_tool.get() })
-          },
-          fn() {
-            let t = tool.get()
-            tool_label(if is_line_tool(t) { t } else { line_tool.get() })
-          },
-          fn() { is_line_tool(tool.get()) },
-          fn() {
-            if words_open.untracked() is Some(_) {
-              commit_words()
-            }
-            if is_line_tool(tool.untracked()) {
-              tool.set(Move)
-            } else {
-              tool.set(line_tool.untracked())
-            }
-          },
-        )
-        // 4. Pen / Eraser group (always opens as Pen; second row offers Pen & Eraser)
-        tool_button(bar, "pen", "画笔", fn() { is_pen_tool(tool.get()) }, fn() {
-          if words_open.untracked() is Some(_) {
-            commit_words()
-          }
-          if is_pen_tool(tool.untracked()) {
-            tool.set(Move)
-          } else {
-            selected.set(None)
-            tool.set(Pen)
+        // Left tool group (0..6) with a gliding active-tool pill underneath the icons
+        bar.box(fn(tg) {
+          tg.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
+          let tool_views : Map[Int, @view.View] = Map([])
+          sliding_thumb(tg, main_tool_slot, tool_views, bar_btn_corner, fn() { 0xFFFFFF2EL })
+          // 1. Select (Move)
+          tool_button(
+            tg,
+            "select",
+            "选择",
+            fn() { tool.get() == Move },
+            fn() { pick_tool(Move) },
+            keys=fn() { "V" },
+            slot_views=Some((0, tool_views)),
+          )
+          // 2. Folded Shape group (Box / Oval / Focus)
+          tool_group_button(
+            tg,
+            fn() {
+              let t = tool.get()
+              tool_glyph(if is_shape_tool(t) { t } else { shape_tool.get() })
+            },
+            fn() {
+              let t = tool.get()
+              tool_label(if is_shape_tool(t) { t } else { shape_tool.get() })
+            },
+            fn() { is_shape_tool(tool.get()) },
+            fn() {
+              if words_open.untracked() is Some(_) {
+                commit_words()
+              }
+              if is_shape_tool(tool.untracked()) {
+                tool.set(Move)
+              } else {
+                tool.set(shape_tool.untracked())
+              }
+            },
+            slot_views=Some((1, tool_views)),
+          )
+          // 3. Folded Line/Arrow group (Arrow / Line)
+          tool_group_button(
+            tg,
+            fn() {
+              let t = tool.get()
+              tool_glyph(if is_line_tool(t) { t } else { line_tool.get() })
+            },
+            fn() {
+              let t = tool.get()
+              tool_label(if is_line_tool(t) { t } else { line_tool.get() })
+            },
+            fn() { is_line_tool(tool.get()) },
+            fn() {
+              if words_open.untracked() is Some(_) {
+                commit_words()
+              }
+              if is_line_tool(tool.untracked()) {
+                tool.set(Move)
+              } else {
+                tool.set(line_tool.untracked())
+              }
+            },
+            slot_views=Some((2, tool_views)),
+          )
+          // 4. Pen / Eraser group (always opens as Pen; second row offers Pen & Eraser)
+          tool_button(
+            tg,
+            "pen",
+            "画笔",
+            fn() { is_pen_tool(tool.get()) },
+            fn() {
+              if words_open.untracked() is Some(_) {
+                commit_words()
+              }
+              if is_pen_tool(tool.untracked()) {
+                tool.set(Move)
+              } else {
+                selected.set(None)
+                tool.set(Pen)
+              }
+            },
+            slot_views=Some((3, tool_views)),
+          )
+          // 5. Folded Mosaic group (Mosaic / MosaicBrush / Blur)
+          tool_group_button(
+            tg,
+            fn() {
+              let t = tool.get()
+              tool_glyph(if is_mosaic_tool(t) { t } else { mosaic_tool.get() })
+            },
+            fn() {
+              let t = tool.get()
+              tool_label(if is_mosaic_tool(t) { t } else { mosaic_tool.get() })
+            },
+            fn() { is_mosaic_tool(tool.get()) },
+            fn() {
+              if words_open.untracked() is Some(_) {
+                commit_words()
+              }
+              if is_mosaic_tool(tool.untracked()) {
+                tool.set(Move)
+              } else {
+                tool.set(mosaic_tool.untracked())
+              }
+            },
+            slot_views=Some((4, tool_views)),
+          )
+          // 6..7. Number, Words
+          for idx, which in bar_rest_tools {
+            tool_button(
+              tg,
+              tool_glyph(which),
+              tool_label(which),
+              fn() { tool.get() == which },
+              fn() { pick_tool(which) },
+              slot_views=Some((5 + idx, tool_views)),
+            )
           }
         })
-        // 5. Folded Mosaic group (Mosaic / MosaicBrush / Blur)
-        tool_group_button(
-          bar,
-          fn() {
-            let t = tool.get()
-            tool_glyph(if is_mosaic_tool(t) { t } else { mosaic_tool.get() })
-          },
-          fn() {
-            let t = tool.get()
-            tool_label(if is_mosaic_tool(t) { t } else { mosaic_tool.get() })
-          },
-          fn() { is_mosaic_tool(tool.get()) },
-          fn() {
-            if words_open.untracked() is Some(_) {
-              commit_words()
-            }
-            if is_mosaic_tool(tool.untracked()) {
-              tool.set(Move)
-            } else {
-              tool.set(mosaic_tool.untracked())
-            }
-          },
-        )
-        // 6..7. Number, Words
-        for which in bar_rest_tools {
-          tool_button(bar, tool_glyph(which), tool_label(which), fn() { tool.get() == which }, fn() {
-            pick_tool(which)
-          })
-        }
+        |> ignore
         // 8. The background the part is laid on (beautify.mbt)
         tool_button(bar, "beautify", "美化背景", fn() { beauty_on.get() }, beauty_toggle, keys=fn() { "B" })
         bar_rule_node(bar)
@@ -312,8 +378,34 @@ fn toolbar(stage : @view.View) -> Unit {
         tool_button(bar, "check", "复制", fn() { false }, copy_out, strong=true, keys=confirm_key_label)
       })
       |> ignore
-      col.show(fn() { styling() }, fn(row) { style_row(row) })
-      col.show(fn() { beauty_on.get() }, fn(row) { beauty_row(row) })
+      col.show(fn() { styling() }, leave=100.0, fn(row) {
+        pop_presence(row, enter_ms=140.0, leave_ms=100.0, dy=-4.0, from_scale=0.97)
+        style_row(row)
+      })
+      let beauty_row_ref : Ref[@view.View?] = Ref(None)
+      col.show(fn() { beauty_on.get() }, leave=100.0, fn(row) {
+        beauty_row_ref.val = Some(row)
+        match col_moves_ref.val {
+          Some(m) => m.moves_with(row)
+          None => ()
+        }
+        row.box(fn(panel) {
+          pop_presence(panel, enter_ms=140.0, leave_ms=100.0, dy=-4.0, from_scale=0.97)
+          beauty_row(panel)
+        })
+        |> ignore
+      })
+      // Register moves_for AFTER child .show() slots so structural layout changes happen before FLIP measurement!
+      let col_moves = @motion.moves_for(
+        col,
+        fn() { (styling(), beauty_on.get()) },
+        spec=@motion.tween(155.0, ease=Out),
+      )
+      col_moves_ref.val = Some(col_moves)
+      match beauty_row_ref.val {
+        Some(r) if r.alive() => col_moves.moves_with(r)
+        _ => ()
+      }
     })
     |> ignore
     bar_tip_node(o)
@@ -362,8 +454,9 @@ fn tool_button(
   strong? : Bool = false,
   tip? : Bool = true,
   keys? : () -> String = fn() { "" },
+  slot_views? : (Int, Map[Int, @view.View])? = None,
 ) -> Unit {
-  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~, keys~)
+  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~, keys~, slot_views~)
 }
 
 ///|
@@ -378,10 +471,22 @@ fn tool_group_button(
   strong? : Bool = false,
   tip? : Bool = true,
   keys? : () -> String = fn() { "" },
+  slot_views? : (Int, Map[Int, @view.View])? = None,
 ) -> Unit {
   // (`tip`: told by the overlay's tip; a button of another window, the long screenshot's panel, is not: the tip is the
   // overlay's, its node ids of no other window)
   bar.box(fn(b) {
+    let has_slider = match slot_views {
+      Some((idx, views)) => {
+        views[idx] = b
+        true
+      }
+      None => false
+    }
+    let live = fn() { !dim() }
+    let hov = smooth_hover(b, live~, ms=100.0)
+    let act = @motion.eased_on(b, on, @motion.tween(120.0, ease=Out))
+    tactile_press(b, live~, sink_px=1.0)
     b
     .width(Is(Some(bar_button)))
     .height(Is(Some(bar_button)))
@@ -399,14 +504,13 @@ fn tool_group_button(
       }
     })
     .ground(By(fn() {
-      if on() {
-        0xFFFFFF2EL
-      } else if b.pressed() {
+      if b.pressed() && !dim() {
         0xFFFFFF24L
-      } else if b.pointed() && !dim() {
-        0xFFFFFF17L
-      } else {
+      } else if has_slider && on() {
         0L
+      } else {
+        let rest = mix_rgba(0L, 0xFFFFFF17L, hov())
+        if has_slider { rest } else { mix_rgba(rest, 0xFFFFFF2EL, act.shown(b)) }
       }
     }))
     |> ignore
@@ -423,10 +527,8 @@ fn tool_group_button(
           0xFFFFFF4DL
         } else if strong {
           0x4CC38AFFL
-        } else if on() {
-          0xFFFFFFFFL
         } else {
-          0xD9DBE0FFL
+          mix_rgba(0xD9DBE0FFL, 0xFFFFFFFFL, dmax(act.shown(g), hov() * 0.6))
         }
       }))
       |> ignore
@@ -443,90 +545,130 @@ fn styling() -> Bool {
 }
 
 ///|
-/// A sub-tool button inside the second row (`28x28`, concentric superellipse `r=9`).
-fn sub_tool_button(row : @view.View, which : Tool, shown : () -> Bool, pick : (Tool) -> Unit) -> Unit {
-  row.box(fn(b) {
-    b
-    .laid_nowhere(By(fn() { !shown() }))
-    .width(Is(Some(28.0)))
+/// A sub-tool variant strip overlaid inside `left_slot` with its own gliding active pill and smooth crossfade.
+fn sub_tool_group(
+  left_slot : @view.View,
+  variants : Array[Tool],
+  shown : () -> Bool,
+  pick : (Tool) -> Unit,
+) -> Unit {
+  let n = variants.length().to_double()
+  let grp_w = n * 28.0 + (n - 1.0) * bar_gap + bar_gap + bar_rule
+  left_slot.show(shown, leave=95.0, fn(grp) {
+    pop_presence(grp, enter_ms=130.0, leave_ms=95.0, dy=0.0, from_scale=0.95)
+    grp
+    .over_at(Is((Some(0.0), Some(0.0), None, None)))
+    .width(Is(Some(grp_w)))
     .height(Is(Some(28.0)))
-    .radius(Is(style_btn_corner))
+    .row(Is(true))
+    .gap(Is(bar_gap))
     .lines_up(Is(Some(Middle)))
-    .lies_along(Is(Middle))
-    .presses(Is(true))
-    .says(By(fn() { Some(@view.said(Button, label=tr(tool_label(which)))) }))
-    .on_press(fn() {
-      tip_off()
-      pick(which)
-    })
-    .ground(By(fn() {
-      if tool.get() == which {
-        0xFFFFFF2EL
-      } else if b.pressed() {
-        0xFFFFFF24L
-      } else if b.pointed() {
-        0xFFFFFF17L
-      } else {
-        0L
+    .points(By(shown))
+    .presses(By(shown))
+    |> ignore
+    grp.box(fn(btns) {
+      btns.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
+      let views : Map[Int, @view.View] = Map([])
+      let active_idx = fn() {
+        let cur = tool.get()
+        for i, w in variants {
+          if w == cur {
+            return i
+          }
+        }
+        -1
       }
-    }))
-    |> ignore
-    tip_follows(b, fn() { tool_label(which) }, @view.Bottom)
-    b.box(fn(g) {
-      g
-      .width(Is(Some(17.0)))
-      .height(Is(Some(17.0)))
-      .picture(Is(Some(glyph(tool_glyph(which)))))
-      .tint(By(fn() { if tool.get() == which { 0xFFFFFFFFL } else { 0xD9DBE0FFL } }))
-      |> ignore
+      sliding_thumb(btns, active_idx, views, style_btn_corner, fn() { 0xFFFFFF2EL })
+      for i, which in variants {
+        btns.box(fn(b) {
+          views[i] = b
+          let hov = smooth_hover(b, live=shown, ms=100.0)
+          let act = @motion.eased_on(b, fn() { tool.get() == which }, @motion.tween(120.0, ease=Out))
+          tactile_press(b, live=shown, sink_px=1.0)
+          b
+          .width(Is(Some(28.0)))
+          .height(Is(Some(28.0)))
+          .radius(Is(style_btn_corner))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .presses(By(shown))
+          .points(By(shown))
+          .says(By(fn() { Some(@view.said(Button, label=tr(tool_label(which)))) }))
+          .on_press(fn() {
+            if !@signals.untracked(shown) {
+              return
+            }
+            tip_off()
+            pick(which)
+          })
+          .ground(By(fn() {
+            if b.pressed() && shown() {
+              0xFFFFFF24L
+            } else if tool.get() == which {
+              0L
+            } else {
+              mix_rgba(0L, 0xFFFFFF17L, hov())
+            }
+          }))
+          |> ignore
+          tip_follows(b, fn() { tool_label(which) }, @view.Bottom)
+          b.box(fn(g) {
+            g
+            .width(Is(Some(17.0)))
+            .height(Is(Some(17.0)))
+            .picture(Is(Some(glyph(tool_glyph(which)))))
+            .tint(By(fn() { mix_rgba(0xD9DBE0FFL, 0xFFFFFFFFL, dmax(act.shown(g), hov() * 0.6)) }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      }
     })
     |> ignore
+    bar_rule_node(grp)
   })
-  |> ignore
 }
 
 ///|
-/// The second row: shape/line sub-tool variants (when a shape or line tool is active), three thicknesses, then the colours.
+fn style_left_width(grp : Int) -> Double {
+  match grp {
+    1 | 4 => 3.0 * 28.0 + 2.0 * bar_gap + bar_gap + bar_rule + bar_gap
+    2 | 3 => 2.0 * 28.0 + bar_gap + bar_gap + bar_rule + bar_gap
+    _ => 0.0
+  }
+}
+
+///|
+fn style_pill_width(grp : Int, has_col : Bool) -> Double {
+  let sz_w = 3.0 * 28.0 + 2.0 * bar_gap
+  let col_w = if has_col {
+    bar_gap + bar_rule + bar_gap + colors.length().to_double() * 28.0 + (colors.length() - 1).to_double() * bar_gap
+  } else {
+    0.0
+  }
+  bar_pad * 2.0 + style_left_width(grp) + sz_w + col_w
+}
+
+///|
+/// The second row: smoothly animates its superellipse capsule length, clips unveiled/collapsing controls cleanly,
+/// crossfades sub-tool groups, and glides thickness & color controls in lockstep across every tool switch.
 fn style_row(row : @view.View) -> Unit {
-  bar_panel(row, style_corner)
-  row.row(Is(true)).height(Is(Some(style_height))).gap(Is(bar_gap)) |> ignore
-  // Shape variants: Box, Oval, Focus
-  let in_shape = fn() { is_shape_tool(tool.get()) }
-  for which in shape_variants {
-    sub_tool_button(row, which, in_shape, fn(w) {
-      shape_tool.set(w)
-      tool.set(w)
-    })
+  let active_grp = fn() -> Int {
+    let t = tool.get()
+    if is_shape_tool(t) {
+      1
+    } else if is_line_tool(t) {
+      2
+    } else if is_pen_tool(t) {
+      3
+    } else if is_mosaic_tool(t) {
+      4
+    } else {
+      0
+    }
   }
-  bar_rule_node(row, shown=in_shape)
-  // Line variants: Arrow, Line
-  let in_line = fn() { is_line_tool(tool.get()) }
-  for which in line_variants {
-    sub_tool_button(row, which, in_line, fn(w) {
-      line_tool.set(w)
-      tool.set(w)
-    })
-  }
-  bar_rule_node(row, shown=in_line)
-  // Pen variants: Pen, Eraser
-  let in_pen = fn() { is_pen_tool(tool.get()) }
-  for which in pen_variants {
-    sub_tool_button(row, which, in_pen, fn(w) {
-      selected.set(None)
-      tool.set(w)
-    })
-  }
-  bar_rule_node(row, shown=in_pen)
-  // Mosaic variants: Mosaic, MosaicBrush, Blur (6-key compact bar: 3 modes + 3 sizes, no colour swatches)
-  let in_mosaic = fn() { is_mosaic_tool(tool.get()) }
-  for which in mosaic_variants {
-    sub_tool_button(row, which, in_mosaic, fn(w) {
-      mosaic_tool.set(w)
-      tool.set(w)
-    })
-  }
-  bar_rule_node(row, shown=in_mosaic)
-  let has_color = fn() {
+  let has_color = fn() -> Bool {
     let t = tool.get()
     if t != Move {
       !is_mosaic_tool(t) && t != Focus && t != Eraser
@@ -544,71 +686,205 @@ fn style_row(row : @view.View) -> Unit {
       }
     }
   }
-  for s in 0..<3 {
-    row.box(fn(b) {
-      b
-      .width(Is(Some(28.0)))
-      .height(Is(Some(28.0)))
-      .radius(Is(style_btn_corner))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      .presses(Is(true))
-      .says(By(fn() { Some(@view.said(Button, label=tr(["细", "中", "粗"][s]))) }))
-      .on_press(fn() {
-        tip_off()
-        size_now.set(s)
-        restyle_selected(s~)
-      })
-      .ground(By(fn() {
-        if size_now.get() == s {
-          0xFFFFFF2EL
-        } else if b.pointed() {
-          0xFFFFFF17L
-        } else {
-          0L
-        }
-      }))
-      |> ignore
-      tip_follows(b, fn() { ["细", "中", "粗"][s] }, @view.Bottom)
-      let d = [4.0, 7.0, 11.0][s]
-      b.box(fn(dot) {
-        dot.width(Is(Some(d))).height(Is(Some(d))).radius(Is(d / 2.0)).ground(Is(0xE6E8ECFFL)) |> ignore
-      })
-      |> ignore
-    })
+  let init_grp = @signals.untracked(active_grp)
+  let init_col = @signals.untracked(has_color)
+  let shown_grp : @signals.Signal[Int] = @signals.signal(init_grp)
+  let shown_col : @signals.Signal[Bool] = @signals.signal(init_col)
+
+  let pill_w = @motion.NodeWay::new(style_pill_width(init_grp, init_col))
+  let left_w = @motion.NodeWay::new(style_left_width(init_grp))
+  let color_a = @motion.NodeWay::new(if init_col { 1.0 } else { 0.0 })
+
+  let shell_ref : Ref[@view.View?] = Ref(None)
+  let left_ref : Ref[@view.View?] = Ref(None)
+  let csec_ref : Ref[@view.View?] = Ref(None)
+
+  row.box(fn(shell) {
+    shell_ref.val = Some(shell)
+    shell
+    .width(By(fn() { Some(pill_w.shown(shell)) }))
+    .height(Is(Some(style_height)))
+    .radius(Is(style_corner))
+    .ground(Is(0x1E1F23F7L))
+    .edge(Is((1.0, 0xFFFFFF1FL)))
+    .shadow(Is((18.0, 4.0, 0x00000073L)))
+    .presses(Is(true))
+    .cursor(Is(Some(Arrow)))
     |> ignore
-  }
-  bar_rule_node(row, shown=has_color)
-  for c in colors {
-    row.box(fn(b) {
-      b
-      .laid_nowhere(By(fn() { !has_color() }))
-      .width(Is(Some(28.0)))
-      .height(Is(Some(28.0)))
-      .radius(Is(style_btn_corner))
+
+    // Clipped inner viewport filling the exact animated superellipse shell so unveiling/collapsing sections never spill
+    shell.box(fn(clip) {
+      clip
+      .width(By(fn() { Some(pill_w.shown(clip)) }))
+      .height(Is(Some(style_height)))
+      .radius(Is(style_corner))
+      .clips(Is(true))
+      .pad(Is(bar_pad))
+      .row(Is(true))
       .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      .presses(Is(true))
-      .says(Is(Some(@view.said(Button, label=hex6((c >> 8).to_int())))))
-      .on_press(fn() {
-        color_now.set(c)
-        restyle_selected(c~)
-      })
-      .ground(By(fn() { if b.pointed() { 0xFFFFFF17L } else { 0L } }))
       |> ignore
-      b.box(fn(sw) {
-        sw
-        .width(Is(Some(16.0)))
-        .height(Is(Some(16.0)))
-        .radius(Is(5.0))
-        .ground(Is(c))
-        .edge(By(fn() { if color_now.get() == c { (2.0, 0xFFFFFFFFL) } else { (1.0, 0xFFFFFF33L) } }))
+
+      // 1. Left sub-tool variant slot (smoothly expands/shrinks 0 ↔ 72 ↔ 103pt while crossfading variant strips)
+      clip.box(fn(left_slot) {
+        left_ref.val = Some(left_slot)
+        left_slot
+        .width(By(fn() { Some(left_w.shown(left_slot)) }))
+        .height(Is(Some(28.0)))
+        .shrink(Is(0.0))
+        .clips(Is(true))
         |> ignore
+        sub_tool_group(left_slot, shape_variants, fn() { shown_grp.get() == 1 }, fn(w) {
+          shape_tool.set(w)
+          tool.set(w)
+        })
+        sub_tool_group(left_slot, line_variants, fn() { shown_grp.get() == 2 }, fn(w) {
+          line_tool.set(w)
+          tool.set(w)
+        })
+        sub_tool_group(left_slot, pen_variants, fn() { shown_grp.get() == 3 }, fn(w) {
+          selected.set(None)
+          tool.set(w)
+        })
+        sub_tool_group(left_slot, mosaic_variants, fn() { shown_grp.get() == 4 }, fn(w) {
+          mosaic_tool.set(w)
+          tool.set(w)
+        })
+      })
+      |> ignore
+
+      // 2. Thickness group (fixed 90pt; glides smoothly in lockstep with left_slot width)
+      let sz_w = 3.0 * 28.0 + 2.0 * bar_gap
+      clip.box(fn(sz_grp) {
+        sz_grp
+        .width(Is(Some(sz_w)))
+        .height(Is(Some(28.0)))
+        .shrink(Is(0.0))
+        .row(Is(true))
+        .gap(Is(bar_gap))
+        .lines_up(Is(Some(Middle)))
+        |> ignore
+        let sz_views : Map[Int, @view.View] = Map([])
+        sliding_thumb(sz_grp, fn() { size_now.get() }, sz_views, style_btn_corner, fn() { 0xFFFFFF2EL })
+        for s in 0..<3 {
+          sz_grp.box(fn(b) {
+            sz_views[s] = b
+            let hov = smooth_hover(b, ms=100.0)
+            tactile_press(b, sink_px=0.9)
+            b
+            .width(Is(Some(28.0)))
+            .height(Is(Some(28.0)))
+            .radius(Is(style_btn_corner))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            .presses(Is(true))
+            .says(By(fn() { Some(@view.said(Button, label=tr(["细", "中", "粗"][s]))) }))
+            .on_press(fn() {
+              tip_off()
+              size_now.set(s)
+              restyle_selected(s~)
+            })
+            .ground(By(fn() { if size_now.get() == s { 0L } else { mix_rgba(0L, 0xFFFFFF17L, hov()) } }))
+            |> ignore
+            tip_follows(b, fn() { ["细", "中", "粗"][s] }, @view.Bottom)
+            let d = [4.0, 7.0, 11.0][s]
+            b.box(fn(dot) {
+              dot.width(Is(Some(d))).height(Is(Some(d))).radius(Is(d / 2.0)).ground(Is(0xE6E8ECFFL)) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+
+      // 3. Color swatches section (kept mounted inside clipped viewport so right edge smoothly unveils/sweeps over swatches)
+      let col_w = bar_gap + bar_rule + bar_gap + colors.length().to_double() * 28.0 + (colors.length() - 1).to_double() * bar_gap
+      clip.box(fn(csec) {
+        csec_ref.val = Some(csec)
+        csec
+        .width(Is(Some(col_w)))
+        .height(Is(Some(28.0)))
+        .shrink(Is(0.0))
+        .padding(Is((bar_gap, 0.0, 0.0, 0.0)))
+        .row(Is(true))
+        .gap(Is(bar_gap))
+        .lines_up(Is(Some(Middle)))
+        .alpha(By(fn() { color_a.shown(csec) }))
+        .points(By(fn() { shown_col.get() }))
+        .presses(By(fn() { shown_col.get() }))
+        |> ignore
+        bar_rule_node(csec)
+        for c in colors {
+          csec.box(fn(b) {
+            let live = fn() { shown_col.get() }
+            let hov = smooth_hover(b, live~, ms=100.0)
+            tactile_press(b, live~, sink_px=0.9)
+            b
+            .width(Is(Some(28.0)))
+            .height(Is(Some(28.0)))
+            .radius(Is(style_btn_corner))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            .presses(By(live))
+            .points(By(live))
+            .says(Is(Some(@view.said(Button, label=hex6((c >> 8).to_int())))))
+            .on_press(fn() {
+              if !shown_col.untracked() {
+                return
+              }
+              color_now.set(c)
+              restyle_selected(c~)
+            })
+            .ground(By(fn() { mix_rgba(0L, 0xFFFFFF17L, hov()) }))
+            |> ignore
+            b.box(fn(sw) {
+              let on_c = @motion.eased_on(sw, fn() { color_now.get() == c }, @motion.tween(120.0, ease=Out))
+              sw
+              .width(Is(Some(16.0)))
+              .height(Is(Some(16.0)))
+              .radius(Is(5.0))
+              .ground(Is(c))
+              .scale(By(fn() { 1.0 + 0.08 * on_c.shown(sw) }))
+              .edge(By(fn() {
+                let p = on_c.shown(sw)
+                (1.0 + p, mix_rgba(0xFFFFFF33L, 0xFFFFFFFFL, p))
+              }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        }
       })
       |> ignore
     })
     |> ignore
-  }
+  })
+  |> ignore
+
+  // Drive synchronized width & crossfade transitions on tool / selection changes (frozen while closing so fade-out stays clean)
+  row.reacts(fn() { (styling(), active_grp(), has_color()) }, at_start=false, fn(st) {
+    let (is_on, grp, col_on) = st
+    if !is_on {
+      return
+    }
+    shown_grp.set(grp)
+    shown_col.set(col_on)
+    let morph_spec = @motion.tween(185.0, ease=Out)
+    match shell_ref.val {
+      Some(sh) if sh.alive() => pill_w.go(sh, style_pill_width(grp, col_on), morph_spec)
+      _ => ()
+    }
+    match left_ref.val {
+      Some(ls) if ls.alive() => left_w.go(ls, style_left_width(grp), morph_spec)
+      _ => ()
+    }
+    match csec_ref.val {
+      Some(cs) if cs.alive() =>
+        color_a.go(cs, if col_on { 1.0 } else { 0.0 }, @motion.tween(if col_on { 155.0 } else { 115.0 }, ease=Out))
+      _ => ()
+    }
+  })
 }
 
 ///|
