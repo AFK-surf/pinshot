@@ -927,7 +927,7 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
       if d.kind == Down {
         p.sizing.val = None
         p.ocr_selecting.val = false
-        let (e, u, v, pw, ph) = pin_pointer_uv(p)
+        let (e, pu, pv, ppw, pph) = pin_pointer_uv(p)
         p.edge.set(e)
         if e != 0 {
           let r = numbers_of(text_of(ps_window_rect(wid)))
@@ -950,6 +950,12 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
         if p.ocr_on.untracked() {
           match p.ocr.untracked() {
             Ready(ws, _) if !ws.is_empty() => {
+              let (_, _, lw, lh) = root.laid_window_now()
+              let (u, v, pw, ph) = if lw > 0.0 && lh > 0.0 {
+                (clamp(d.x / lw, 0.0, 1.0), clamp(d.y / lh, 0.0, 1.0), lw, lh)
+              } else {
+                (pu, pv, ppw, pph)
+              }
               let hit = ocr_hit_word(ws, u, v, pw, ph)
               if hit >= 0 {
                 p.ocr_selecting.val = true
@@ -1078,6 +1084,8 @@ fn pin_keys() -> @view.Keymap {
     ch('c', "copy", shortcut_mod()),
     k(@ui.key_code_copy, "copy", shortcut_mod()),
     ch('a', "select-all", shortcut_mod()),
+    k(@ui.key_code_select_all, "select-all", shortcut_mod()),
+    k(@ui.key_code_select_all, "select-all", 0),
     ch('o', "ocr", shortcut_mod()),
     ch('s', "save", shortcut_mod()),
     ch('t', "top", shortcut_mod()),
