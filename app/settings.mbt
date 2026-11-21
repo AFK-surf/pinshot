@@ -373,7 +373,10 @@ fn apply_keys() -> Unit {
 let settings_wid : Ref[Int] = Ref(0)
 
 ///|
-fn open_settings() -> Unit {
+fn open_settings(tab? : Int = -1) -> Unit {
+  if tab >= 0 && tab < settings_tabs.length() {
+    settings_tab.set(tab)
+  }
   if settings_wid.val > 0 && @ui.window_front_here(settings_wid.val) {
     return
   }

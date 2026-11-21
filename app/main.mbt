@@ -236,7 +236,7 @@ fn told(json : String, bytes : Bytes?) -> Unit {
         Some(String("settings")) => open_settings()
         Some(String("folder")) => ps_reveal(cstr(settings.untracked().save_dir))
         Some(String("check-update")) => {
-          open_settings()
+          open_settings(tab=3)
           check_update(true)
         }
         Some(String("quit")) => ps_quit()
