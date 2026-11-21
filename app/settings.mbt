@@ -532,16 +532,16 @@ fn key_pressed(how : String, mods : Int, vk : Int) -> Unit {
 }
 
 ///|
-let set_ink : Int64 = 0xEDEEF0FFL
+let set_ink : Int64 = 0xF5F6F8FFL
 
 ///|
-let set_muted : Int64 = 0x9EA3ABFFL
+let set_muted : Int64 = 0xB2B7C2FFL
 
 ///|
-let set_ground : Int64 = 0x1B1C1FFFL
+let set_ground : Int64 = 0x141518FFL
 
 ///|
-let set_card : Int64 = 0x232428FFL
+let set_card : Int64 = 0x222429FFL
 
 ///|
 /// The settings' pages (the user, 2026-11-20: the list of pages at the side, as PixPin's): which one shows.
@@ -563,7 +563,7 @@ fn settings_window(root : @view.View) -> Unit {
         fn() { settings_tab.get() },
         tab_views,
         7.0,
-        fn() { set_card },
+        fn() { 0x2B2E36FFL },
         extra_watch=fn() { if english.get() { 1 } else { 0 } },
       )
       for i, name in settings_tabs {
@@ -601,7 +601,7 @@ fn settings_window(root : @view.View) -> Unit {
       }
     })
     |> ignore
-    w.box(fn(line) { line.width(Is(Some(1.0))).shrink(Is(0.0)).ground(Is(0xFFFFFF14L)) |> ignore }) |> ignore
+    w.box(fn(line) { line.width(Is(Some(1.0))).shrink(Is(0.0)).ground(Is(0xFFFFFF1FL)) |> ignore }) |> ignore
     w.box(fn(main) {
       main.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       main.box(fn(viewport) {
@@ -789,14 +789,15 @@ fn key_clear_button(parent : @view.View, which : Int) -> Unit {
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Button, label=tr("清空快捷键"))) }))
     .on_press(fn() { clear_key(which) })
-    .ground(By(fn() { if b.pointed() { 0x45474EFFL } else { 0x3A3C42FFL } }))
+    .ground(By(fn() { if b.pointed() { 0x464A56FFL } else { 0x353841FFL } }))
+    .edge(Is((1.0, 0xFFFFFF22L)))
     |> ignore
     b.box(fn(g) {
       g
       .width(Is(Some(14.0)))
       .height(Is(Some(14.0)))
       .picture(Is(Some({ w: 14.0, h: 14.0, layers: [stroke_layer("M3.5 3.5l7 7M10.5 3.5l-7 7", 0x000000FFL, 1.5)] })))
-      .tint(By(fn() { if b.pointed() { 0xFFFFFFFFL } else { 0xFFFFFFB3L } }))
+      .tint(By(fn() { if b.pointed() { 0xFFFFFFFFL } else { 0xD2D6E0FFL } }))
       |> ignore
     })
     |> ignore
@@ -830,14 +831,14 @@ fn key_box(parent : @view.View, which : Int) -> Unit {
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Button, label=words())) }))
     .on_press(fn() { record_key(which) })
-    .edge(By(fn() { (1.0, if recording.get() == which { 0x2F9BFFFFL } else { 0xFFFFFF14L }) }))
+    .edge(By(fn() { (1.0, if recording.get() == which { 0x2F9BFFFFL } else { 0xFFFFFF24L }) }))
     .ground(By(fn() {
       if recording.get() == which {
         0x17324FFFL
       } else if b.pointed() {
-        0x2C2E33FFL
+        0x2B2E36FFL
       } else {
-        0x17181BFFL
+        0x141518FFL
       }
     }))
     |> ignore
@@ -1067,7 +1068,7 @@ fn sponsor_card(parent : @view.View) -> Unit {
       c.box(fn(d) {
         d
         .words(By(fn() { tr("PinShot 免费使用，觉得好用可以请我喝杯咖啡") }), look={ ..@view.words_plain, size: 11.5, weight: 400, line: 15.5, wrap: true })
-        .ink(Is(0x8C9199FFL))
+        .ink(Is(set_muted))
         |> ignore
       })
       |> ignore
@@ -1131,7 +1132,7 @@ fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -
       set_words(g, fn() { tr(title) }, 12.0, set_muted, weight=500)
     }
     g.box(fn(card) {
-      card.ground(Is(set_card)).radius(Is(12.0)).edge(Is((1.0, 0xFFFFFF14L))).padding(Is((14.0, 4.0, 14.0, 4.0))) |> ignore
+      card.ground(Is(set_card)).radius(Is(12.0)).edge(Is((1.0, 0xFFFFFF22L))).padding(Is((14.0, 4.0, 14.0, 4.0))) |> ignore
       make(card)
     })
     |> ignore
@@ -1177,14 +1178,14 @@ fn set_row(
 /// A row of choices, the one in force lit with a smooth gliding thumb.
 fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (Int) -> Unit) -> Unit {
   parent.box(fn(seg) {
-    seg.row(Is(true)).pad(Is(2.0)).radius(Is(8.0)).ground(Is(0x17181BFFL)).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
+    seg.row(Is(true)).pad(Is(2.0)).radius(Is(8.0)).ground(Is(0x131417FFL)).edge(Is((1.0, 0xFFFFFF1AL))).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
     let views : Map[Int, @view.View] = Map([])
     sliding_thumb(
       seg,
       at,
       views,
       6.0,
-      fn() { 0x3A3C42FFL },
+      fn() { 0x3D414AFFL },
       extra_watch=fn() { if english.get() { 1 } else { 0 } },
     )
     for i, name in names {
@@ -1238,7 +1239,7 @@ fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Switch, label="", check=if on() { On } else { Off })) }))
     .on_press(fn() { set(!on()) })
-    .ground(By(fn() { mix_rgba(0x3A3C42FFL, 0x2F9BFFFFL, knob.shown(s)) }))
+    .ground(By(fn() { mix_rgba(0x454852FFL, 0x2F9BFFFFL, knob.shown(s)) }))
     .lines_up(Is(Some(Start)))
     .lies_along(Is(Middle))
     |> ignore
@@ -1281,7 +1282,8 @@ fn small_button(
     .presses(Is(true))
     .says(By(fn() { Some(@view.said(Button, label=label())) }))
     .on_press(press)
-    .ground(By(fn() { if b.pressed() { 0x4E5159FFL } else { mix_rgba(0x3A3C42FFL, 0x464952FFL, hov()) } }))
+    .ground(By(fn() { if b.pressed() { 0x4E5361FFL } else { mix_rgba(0x353841FFL, 0x444854FFL, hov()) } }))
+    .edge(Is((1.0, 0xFFFFFF22L)))
     |> ignore
     b.box(fn(t) {
       t.words(By(label), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false }).ink(Is(set_ink)) |> ignore

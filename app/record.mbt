@@ -1039,11 +1039,11 @@ fn rec_icon_btn(
       .picture(By(fn() { Some(glyph(glyph_fn())) }))
       .tint(By(fn() {
         if dim() {
-          0xFFFFFF40L
+          0xFFFFFF66L
         } else if lit() {
           tint_lit
         } else {
-          mix_rgba(0xD6DAE0FFL, 0xFFFFFFFFL, hov())
+          mix_rgba(0xEAECEFFFL, 0xFFFFFFFFL, hov())
         }
       }))
       |> ignore
@@ -1162,7 +1162,7 @@ fn rec_tab_item(
       if active() {
         0L
       } else {
-        mix_rgba(0L, 0xFFFFFF0FL, hov())
+        mix_rgba(0L, 0xFFFFFF18L, hov())
       }
     }))
     |> ignore
@@ -1171,7 +1171,7 @@ fn rec_tab_item(
       .shrink(Is(0.0))
       .words(By(label_fn), look={ ..@view.words_plain, size: 11.0, weight: 600, line: 14.0, wrap: false })
       .ink(By(fn() {
-        let rest = mix_rgba(0x838998FFL, 0xD5DAE4FFL, hov())
+        let rest = mix_rgba(0xA6ADBCFFL, 0xE2E6F0FFL, hov())
         mix_rgba(rest, 0x121317FFL, act.shown(t))
       }))
       |> ignore
@@ -1231,7 +1231,7 @@ fn rec_inline_opt(
       if active() {
         0L
       } else {
-        mix_rgba(0L, 0xFFFFFF0CL, hov())
+        mix_rgba(0L, 0xFFFFFF16L, hov())
       }
     }))
     |> ignore
@@ -1240,8 +1240,8 @@ fn rec_inline_opt(
       .shrink(Is(0.0))
       .words(By(label_fn), look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
       .ink(By(fn() {
-        let rest = mix_rgba(0x838998FFL, 0xCFD4DEFFL, hov())
-        mix_rgba(rest, 0xF4F6FAFFL, act.shown(t))
+        let rest = mix_rgba(0xA6ADBCFFL, 0xE2E6F0FFL, hov())
+        mix_rgba(rest, 0xF8F9FCFFL, act.shown(t))
       }))
       |> ignore
     })
@@ -1268,7 +1268,7 @@ fn rec_prop_row(
       t
       .shrink(Is(0.0))
       .words(By(fn() { tr(label_key) }), look={ ..@view.words_plain, size: 11.5, weight: 400, line: 15.0, wrap: false })
-      .ink(Is(0x727888FFL))
+      .ink(Is(0xA2A9B8FFL))
       |> ignore
     })
     |> ignore
@@ -1281,7 +1281,7 @@ fn rec_prop_row(
         active_key,
         views,
         6.5,
-        fn() { 0xFFFFFF1CL },
+        fn() { 0xFFFFFF2EL },
         extra_watch=fn() { rec_exports_ver.get() + (if english.get() { 1000 } else { 0 }) },
       )
       build(opts, views)
@@ -1382,8 +1382,8 @@ fn rec_window(root : @view.View) -> Unit {
           }
         }))
         .radius(By(fn() { if is_exp() { 18.0 } else { bar_corner } }))
-        .ground(By(fn() { mix_rgba(0x1E1F23F7L, 0x141519F8L, exp_p.shown(shell)) }))
-        .edge(By(fn() { (1.0, mix_rgba(0xFFFFFF1FL, 0xFFFFFF17L, exp_p.shown(shell))) }))
+        .ground(By(fn() { mix_rgba(0x18191DF7L, 0x141519F8L, exp_p.shown(shell)) }))
+        .edge(By(fn() { (1.0, mix_rgba(0xFFFFFF2EL, 0xFFFFFF28L, exp_p.shown(shell))) }))
         .shadow(By(fn() { if is_exp() { (11.0, 4.0, 0x0000007AL) } else { (9.0, 3.0, 0x00000058L) } }))
         |> ignore
 
@@ -1486,7 +1486,7 @@ fn rec_window(root : @view.View) -> Unit {
                   13.0,
                   18.0,
                   600,
-                  fn() { if rec_phase.get() == 0 { 0xB8BDC6FFL } else { 0xFFFFFFFFL } },
+                  fn() { if rec_phase.get() == 0 { 0xD0D5DFFFL } else { 0xFFFFFFFFL } },
                 )
               })
               |> ignore
@@ -1514,7 +1514,7 @@ fn rec_window(root : @view.View) -> Unit {
                   save_settings()
                 }
               })
-              .ground(By(fn() { mix_rgba(0xFFFFFF10L, 0xFFFFFF1CL, hov()) }))
+              .ground(By(fn() { mix_rgba(0xFFFFFF18L, 0xFFFFFF26L, hov()) }))
               |> ignore
               fps_b.box(fn(w) {
                 w
@@ -1531,7 +1531,7 @@ fn rec_window(root : @view.View) -> Unit {
                   }),
                   look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false },
                 )
-                .ink(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0xB8BDC6FFL } }))
+                .ink(By(fn() { if rec_phase.get() == 2 { 0xF5A524FFL } else { 0xD0D5DFFFL } }))
                 |> ignore
               })
               |> ignore
@@ -1602,9 +1602,9 @@ fn rec_window(root : @view.View) -> Unit {
                   Some(0xFFFFFFFFL),
                   None,
                   fn() { tr("录制") },
-                  0xE5484DFFL,
-                  0xF0585DFFL,
-                  0xCC3A3FFFL,
+                  0xD43339FFL,
+                  0xE04046FFL,
+                  0xBC282EFFL,
                   rec_start_now,
                 )
               }, at_once=true)
@@ -1615,9 +1615,9 @@ fn rec_window(root : @view.View) -> Unit {
                   None,
                   Some("stop"),
                   fn() { tr("停止") },
-                  0xE5484DFFL,
-                  0xF0585DFFL,
-                  0xCC3A3FFFL,
+                  0xD43339FFL,
+                  0xE04046FFL,
+                  0xBC282EFFL,
                   rec_finish_capture,
                 )
               }, at_once=true)
@@ -1769,7 +1769,8 @@ fn rec_window(root : @view.View) -> Unit {
               .gap(Is(2.0))
               .padding(Is((2.5, 2.5, 2.5, 2.5)))
               .radius(Is(8.5))
-              .ground(Is(0xFFFFFF0CL))
+              .ground(Is(0xFFFFFF12L))
+              .edge(Is((1.0, 0xFFFFFF18L)))
               .lines_up(Is(Some(Middle)))
               .shrink(Is(0.0))
               |> ignore
@@ -1864,7 +1865,7 @@ fn rec_window(root : @view.View) -> Unit {
                 .width(Is(Some(11.5)))
                 .height(Is(Some(11.5)))
                 .picture(Is(Some(glyph("close"))))
-                .tint(By(fn() { mix_rgba(0x737988FFL, 0xFFFFFFFFL, hov()) }))
+                .tint(By(fn() { mix_rgba(0xA2A9B8FFL, 0xFFFFFFFFL, hov()) }))
                 |> ignore
               })
               |> ignore
@@ -2029,7 +2030,7 @@ fn rec_window(root : @view.View) -> Unit {
           |> ignore
 
           // 2c. Subtle hairline + Footer (tabular size readout left, Save As icon + White/Emerald CTA right)
-          right.box(fn(ln) { ln.height(Is(Some(1.0))).ground(Is(0xFFFFFF10L)) |> ignore }) |> ignore
+          right.box(fn(ln) { ln.height(Is(Some(1.0))).ground(Is(0xFFFFFF1FL)) |> ignore }) |> ignore
 
           right.box(fn(foot) {
             foot.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 0.0))).shrink(Is(0.0))
@@ -2089,7 +2090,7 @@ fn rec_window(root : @view.View) -> Unit {
                       }),
                       look={ ..@view.words_plain, size: 10.5, weight: 400, line: 13.0, wrap: false },
                     )
-                    .ink(Is(0x6E7484FFL))
+                    .ink(Is(0x9FA6B5FFL))
                     |> ignore
                   })
                   |> ignore
@@ -2180,7 +2181,7 @@ fn rec_window(root : @view.View) -> Unit {
                       By(fn() { if rec_copied_note.get() { tr("已复制 · ") } else { tr("已导出 · ") } }),
                       look={ ..@view.words_plain, size: 10.5, weight: 400, line: 13.0, wrap: false },
                     )
-                    .ink(Is(0x6E7484FFL))
+                    .ink(Is(0x9FA6B5FFL))
                     |> ignore
                   })
                   |> ignore
@@ -2208,7 +2209,7 @@ fn rec_window(root : @view.View) -> Unit {
                         line: 13.0,
                         wrap: false,
                       })
-                      .ink(By(fn() { mix_rgba(0xA6AEBEFFL, 0xFFFFFFFFL, hov()) }))
+                      .ink(By(fn() { mix_rgba(0xC4CBD9FFL, 0xFFFFFFFFL, hov()) }))
                       |> ignore
                     })
                     |> ignore
@@ -2257,14 +2258,14 @@ fn rec_window(root : @view.View) -> Unit {
                 .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(true) } })
                 .ground(By(fn() {
                   if rec_phase.get() == 5 {
-                    0xFFFFFF08L
+                    0xFFFFFF0AL
                   } else if sa.pressed() {
-                    0xFFFFFF22L
+                    0xFFFFFF2CL
                   } else {
-                    mix_rgba(0xFFFFFF0FL, 0xFFFFFF18L, hov())
+                    mix_rgba(0xFFFFFF18L, 0xFFFFFF26L, hov())
                   }
                 }))
-                .edge(Is((1.0, 0xFFFFFF12L)))
+                .edge(Is((1.0, 0xFFFFFF24L)))
                 |> ignore
                 sa.box(fn(g) {
                   g
@@ -2273,9 +2274,9 @@ fn rec_window(root : @view.View) -> Unit {
                   .picture(Is(Some(glyph("save"))))
                   .tint(By(fn() {
                     if rec_phase.get() == 5 {
-                      0xFFFFFF40L
+                      0xFFFFFF66L
                     } else {
-                      mix_rgba(0xC4CAD8FFL, 0xFFFFFFFFL, hov())
+                      mix_rgba(0xE2E6F0FFL, 0xFFFFFFFFL, hov())
                     }
                   }))
                   |> ignore
@@ -2343,7 +2344,7 @@ fn rec_window(root : @view.View) -> Unit {
                   )
                   .ink(By(fn() {
                     if rec_phase.get() == 5 {
-                      0xFFFFFF55L
+                      0xFFFFFF99L
                     } else {
                       mix_rgba(0x111216FFL, 0x6EE7B7FFL, ok_p.shown(t))
                     }

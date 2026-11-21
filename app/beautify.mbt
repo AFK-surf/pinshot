@@ -398,7 +398,7 @@ fn beauty_row(row : @view.View) -> Unit {
       fn() { beauty.get().back },
       bg_views,
       style_btn_corner,
-      fn() { 0xFFFFFF2EL },
+      fn() { 0xFFFFFF3DL },
       extra_watch=fn() { if wallpaper.get() is Some(_) { 1 } else { 0 } },
     )
     for i, name in beauty_back_names {
@@ -424,7 +424,7 @@ fn beauty_row(row : @view.View) -> Unit {
           if beauty.get().back == i {
             0L
           } else {
-            mix_rgba(0L, 0xFFFFFF17L, hov())
+            mix_rgba(0L, 0xFFFFFF20L, hov())
           }
         }))
         |> ignore
@@ -469,7 +469,7 @@ fn beauty_row(row : @view.View) -> Unit {
   row.box(fn(rooms) {
     rooms.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
     let rm_views : Map[Int, @view.View] = Map([])
-    sliding_thumb(rooms, fn() { beauty.get().room }, rm_views, style_btn_corner, fn() { 0xFFFFFF2EL })
+    sliding_thumb(rooms, fn() { beauty.get().room }, rm_views, style_btn_corner, fn() { 0xFFFFFF3DL })
     for i, name in ["小", "中", "大"] {
       beauty_word_button(
         rooms,
@@ -522,15 +522,15 @@ fn beauty_word_button(
       if has_slider && on() {
         0L
       } else {
-        let rest = mix_rgba(0L, 0xFFFFFF17L, hov())
-        if has_slider { rest } else { mix_rgba(rest, 0xFFFFFF2EL, act.shown(b)) }
+        let rest = mix_rgba(0L, 0xFFFFFF20L, hov())
+        if has_slider { rest } else { mix_rgba(rest, 0xFFFFFF3DL, act.shown(b)) }
       }
     }))
     |> ignore
     b.box(fn(t) {
       t
       .words(By(fn() { tr(name) }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-      .ink(By(fn() { mix_rgba(0xFFFFFFB3L, 0xFFFFFFFFL, dmax(act.shown(t), hov() * 0.5)) }))
+      .ink(By(fn() { mix_rgba(0xD8DCE4FFL, 0xFFFFFFFFL, dmax(act.shown(t), hov() * 0.5)) }))
       |> ignore
     })
     |> ignore

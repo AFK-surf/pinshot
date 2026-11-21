@@ -148,8 +148,8 @@ fn ocr_window(root : @view.View) -> Unit {
         .height(Is(Some(22.0)))
         .padding(Is((8.0, 0.0, 8.0, 0.0)))
         .radius(Is(7.0))
-        .ground(Is(0xFFFFFF0FL))
-        .edge(Is((1.0, 0xFFFFFF14L)))
+        .ground(Is(0xFFFFFF16L))
+        .edge(Is((1.0, 0xFFFFFF24L)))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         |> ignore
@@ -169,7 +169,7 @@ fn ocr_window(root : @view.View) -> Unit {
       .min_height(Is(Some(0.0)))
       .ground(Is(set_card))
       .radius(Is(12.0))
-      .edge(Is((1.0, 0xFFFFFF14L)))
+      .edge(Is((1.0, 0xFFFFFF22L)))
       .padding(Is((12.0, 10.0, 12.0, 10.0)))
       |> ignore
       card.box(fn(msg) {
@@ -217,7 +217,7 @@ fn ocr_window(root : @view.View) -> Unit {
       foot.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
       foot.box(fn(s) {
         s.grow(Is(1.0)) |> ignore
-        set_words(s, fn() { if ocr_state.get() is Read(_) { tr("可直接编辑修改文字 · Esc 关闭") } else { "" } }, 11.5, 0x6C7078FFL)
+        set_words(s, fn() { if ocr_state.get() is Read(_) { tr("可直接编辑修改文字 · Esc 关闭") } else { "" } }, 11.5, set_muted)
       })
       |> ignore
       small_button(foot, fn() { tr("关闭") }, ocr_close)
@@ -234,20 +234,20 @@ fn ocr_window(root : @view.View) -> Unit {
         .on_press(fn() { if ocr_state.untracked() is Read(_) { ocr_copy() } })
         .ground(By(fn() {
           if !(ocr_state.get() is Read(_)) {
-            0x2F9BFF4DL
+            0x1472E055L
           } else if b.pressed() {
-            0x1F7FDDFFL
+            0x0E5EC0FFL
           } else if b.pointed() {
-            0x48A8FFFFL
+            0x1E80F0FFL
           } else {
-            0x2F9BFFFFL
+            0x1472E0FFL
           }
         }))
         |> ignore
         b.box(fn(t) {
           t
           .words(By(fn() { tr("复制全部") }), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-          .ink(By(fn() { if ocr_state.get() is Read(_) { 0xFFFFFFFFL } else { 0xFFFFFF80L } }))
+          .ink(By(fn() { if ocr_state.get() is Read(_) { 0xFFFFFFFFL } else { 0xFFFFFF99L } }))
           |> ignore
         })
         |> ignore

@@ -622,11 +622,11 @@ fn long_gone() -> Unit {
 /// Status copy, dot colour, and warning flag for the panel's status strip.
 fn long_state() -> (String, Int64, Bool) {
   if long_stopped.get() {
-    (tr("已停止截取"), 0x8C9199FFL, false)
+    (tr("已停止截取"), 0xAEB3BCFFL, false)
   } else if long_full.get() {
     (tr("已到最大高度，可复制或保存"), 0xF5A524FFL, true)
   } else if long_paused.get() {
-    (tr("已暂停拼接 · 按空格继续"), 0x8C9199FFL, false)
+    (tr("已暂停拼接 · 按空格继续"), 0xAEB3BCFFL, false)
   } else if long_lost.get() {
     (tr("没接上，往回滚一点即可续接"), 0xF5A524FFL, true)
   } else {
@@ -670,10 +670,10 @@ fn long_meta_label() -> String {
 }
 
 ///|
-let long_ink : Int64 = 0xEDEEF0FFL
+let long_ink : Int64 = 0xF5F6F8FFL
 
 ///|
-let long_muted : Int64 = 0x9EA3ABFFL
+let long_muted : Int64 = 0xB2B7C2FFL
 
 ///|
 /// The panel's window: movable header with live status dot & dimensions, contextual status strip, true scrollable
@@ -694,7 +694,7 @@ fn long_window(root : @view.View) -> Unit {
   root.box(fn(page) {
     page
     .over(Is(true))
-    .ground(Is(0x1E1F23FFL))
+    .ground(Is(0x18191DFFL))
     .padding(Is((long_pad, long_pad, long_pad, long_pad)))
     .lines_up(Is(Some(Start)))
     |> ignore
@@ -731,8 +731,8 @@ fn long_window(root : @view.View) -> Unit {
         .height(Is(Some(22.0)))
         .padding(Is((8.0, 0.0, 8.0, 0.0)))
         .radius(Is(6.0))
-        .ground(Is(0xFFFFFF10L))
-        .edge(Is((1.0, 0xFFFFFF14L)))
+        .ground(Is(0xFFFFFF16L))
+        .edge(Is((1.0, 0xFFFFFF24L)))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         .laid_nowhere(By(fn() { long_h.get() == 0 }))
@@ -767,8 +767,8 @@ fn long_window(root : @view.View) -> Unit {
       .radius(Is(7.0))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Start))
-      .ground(By(fn() { if long_state().2 { 0xF5A5241CL } else { 0xFFFFFF08L } }))
-      .edge(By(fn() { if long_state().2 { (1.0, 0xF5A52448L) } else { (1.0, 0xFFFFFF0EL) } }))
+      .ground(By(fn() { if long_state().2 { 0xF5A52424L } else { 0xFFFFFF10L } }))
+      .edge(By(fn() { if long_state().2 { (1.0, 0xF5A5245CL) } else { (1.0, 0xFFFFFF1EL) } }))
       |> ignore
       st.box(fn(t) {
         t
@@ -1177,16 +1177,16 @@ fn long_pill_button(
       } else if lit() {
         mix_rgba(0x2F9BFF29L, 0x2F9BFF3DL, hov())
       } else if b.pressed() {
-        0xFFFFFF24L
+        0xFFFFFF2CL
       } else {
-        mix_rgba(0xFFFFFF0DL, 0xFFFFFF18L, hov())
+        mix_rgba(0xFFFFFF16L, 0xFFFFFF24L, hov())
       }
     }))
     .edge(By(fn() {
       if lit() && !dim() {
-        (1.0, 0x2F9BFF66L)
+        (1.0, 0x2F9BFF7AL)
       } else {
-        (1.0, 0xFFFFFF12L)
+        (1.0, 0xFFFFFF22L)
       }
     }))
     |> ignore
@@ -1246,11 +1246,11 @@ fn long_copy_button(bar : @view.View) -> Unit {
     .on_press(fn() { if long_h.untracked() > 0 { long_copy() } })
     .ground(By(fn() {
       if long_h.get() == 0 {
-        0x2F9BFF59L
+        0x1472E055L
       } else if b.pressed() {
-        0x1F7FDDFFL
+        0x0E5EC0FFL
       } else {
-        mix_rgba(accent, 0x48A8FFFFL, hov())
+        mix_rgba(0x1472E0FFL, 0x1E80F0FFL, hov())
       }
     }))
     |> ignore

@@ -261,7 +261,7 @@ fn toolbar(stage : @view.View) -> Unit {
         bar.box(fn(tg) {
           tg.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
           let tool_views : Map[Int, @view.View] = Map([])
-          sliding_thumb(tg, main_tool_slot, tool_views, bar_btn_corner, fn() { 0xFFFFFF2EL })
+          sliding_thumb(tg, main_tool_slot, tool_views, bar_btn_corner, fn() { 0xFFFFFF3DL })
           // 1. Select (Move)
           tool_button(
             tg,
@@ -417,8 +417,8 @@ fn bar_panel(b : @view.View, rad : Double) -> Unit {
   b
   .pad(Is(bar_pad))
   .radius(Is(rad))
-  .ground(Is(0x1E1F23F7L))
-  .edge(Is((1.0, 0xFFFFFF1FL)))
+  .ground(Is(0x18191DF7L))
+  .edge(Is((1.0, 0xFFFFFF2EL)))
   .shadow(Is((18.0, 4.0, 0x00000073L)))
   .lines_up(Is(Some(Middle)))
   .presses(Is(true))
@@ -436,7 +436,7 @@ fn bar_rule_node(bar : @view.View, shown? : () -> Bool = fn() { true }) -> Unit 
     .lies_along(Is(Middle))
     .lines_up(Is(Some(Middle)))
     |> ignore
-    r.box(fn(l) { l.width(Is(Some(1.0))).height(Is(Some(16.0))).ground(Is(0xFFFFFF24L)) |> ignore }) |> ignore
+    r.box(fn(l) { l.width(Is(Some(1.0))).height(Is(Some(16.0))).ground(Is(0xFFFFFF2EL)) |> ignore }) |> ignore
   })
   |> ignore
 }
@@ -504,12 +504,12 @@ fn tool_group_button(
     })
     .ground(By(fn() {
       if b.pressed() && !dim() {
-        0xFFFFFF24L
+        0xFFFFFF2CL
       } else if has_slider && on() {
         0L
       } else {
-        let rest = mix_rgba(0L, 0xFFFFFF17L, hov())
-        if has_slider { rest } else { mix_rgba(rest, 0xFFFFFF2EL, act.shown(b)) }
+        let rest = mix_rgba(0L, 0xFFFFFF20L, hov())
+        if has_slider { rest } else { mix_rgba(rest, 0xFFFFFF3DL, act.shown(b)) }
       }
     }))
     |> ignore
@@ -523,11 +523,11 @@ fn tool_group_button(
       .picture(By(fn() { Some(glyph(glyph_fn())) }))
       .tint(By(fn() {
         if dim() {
-          0xFFFFFF4DL
+          0xFFFFFF66L
         } else if strong {
           0x4CC38AFFL
         } else {
-          mix_rgba(0xD9DBE0FFL, 0xFFFFFFFFL, dmax(act.shown(g), hov() * 0.6))
+          mix_rgba(0xEAECEFFFL, 0xFFFFFFFFL, dmax(act.shown(g), hov() * 0.6))
         }
       }))
       |> ignore
@@ -599,7 +599,7 @@ fn sub_tool_strip(left_slot : @view.View, shown_grp : @signals.Signal[Int]) -> U
       active_idx,
       views,
       style_btn_corner,
-      fn() { 0xFFFFFF2EL },
+      fn() { 0xFFFFFF3DL },
       snap_watch=fn() { shown_grp.get() },
     )
     for i in 0..<3 {
@@ -641,11 +641,11 @@ fn sub_tool_strip(left_slot : @view.View, shown_grp : @signals.Signal[Int]) -> U
         })
         .ground(By(fn() {
           if b.pressed() && has() {
-            0xFFFFFF24L
+            0xFFFFFF2CL
           } else if is_on() {
             0L
           } else {
-            mix_rgba(0L, 0xFFFFFF17L, hov())
+            mix_rgba(0L, 0xFFFFFF20L, hov())
           }
         }))
         |> ignore
@@ -669,7 +669,7 @@ fn sub_tool_strip(left_slot : @view.View, shown_grp : @signals.Signal[Int]) -> U
             if is_on() {
               0xFFFFFFFFL
             } else {
-              mix_rgba(0xD9DBE0FFL, 0xFFFFFFFFL, hov() * 0.6)
+              mix_rgba(0xEAECEFFFL, 0xFFFFFFFFL, hov() * 0.6)
             }
           }))
           |> ignore
@@ -690,7 +690,7 @@ fn sub_tool_strip(left_slot : @view.View, shown_grp : @signals.Signal[Int]) -> U
     .lines_up(Is(Some(Middle)))
     .laid_nowhere(By(fn() { shown_grp.get() == 0 }))
     |> ignore
-    d.box(fn(l) { l.width(Is(Some(1.0))).height(Is(Some(16.0))).ground(Is(0xFFFFFF24L)) |> ignore }) |> ignore
+    d.box(fn(l) { l.width(Is(Some(1.0))).height(Is(Some(16.0))).ground(Is(0xFFFFFF2EL)) |> ignore }) |> ignore
   })
   |> ignore
 }
@@ -770,8 +770,8 @@ fn style_row(row : @view.View) -> Unit {
     .width(By(fn() { Some(pill_w.shown(shell)) }))
     .height(Is(Some(style_height)))
     .radius(Is(style_corner))
-    .ground(Is(0x1E1F23F7L))
-    .edge(Is((1.0, 0xFFFFFF1FL)))
+    .ground(Is(0x18191DF7L))
+    .edge(Is((1.0, 0xFFFFFF2EL)))
     .shadow(Is((18.0, 4.0, 0x00000073L)))
     .presses(Is(true))
     .cursor(Is(Some(Arrow)))
@@ -814,7 +814,7 @@ fn style_row(row : @view.View) -> Unit {
         .lines_up(Is(Some(Middle)))
         |> ignore
         let sz_views : Map[Int, @view.View] = Map([])
-        sliding_thumb(sz_grp, fn() { size_now.get() }, sz_views, style_btn_corner, fn() { 0xFFFFFF2EL })
+        sliding_thumb(sz_grp, fn() { size_now.get() }, sz_views, style_btn_corner, fn() { 0xFFFFFF3DL })
         for s in 0..<3 {
           sz_grp.box(fn(b) {
             sz_views[s] = b
@@ -833,12 +833,12 @@ fn style_row(row : @view.View) -> Unit {
               size_now.set(s)
               restyle_selected(s~)
             })
-            .ground(By(fn() { if size_now.get() == s { 0L } else { mix_rgba(0L, 0xFFFFFF17L, hov()) } }))
+            .ground(By(fn() { if size_now.get() == s { 0L } else { mix_rgba(0L, 0xFFFFFF20L, hov()) } }))
             |> ignore
             tip_follows(b, fn() { ["细", "中", "粗"][s] }, @view.Bottom)
             let d = [4.0, 7.0, 11.0][s]
             b.box(fn(dot) {
-              dot.width(Is(Some(d))).height(Is(Some(d))).radius(Is(d / 2.0)).ground(Is(0xE6E8ECFFL)) |> ignore
+              dot.width(Is(Some(d))).height(Is(Some(d))).radius(Is(d / 2.0)).ground(Is(0xF0F2F6FFL)) |> ignore
             })
             |> ignore
           })
