@@ -24,6 +24,10 @@ cd "$ROOT/deps/stillfail/libs/mbui"
 # (linked again every time: moon does not see the .res change, and an icon changed alone would be left out)
 rm -f out/win/app/_build/native/*/build/stillfail/pinshot/pinshot.exe
 set +e
+# What only a part used now and then needs (recording's Media Foundation, the key overlay's GDI+, a shader compiled
+# where none is cached, a URL's or a crash dump's helpers) loaded as it is first called, not as the run starts: not
+# used, not in memory (the 防臃肿 rule). (-, not /: Git Bash would take /DELAYLOAD for a path)
+export LINK="${LINK:-} -DELAYLOAD:mfplat.dll -DELAYLOAD:mfreadwrite.dll -DELAYLOAD:gdiplus.dll -DELAYLOAD:d3dcompiler_47.dll -DELAYLOAD:urlmon.dll -DELAYLOAD:dbghelp.dll -DELAYLOAD:iphlpapi.dll delayimp.lib"
 MBUI_WIN_RES="$RES" MODE=$MODE MBUI_APP_MOD=../../apps/mbui APP=pinshot scripts/win.sh build > "$ROOT/out/build.log" 2>&1
 code=$?
 set -e

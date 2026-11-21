@@ -4,7 +4,7 @@
 //      - Tier 1: Hardware HEVC (H.265) + D3D11 VideoProcessor GPU NV12 (patches 'hev1' -> 'hvc1')
 //      - Tier 2: Hardware H.264 + D3D11 VideoProcessor GPU NV12
 //      - Tier 3: Software H.264 + CPU BT.709 NV12
-// 2. Live transparent GDI+ annotation overlay (record_draw_win.cpp) captured natively by WGC.
+// 2. Optional click ripples and keys pressed (record_draw_win.cpp), a layered window captured natively by WGC.
 // 3. Post-recording export & compression (ps_rec_export):
 //      - Mode 0: MP4 Original (instant copy, preserves audio & original quality)
 //      - Mode 1: MP4 Compressed Standard (GPU D3D11VA decode + VideoProcessor resize <=1920 + HW HEVC/H.264 + AAC)
@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <memory>
 
 extern "C" {
 #include "moonbit.h"
@@ -238,12 +239,14 @@ static struct {
 
   HANDLE rec_thread;
   HANDLE exp_thread;
-  HANDLE wake_ev;
+  HANDLE wake_ev;          // made once, never closed: a worker of a session ended may still wait on it
+  SRWLOCK lock;            // the master_* and preview_bmp below, written by the recording's worker as it ends
+  LONG session;            // which recording panel this is: ps_rec_end begins another (a worker of the last keeps nothing)
   volatile LONG stop_req;  // 0 running, 1 finish, 2 cancel
   volatile LONG pause_req; // 0 running, 1 paused
   volatile LONG running;
   volatile LONG exporting;
-  volatile LONG exp_cancel;
+  volatile LONG exp_gen;   // each export's number: one called off (or the panel ended) takes the next
 
   int fps;
   int cursor;
@@ -433,35 +436,43 @@ static uint32_t fourcc(char a, char b, char c, char d) {
 }
 
 struct Mp4Box {
-  size_t start;
-  size_t payload;
-  size_t end;
+  uint64_t start;
+  uint64_t payload;
+  uint64_t end;
   uint32_t type;
 };
 
-static bool read_mp4_box(const std::vector<uint8_t> &buf, size_t off, size_t limit, Mp4Box &out) {
+// The box at `off` of the file (its header read, nothing else), within `limit`.
+static bool read_mp4_box(HANDLE hf, uint64_t off, uint64_t limit, Mp4Box &out) {
   if (off + 8 > limit) return false;
-  uint64_t sz = read_be32(&buf[off]);
-  uint32_t ty = read_be32(&buf[off + 4]);
-  size_t hdr = 8;
+  LARGE_INTEGER li;
+  li.QuadPart = (LONGLONG)off;
+  uint8_t hdr[16] = {};
+  DWORD got = 0;
+  if (!SetFilePointerEx(hf, li, NULL, FILE_BEGIN) ||
+      !ReadFile(hf, hdr, (DWORD)std::min<uint64_t>(16, limit - off), &got, NULL) || got < 8)
+    return false;
+  uint64_t sz = read_be32(hdr);
+  uint32_t ty = read_be32(hdr + 4);
+  uint64_t head = 8;
   if (sz == 1) {
-    if (off + 16 > limit) return false;
-    sz = read_be64(&buf[off + 8]);
-    hdr = 16;
+    if (got < 16) return false;
+    sz = read_be64(hdr + 8);
+    head = 16;
   } else if (sz == 0) {
     sz = limit - off;
   }
-  if (sz < hdr || off + sz > limit) return false;
+  if (sz < head || off + sz > limit) return false;
   out.start = off;
-  out.payload = off + hdr;
-  out.end = (size_t)(off + sz);
+  out.payload = off + head;
+  out.end = off + sz;
   out.type = ty;
   return true;
 }
 
-static bool find_mp4_child(const std::vector<uint8_t> &buf, size_t from, size_t limit, uint32_t type, Mp4Box &out) {
+static bool find_mp4_child(HANDLE hf, uint64_t from, uint64_t limit, uint32_t type, Mp4Box &out) {
   Mp4Box b;
-  for (size_t off = from; read_mp4_box(buf, off, limit, b); off = b.end) {
+  for (uint64_t off = from; read_mp4_box(hf, off, limit, b); off = b.end) {
     if (b.type == type) {
       out = b;
       return true;
@@ -470,82 +481,32 @@ static bool find_mp4_child(const std::vector<uint8_t> &buf, size_t from, size_t 
   return false;
 }
 
+// Each HEVC track's sample entry 'hev1' renamed 'hvc1' in place (what QuickTime and browsers play): the boxes walked
+// by their headers alone and the four bytes written where they are, never the movie box read or written whole.
 static void patch_mp4_hev1_to_hvc1(const std::wstring &path) {
   HANDLE hf = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING,
                           FILE_ATTRIBUTE_NORMAL, NULL);
   if (hf == INVALID_HANDLE_VALUE) return;
   LARGE_INTEGER fsz = {};
-  if (!GetFileSizeEx(hf, &fsz) || fsz.QuadPart < 16) {
-    CloseHandle(hf);
-    return;
-  }
-  uint64_t total = (uint64_t)fsz.QuadPart;
-  uint64_t pos = 0;
-  uint64_t moov_off = 0, moov_sz = 0;
-  while (pos + 8 <= total) {
-    LARGE_INTEGER li;
-    li.QuadPart = (LONGLONG)pos;
-    if (!SetFilePointerEx(hf, li, NULL, FILE_BEGIN)) break;
-    uint8_t hdr[16] = {};
-    DWORD got = 0;
-    if (!ReadFile(hf, hdr, (DWORD)std::min<uint64_t>(16, total - pos), &got, NULL) || got < 8) break;
-    uint64_t sz = read_be32(hdr);
-    uint32_t ty = read_be32(hdr + 4);
-    if (sz == 1) {
-      if (got < 16) break;
-      sz = read_be64(hdr + 8);
-    } else if (sz == 0) {
-      sz = total - pos;
-    }
-    if (sz < 8 || pos + sz > total) break;
-    if (ty == fourcc('m', 'o', 'o', 'v')) {
-      moov_off = pos;
-      moov_sz = sz;
-      break;
-    }
-    pos += sz;
-  }
-  if (moov_sz == 0 || moov_sz > 32ULL * 1024ULL * 1024ULL) {
-    CloseHandle(hf);
-    return;
-  }
-  std::vector<uint8_t> moov((size_t)moov_sz);
-  LARGE_INTEGER li;
-  li.QuadPart = (LONGLONG)moov_off;
-  DWORD got = 0;
-  if (!SetFilePointerEx(hf, li, NULL, FILE_BEGIN) || !ReadFile(hf, moov.data(), (DWORD)moov_sz, &got, NULL) ||
-      got != moov_sz) {
-    CloseHandle(hf);
-    return;
-  }
-  Mp4Box moov_box;
-  if (!read_mp4_box(moov, 0, moov.size(), moov_box)) {
-    CloseHandle(hf);
-    return;
-  }
-  bool changed = false;
-  Mp4Box trak;
-  for (size_t off = moov_box.payload; read_mp4_box(moov, off, moov_box.end, trak); off = trak.end) {
-    if (trak.type != fourcc('t', 'r', 'a', 'k')) continue;
-    Mp4Box mdia, minf, stbl, stsd, entry;
-    if (!find_mp4_child(moov, trak.payload, trak.end, fourcc('m', 'd', 'i', 'a'), mdia)) continue;
-    if (!find_mp4_child(moov, mdia.payload, mdia.end, fourcc('m', 'i', 'n', 'f'), minf)) continue;
-    if (!find_mp4_child(moov, minf.payload, minf.end, fourcc('s', 't', 'b', 'l'), stbl)) continue;
-    if (!find_mp4_child(moov, stbl.payload, stbl.end, fourcc('s', 't', 's', 'd'), stsd)) continue;
-    if (stsd.payload + 8 >= stsd.end) continue;
-    if (!read_mp4_box(moov, stsd.payload + 8, stsd.end, entry)) continue;
-    if (entry.type == fourcc('h', 'e', 'v', '1')) {
-      moov[entry.start + 4] = 'h';
-      moov[entry.start + 5] = 'v';
-      moov[entry.start + 6] = 'c';
-      moov[entry.start + 7] = '1';
-      changed = true;
-    }
-  }
-  if (changed) {
-    DWORD written = 0;
-    if (SetFilePointerEx(hf, li, NULL, FILE_BEGIN)) {
-      WriteFile(hf, moov.data(), (DWORD)moov.size(), &written, NULL);
+  Mp4Box moov;
+  if (GetFileSizeEx(hf, &fsz) && fsz.QuadPart >= 16 &&
+      find_mp4_child(hf, 0, (uint64_t)fsz.QuadPart, fourcc('m', 'o', 'o', 'v'), moov)) {
+    Mp4Box trak;
+    for (uint64_t off = moov.payload; read_mp4_box(hf, off, moov.end, trak); off = trak.end) {
+      if (trak.type != fourcc('t', 'r', 'a', 'k')) continue;
+      Mp4Box mdia, minf, stbl, stsd, entry;
+      if (!find_mp4_child(hf, trak.payload, trak.end, fourcc('m', 'd', 'i', 'a'), mdia)) continue;
+      if (!find_mp4_child(hf, mdia.payload, mdia.end, fourcc('m', 'i', 'n', 'f'), minf)) continue;
+      if (!find_mp4_child(hf, minf.payload, minf.end, fourcc('s', 't', 'b', 'l'), stbl)) continue;
+      if (!find_mp4_child(hf, stbl.payload, stbl.end, fourcc('s', 't', 's', 'd'), stsd)) continue;
+      if (stsd.payload + 8 >= stsd.end) continue;
+      if (!read_mp4_box(hf, stsd.payload + 8, stsd.end, entry)) continue;
+      if (entry.type == fourcc('h', 'e', 'v', '1')) {
+        LARGE_INTEGER at;
+        at.QuadPart = (LONGLONG)(entry.start + 4);
+        DWORD put = 0;
+        if (SetFilePointerEx(hf, at, NULL, FILE_BEGIN)) WriteFile(hf, "hvc1", 4, &put, NULL);
+      }
     }
   }
   CloseHandle(hf);
@@ -570,8 +531,38 @@ struct GifWriter {
   std::vector<uint8_t> pend_idx;
   int frames_written = 0;
 
-  static void build_palette(const uint8_t *rgb, int n_pixels, const uint8_t *mask, uint8_t pal[256 * 3],
-                            uint8_t lut[32768]) {
+  int global_ncols = 0;
+  std::vector<int32_t> ht_key;   // LZW's table, kept between frames
+  std::vector<uint16_t> ht_val;
+  std::vector<uint8_t> crop, mask;  // a local palette's pixels, kept between frames
+
+  // The palette index of 15-bit colour `k`: the LUT's where the palette was built of it, else the nearest colour,
+  // found the first time it is asked and kept (only colours a frame has are ever looked for, not all 32768).
+  static uint8_t lut_of(uint8_t lut[32768], const uint8_t pal[256 * 3], int ncols, uint32_t k) {
+    uint8_t v = lut[k];
+    if (v != 0xFF) return v;
+    int r = (int)((k >> 10) & 31) * 255 / 31;
+    int g = (int)((k >> 5) & 31) * 255 / 31;
+    int b = (int)(k & 31) * 255 / 31;
+    int best_i = 0, best_d = 1 << 30;
+    for (int i = 0; i < ncols; i++) {
+      int dr = r - (int)pal[i * 3 + 0];
+      int dg = g - (int)pal[i * 3 + 1];
+      int db = b - (int)pal[i * 3 + 2];
+      int d = dr * dr * 2 + dg * dg * 4 + db * db;
+      if (d < best_d) {
+        best_d = d;
+        best_i = i;
+      }
+    }
+    lut[k] = (uint8_t)best_i;
+    return (uint8_t)best_i;
+  }
+
+  // The palette of `rgb` (its masked pixels): its colours' LUT entries set, the rest 0xFF (lut_of finds them).
+  // The number of colours (at most 255: 255 is the transparent index).
+  static int build_palette(const uint8_t *rgb, int n_pixels, const uint8_t *mask, uint8_t pal[256 * 3],
+                           uint8_t lut[32768]) {
     static const int MAX_COLORS = 255;
     std::vector<uint32_t> hist(32768, 0);
     for (int i = 0; i < n_pixels; i++) {
@@ -593,7 +584,7 @@ struct GifWriter {
     memset(pal, 0, 256 * 3);
     if (entries.empty()) {
       memset(lut, 0, 32768);
-      return;
+      return 1;
     }
     struct Box {
       size_t lo, hi;
@@ -684,24 +675,7 @@ struct GifWriter {
     for (int i = 0; i < ncols; i++) {
       for (size_t j = boxes[i].lo; j < boxes[i].hi; j++) lut[entries[j].key] = (uint8_t)i;
     }
-    for (int k = 0; k < 32768; k++) {
-      if (lut[k] != 0xFF) continue;
-      int r = ((k >> 10) & 31) * 255 / 31;
-      int g = ((k >> 5) & 31) * 255 / 31;
-      int b = (k & 31) * 255 / 31;
-      int best_i = 0, best_d = 1 << 30;
-      for (int i = 0; i < ncols; i++) {
-        int dr = r - (int)pal[i * 3 + 0];
-        int dg = g - (int)pal[i * 3 + 1];
-        int db = b - (int)pal[i * 3 + 2];
-        int d = dr * dr * 2 + dg * dg * 4 + db * db;
-        if (d < best_d) {
-          best_d = d;
-          best_i = i;
-        }
-      }
-      lut[k] = (uint8_t)best_i;
-    }
+    return ncols;
   }
 
   bool open(const std::wstring &path, int width, int height) {
@@ -742,8 +716,8 @@ struct GifWriter {
     fputc(min_code_size, fp);
 
     static const int HT_SIZE = 8192;
-    std::vector<int32_t> ht_key(HT_SIZE, -1);
-    std::vector<uint16_t> ht_val(HT_SIZE, 0);
+    ht_key.assign(HT_SIZE, -1);
+    ht_val.resize(HT_SIZE);
 
     uint8_t sub[256];
     int sub_len = 0;
@@ -845,7 +819,7 @@ struct GifWriter {
     static const int DIFF_THRESH = 18;
     const int n = w * h;
     if (!header_written && !has_pending) {
-      build_palette(rgb, n, NULL, global_pal, global_lut);
+      global_ncols = build_palette(rgb, n, NULL, global_pal, global_lut);
       pend_x = 0;
       pend_y = 0;
       pend_w = w;
@@ -857,7 +831,7 @@ struct GifWriter {
       for (int i = 0; i < n; i++) {
         uint32_t k = (((uint32_t)rgb[i * 3 + 0] >> 3) << 10) | (((uint32_t)rgb[i * 3 + 1] >> 3) << 5) |
                      ((uint32_t)rgb[i * 3 + 2] >> 3);
-        uint8_t idx = global_lut[k];
+        uint8_t idx = lut_of(global_lut, global_pal, global_ncols, k);
         pend_idx[i] = idx;
         prev_idx[i] = idx;
       }
@@ -879,7 +853,7 @@ struct GifWriter {
         if (dr + dg + db <= DIFF_THRESH) continue;
         uint32_t k = (((uint32_t)cur[x * 3 + 0] >> 3) << 10) | (((uint32_t)cur[x * 3 + 1] >> 3) << 5) |
                      ((uint32_t)cur[x * 3 + 2] >> 3);
-        uint8_t gidx = global_lut[k];
+        uint8_t gidx = lut_of(global_lut, global_pal, global_ncols, k);
         int gerr = abs((int)cur[x * 3 + 0] - (int)global_pal[gidx * 3 + 0]) +
                    abs((int)cur[x * 3 + 1] - (int)global_pal[gidx * 3 + 1]) +
                    abs((int)cur[x * 3 + 2] - (int)global_pal[gidx * 3 + 2]);
@@ -914,10 +888,12 @@ struct GifWriter {
     int dh = y1 - y0 + 1;
     bool use_local = (changed > 256 && (err_sum / (uint64_t)changed) > 26);
     uint8_t local_lut[32768];
-    const uint8_t *lut = global_lut;
+    uint8_t *lut = global_lut;
+    const uint8_t *lut_pal = global_pal;
+    int lut_n = global_ncols;
     if (use_local) {
-      std::vector<uint8_t> crop((size_t)dw * dh * 3);
-      std::vector<uint8_t> mask((size_t)dw * dh, 0);
+      crop.resize((size_t)dw * dh * 3);
+      mask.assign((size_t)dw * dh, 0);
       for (int y = 0; y < dh; y++) {
         const uint8_t *cur = rgb + ((size_t)(y0 + y) * w + x0) * 3;
         const uint8_t *prv = prev_rgb.data() + ((size_t)(y0 + y) * w + x0) * 3;
@@ -928,8 +904,9 @@ struct GifWriter {
           mask[(size_t)y * dw + x] = d > DIFF_THRESH ? 1 : 0;
         }
       }
-      build_palette(crop.data(), dw * dh, mask.data(), pend_pal, local_lut);
+      lut_n = build_palette(crop.data(), dw * dh, mask.data(), pend_pal, local_lut);
       lut = local_lut;
+      lut_pal = pend_pal;
     }
 
     pend_x = x0;
@@ -951,7 +928,7 @@ struct GifWriter {
         } else {
           uint32_t k = (((uint32_t)cur[x * 3 + 0] >> 3) << 10) | (((uint32_t)cur[x * 3 + 1] >> 3) << 5) |
                        ((uint32_t)cur[x * 3 + 2] >> 3);
-          uint8_t idx = lut[k];
+          uint8_t idx = lut_of(lut, lut_pal, lut_n, k);
           if (!use_local && pidx[x] == idx) {
             int gerr = abs((int)cur[x * 3 + 0] - (int)global_pal[idx * 3 + 0]) +
                        abs((int)cur[x * 3 + 1] - (int)global_pal[idx * 3 + 1]) +
@@ -1022,19 +999,22 @@ static void rgb_to_nv12(const uint8_t *src, int pitch, bool is_bgra, int w, int 
   }
 }
 
-// ---- One-time Media Foundation startup (avoids Windows mfplat.dll work-queue handle leaks on 0->1->0 cycles) ----
+// ---- Media Foundation, held only while a recording, an export or a probe runs ----
+//
+// Each worker thread starts it as it first needs it and shuts its own start down as it ends (MF counts them), so with
+// nothing running its work queues' threads and the encoders' state are gone (measured, 2026-11-21: 8 cycles of
+// start, a sink writer, shut down, no handle or thread kept past the first; kept started instead, 7 threads more).
 
-static INIT_ONCE g_mf_once = INIT_ONCE_STATIC_INIT;
-static BOOL g_mf_ok = FALSE;
+static thread_local bool t_mf_on = false;
 
-static BOOL CALLBACK mf_init_cb(PINIT_ONCE, PVOID, PVOID *) {
-  g_mf_ok = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)) ? TRUE : FALSE;
-  return TRUE;
+static bool mf_begin() {
+  if (!t_mf_on) t_mf_on = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
+  return t_mf_on;
 }
 
-static bool ensure_mf_started() {
-  InitOnceExecuteOnce(&g_mf_once, mf_init_cb, NULL, NULL);
-  return g_mf_ok != FALSE;
+static void mf_end() {
+  if (t_mf_on) MFShutdown();
+  t_mf_on = false;
 }
 
 // ---- MP4 Encoder (Optimal Cascade: HW HEVC -> HW H.264 -> SW H.264, optional AAC audio stream) ----
@@ -1063,9 +1043,16 @@ struct Mp4Encoder {
   int gop_secs = 2;
   bool export_mode = false;
 
-  static const int POOL_N = 8;
-  ComPtr<ID3D11Texture2D> nv12_pool[POOL_N];
-  ComPtr<ID3D11VideoProcessorOutputView> ov_pool[POOL_N];
+  ComPtr<ID3D11VideoProcessorInputView> in_view_kept;
+  ComPtr<ID3D11Texture2D> in_view_tex;
+  UINT in_view_sub = 0;
+
+  // NV12 surfaces handed to the encoder: 8 at first, grown one at a time (to 24 at most) only where the encoder holds
+  // them all for a while, then reused
+  static const int POOL_MAX = 24;
+  ComPtr<ID3D11Texture2D> nv12_pool[POOL_MAX];
+  ComPtr<ID3D11VideoProcessorOutputView> ov_pool[POOL_MAX];
+  int pool_n = 8;
   int pool_cursor = 0;
 
   CRITICAL_SECTION write_lock = {};
@@ -1262,10 +1249,12 @@ struct Mp4Encoder {
 
   bool ensure_vp(ID3D11Device *dev, ID3D11DeviceContext *ctx, int in_w, int in_h, bool in_yuv) {
     if (vp && vp_in_w == in_w && vp_in_h == in_h && vp_in_yuv == in_yuv) return true;
-    for (int i = 0; i < POOL_N; i++) {
+    for (int i = 0; i < POOL_MAX; i++) {
       ov_pool[i].Reset();
       nv12_pool[i].Reset();
     }
+    in_view_kept.Reset();
+    in_view_tex.Reset();
     vp.Reset();
     vpenum.Reset();
     if (!vdev && FAILED(dev->QueryInterface(IID_PPV_ARGS(&vdev)))) return false;
@@ -1298,7 +1287,7 @@ struct Mp4Encoder {
   // want_codec: 0=HEVC preferred, 1=H.264, 3=AV1 (HW)
   bool open(ID3D11Device *dev, IMFDXGIDeviceManager *shared_mgr, const std::wstring &path, int w, int h,
             int target_fps, bool want_audio, IMFMediaType *passthrough_audio = NULL, int want_codec = 0) {
-    if (!ensure_mf_started()) return false;
+    if (!mf_begin()) return false;
     if (!lock_init) {
       InitializeCriticalSection(&write_lock);
       lock_init = true;
@@ -1353,36 +1342,45 @@ struct Mp4Encoder {
     nd.Usage = D3D11_USAGE_DEFAULT;
     nd.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
-    for (int k = 0; k < POOL_N; k++) {
-      int idx = (pool_cursor + k) % POOL_N;
-      if (!nv12_pool[idx]) {
-        if (FAILED(dev->CreateTexture2D(&nd, NULL, &nv12_pool[idx]))) return false;
-      }
-      ID3D11Texture2D *raw = nv12_pool[idx].Get();
-      raw->AddRef();
-      ULONG rc = raw->Release();
-      if (rc == 1) {
-        pool_cursor = (idx + 1) % POOL_N;
-        out_tex = nv12_pool[idx];
-        if (need_ov) {
-          if (!ov_pool[idx]) {
-            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {};
-            ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-            if (FAILED(vdev->CreateVideoProcessorOutputView(raw, vpenum.Get(), &ovd, &ov_pool[idx]))) return false;
-          }
-          out_ov = ov_pool[idx];
+    // A pooled surface the encoder holds no more (only the pool's reference left). All of them still in flight:
+    // waited for a moment (an export decodes far faster than it encodes, so it waits on the encoder: a texture made
+    // for each such frame was gigabytes of video memory, 2026-11-21's audit), the pool grown by one where that is not
+    // enough (an encoder that keeps more frames than 8 before it gives any back), up to POOL_MAX; past that a
+    // recording drops the frame after a frame's time (its slot is caught up by the next), an export waits 10 s.
+    DWORD waited = 0, grow_after = export_mode ? 50 : 2;
+    DWORD most = export_mode ? 10000 : (DWORD)std::max(1, 1000 / std::max(1, fps));
+    for (;;) {
+      for (int k = 0; k < pool_n; k++) {
+        int idx = (pool_cursor + k) % pool_n;
+        if (!nv12_pool[idx]) {
+          if (FAILED(dev->CreateTexture2D(&nd, NULL, &nv12_pool[idx]))) return false;
         }
-        return true;
+        ID3D11Texture2D *raw = nv12_pool[idx].Get();
+        raw->AddRef();
+        ULONG rc = raw->Release();
+        if (rc == 1) {
+          pool_cursor = (idx + 1) % pool_n;
+          out_tex = nv12_pool[idx];
+          if (need_ov) {
+            if (!ov_pool[idx]) {
+              D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {};
+              ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+              if (FAILED(vdev->CreateVideoProcessorOutputView(raw, vpenum.Get(), &ovd, &ov_pool[idx]))) return false;
+            }
+            out_ov = ov_pool[idx];
+          }
+          return true;
+        }
       }
+      if (waited >= grow_after && pool_n < POOL_MAX) {
+        pool_cursor = pool_n++;
+        waited = 0;
+        continue;
+      }
+      if (waited >= most) return false;
+      Sleep(1);
+      waited++;
     }
-    // All pooled slots still held by async encoder: allocate a fresh texture so we never overwrite in-flight frames.
-    if (FAILED(dev->CreateTexture2D(&nd, NULL, &out_tex))) return false;
-    if (need_ov) {
-      D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {};
-      ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-      if (FAILED(vdev->CreateVideoProcessorOutputView(out_tex.Get(), vpenum.Get(), &ovd, &out_ov))) return false;
-    }
-    return true;
   }
 
   bool submit_nv12_sample(ID3D11Texture2D *nv12, LONGLONG pts, LONGLONG dur) {
@@ -1415,7 +1413,8 @@ struct Mp4Encoder {
   }
 
   bool write_gpu_frame(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *src_tex, UINT src_sub,
-                       bool src_is_yuv, int sx, int sy, int sw, int sh, LONGLONG pts, LONGLONG dur) {
+                       bool src_is_yuv, int sx, int sy, int sw, int sh, LONGLONG pts, LONGLONG dur,
+                       bool keep_view = false) {
     D3D11_TEXTURE2D_DESC sd = {};
     src_tex->GetDesc(&sd);
     if (!ensure_vp(dev, ctx, (int)sd.Width, (int)sd.Height, src_is_yuv)) return false;
@@ -1424,11 +1423,24 @@ struct Mp4Encoder {
     ComPtr<ID3D11VideoProcessorOutputView> out_view;
     if (!acquire_nv12(dev, true, nv12, out_view)) return false;
 
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {};
-    ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    ivd.Texture2D.ArraySlice = src_sub;
+    // (the input's view kept while it is the same texture of ours, as an export's or HDR's single surface is; a
+    // capture's own surfaces, the pool's, are never held past the frame)
     ComPtr<ID3D11VideoProcessorInputView> in_view;
-    if (FAILED(vdev->CreateVideoProcessorInputView(src_tex, vpenum.Get(), &ivd, &in_view))) return false;
+    if (keep_view && in_view_kept && in_view_tex.Get() == src_tex && in_view_sub == src_sub) {
+      in_view = in_view_kept;
+    } else {
+      D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {};
+      ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+      ivd.Texture2D.ArraySlice = src_sub;
+      if (FAILED(vdev->CreateVideoProcessorInputView(src_tex, vpenum.Get(), &ivd, &in_view))) return false;
+      in_view_kept.Reset();
+      in_view_tex.Reset();
+      if (keep_view) {
+        in_view_kept = in_view;
+        in_view_tex = src_tex;
+        in_view_sub = src_sub;
+      }
+    }
 
     RECT srect = {sx, sy, sx + sw, sy + sh};
     RECT drect = {0, 0, out_w, out_h};
@@ -1503,10 +1515,12 @@ struct Mp4Encoder {
       if (!cancel) hr = writer->Finalize();
       writer.Reset();
     }
-    for (int i = 0; i < POOL_N; i++) {
+    for (int i = 0; i < POOL_MAX; i++) {
       ov_pool[i].Reset();
       nv12_pool[i].Reset();
     }
+    in_view_kept.Reset();
+    in_view_tex.Reset();
     vp.Reset();
     vpenum.Reset();
     vctx.Reset();
@@ -1716,7 +1730,9 @@ struct SysAudioPump {
   void stop() {
     if (stop_ev) SetEvent(stop_ev);
     if (thread) {
-      WaitForSingleObject(thread, 3000);
+      // (waited for whole: it writes into the encoder, and the event, which are let go after; this is the
+      // recording's worker waiting, never the UI thread, and the loop sees the event within 10 ms)
+      WaitForSingleObject(thread, INFINITE);
       CloseHandle(thread);
       thread = NULL;
     }
@@ -1730,12 +1746,30 @@ struct SysAudioPump {
 
 // ---- Live Recording Worker Thread (always records temp high-quality MP4) ----
 
+// What the free-threaded pool's FrameArrived shares with the worker: held by both (the handler's own reference keeps it
+// alive past the worker's return, as a frame may still be arriving on the pool's thread when the worker lets go), and
+// told when the worker is done with it, after which an arriving frame is closed at once and kept nowhere.
 struct RecWorkerState {
-  CRITICAL_SECTION lock;
+  SRWLOCK lock = SRWLOCK_INIT;
   ComPtr<WGC::IDirect3D11CaptureFrame> last_frame;
   HANDLE first_frame_ev = NULL;
   uint64_t frame_seq = 0;
   bool got_frame = false;
+  bool stopped = false;
+  RecWorkerState() { first_frame_ev = CreateEventW(NULL, TRUE, FALSE, NULL); }
+  ~RecWorkerState() {
+    if (first_frame_ev) CloseHandle(first_frame_ev);
+  }
+  // The last frame let go (closed) and no other kept from now.
+  void stop() {
+    ComPtr<WGC::IDirect3D11CaptureFrame> old;
+    AcquireSRWLockExclusive(&lock);
+    stopped = true;
+    old.Swap(last_frame);
+    ReleaseSRWLockExclusive(&lock);
+    ComPtr<ABI::Windows::Foundation::IClosable> c;
+    if (old && SUCCEEDED(old.As(&c))) c->Close();
+  }
 };
 
 static void rec_trace_vram(const char *tag, ID3D11Device *dev) {
@@ -1770,7 +1804,8 @@ static std::wstring make_temp_master_path() {
   return out;
 }
 
-static DWORD WINAPI rec_worker(LPVOID) {
+static DWORD WINAPI rec_worker(LPVOID arg) {
+  LONG my_session = (LONG)(intptr_t)arg;
   HRESULT ro_hr = RoInitialize(RO_INIT_MULTITHREADED);
   timeBeginPeriod(1);
 
@@ -1809,9 +1844,7 @@ static DWORD WINAPI rec_worker(LPVOID) {
   EventRegistrationToken token = {};
   bool wgc_ok = false;
 
-  RecWorkerState ws = {};
-  InitializeCriticalSection(&ws.lock);
-  ws.first_frame_ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+  std::shared_ptr<RecWorkerState> ws = std::make_shared<RecWorkerState>();
 
   if (dev && ctx) {
     ComPtr<ID3D10Multithread> mt;
@@ -1830,15 +1863,19 @@ static DWORD WINAPI rec_worker(LPVOID) {
         "  uint dw, dh; dst.GetDimensions(dw, dh); if (id.x >= dw || id.y >= dh) return;"
         "  float3 c = src[uint2(id.x + ox, id.y + oy)].rgb * inv_white;"
         "  dst[id.xy] = float4(enc(c.r), enc(c.g), enc(c.b), 1.0); }";
-    ComPtr<ID3DBlob> code, errs;
-    if (SUCCEEDED(D3DCompile(hlsl, sizeof hlsl - 1, "rec_srgb", NULL, NULL, "main", "cs_5_0",
-                             D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errs))) {
-      dev->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &to_srgb);
+    // (the shader compiled only where the monitor is HDR: an SDR one's frames are BGRA8 as they are, and the compiler
+    // is never loaded for it)
+    if (ps_wgc_mon_hdr(mon, &sdr_white) != 0) {
+      ComPtr<ID3DBlob> code, errs;
+      if (SUCCEEDED(D3DCompile(hlsl, sizeof hlsl - 1, "rec_srgb", NULL, NULL, "main", "cs_5_0",
+                               D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errs))) {
+        dev->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &to_srgb);
+      }
+      D3D11_BUFFER_DESC bd = {16, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+      dev->CreateBuffer(&bd, NULL, &to_srgb_k);
     }
-    D3D11_BUFFER_DESC bd = {16, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
-    dev->CreateBuffer(&bd, NULL, &to_srgb_k);
-
-    is_hdr = to_srgb && to_srgb_k && ps_wgc_mon_hdr(mon, &sdr_white) != 0;
+    is_hdr = to_srgb && to_srgb_k;
+    if (!is_hdr) sdr_white = 1.0f;
 
     ComPtr<IDXGIDevice> xdev;
     ComPtr<IInspectable> insp;
@@ -1861,17 +1898,21 @@ static DWORD WINAPI rec_worker(LPVOID) {
         auto arrived = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
                                                            ITypedEventHandler<WGC::Direct3D11CaptureFramePool *, IInspectable *>,
                                                            Microsoft::WRL::FtmBase>>(
-            [&ws](WGC::IDirect3D11CaptureFramePool *sender, IInspectable *) -> HRESULT {
+            [ws](WGC::IDirect3D11CaptureFramePool *sender, IInspectable *) -> HRESULT {
               ComPtr<WGC::IDirect3D11CaptureFrame> f;
               if (SUCCEEDED(sender->TryGetNextFrame(&f)) && f) {
                 ComPtr<WGC::IDirect3D11CaptureFrame> old;
-                EnterCriticalSection(&ws.lock);
-                old = ws.last_frame;
-                ws.last_frame = f;
-                ws.frame_seq++;
-                ws.got_frame = true;
-                LeaveCriticalSection(&ws.lock);
-                SetEvent(ws.first_frame_ev);
+                AcquireSRWLockExclusive(&ws->lock);
+                if (ws->stopped) {
+                  old = f;  // (the worker is done: closed at once, kept nowhere)
+                } else {
+                  old = ws->last_frame;
+                  ws->last_frame = f;
+                  ws->frame_seq++;
+                  ws->got_frame = true;
+                }
+                ReleaseSRWLockExclusive(&ws->lock);
+                SetEvent(ws->first_frame_ev);
                 ComPtr<ABI::Windows::Foundation::IClosable> c;
                 if (old && SUCCEEDED(old.As(&c))) c->Close();
               }
@@ -1891,7 +1932,7 @@ static DWORD WINAPI rec_worker(LPVOID) {
     }
   }
 
-  if (wgc_ok) WaitForSingleObject(ws.first_frame_ev, 500);
+  if (wgc_ok) WaitForSingleObject(ws->first_frame_ev, 500);
 
   ComPtr<ID3D11Texture2D> hdr_srgb_tex;
   ComPtr<ID3D11UnorderedAccessView> hdr_srgb_uav;
@@ -1999,51 +2040,62 @@ static DWORD WINAPI rec_worker(LPVOID) {
     return true;
   };
 
-  auto capture_gdi = [&](std::vector<uint8_t> &out_buf, int &out_pitch, bool &out_bgra) -> bool {
+  // GDI's taking (no WGC session): one DC and DIB section for the whole recording, the pixels read from it in place
+  HDC gdi_mem = NULL;
+  HBITMAP gdi_bmp = NULL;
+  HGDIOBJ gdi_old = NULL;
+  void *gdi_bits = NULL;
+  auto capture_gdi = [&](const uint8_t *&out_px, int &out_pitch, bool &out_bgra) -> bool {
     HDC screen = GetDC(NULL);
     if (!screen) return false;
-    HDC mem = CreateCompatibleDC(screen);
-    BITMAPINFO bi = {};
-    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
-    bi.bmiHeader.biWidth = rw;
-    bi.bmiHeader.biHeight = -rh;
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    void *bits = NULL;
-    HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (!gdi_mem) {
+      gdi_mem = CreateCompatibleDC(screen);
+      BITMAPINFO bi = {};
+      bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+      bi.bmiHeader.biWidth = rw;
+      bi.bmiHeader.biHeight = -rh;
+      bi.bmiHeader.biPlanes = 1;
+      bi.bmiHeader.biBitCount = 32;
+      bi.bmiHeader.biCompression = BI_RGB;
+      gdi_bmp = gdi_mem ? CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &gdi_bits, NULL, 0) : NULL;
+      if (gdi_bmp && gdi_bits) gdi_old = SelectObject(gdi_mem, gdi_bmp);
+    }
     bool ok = false;
-    if (bmp && bits) {
-      HGDIOBJ old = SelectObject(mem, bmp);
-      if (BitBlt(mem, 0, 0, rw, rh, screen, R.x, R.y, SRCCOPY)) {
-        if (cursor) {
-          CURSORINFO ci = {};
-          ci.cbSize = sizeof ci;
-          if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) {
-            ICONINFO ii = {};
-            if (GetIconInfo(ci.hCursor, &ii)) {
-              DrawIconEx(mem, ci.ptScreenPos.x - R.x - (int)ii.xHotspot, ci.ptScreenPos.y - R.y - (int)ii.yHotspot,
-                         ci.hCursor, 0, 0, 0, NULL, DI_NORMAL);
-              if (ii.hbmMask) DeleteObject(ii.hbmMask);
-              if (ii.hbmColor) DeleteObject(ii.hbmColor);
-            }
+    if (gdi_old && BitBlt(gdi_mem, 0, 0, rw, rh, screen, R.x, R.y, SRCCOPY)) {
+      if (cursor) {
+        CURSORINFO ci = {};
+        ci.cbSize = sizeof ci;
+        if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) {
+          ICONINFO ii = {};
+          if (GetIconInfo(ci.hCursor, &ii)) {
+            DrawIconEx(gdi_mem, ci.ptScreenPos.x - R.x - (int)ii.xHotspot, ci.ptScreenPos.y - R.y - (int)ii.yHotspot,
+                       ci.hCursor, 0, 0, 0, NULL, DI_NORMAL);
+            if (ii.hbmMask) DeleteObject(ii.hbmMask);
+            if (ii.hbmColor) DeleteObject(ii.hbmColor);
           }
         }
-        out_pitch = rw * 4;
-        out_buf.resize((size_t)out_pitch * rh);
-        memcpy(out_buf.data(), bits, out_buf.size());
-        out_bgra = true;
-        ok = true;
       }
-      SelectObject(mem, old);
-      DeleteObject(bmp);
+      GdiFlush();
+      out_px = (const uint8_t *)gdi_bits;
+      out_pitch = rw * 4;
+      out_bgra = true;
+      ok = true;
     }
-    DeleteDC(mem);
     ReleaseDC(NULL, screen);
     return ok;
   };
+  auto free_gdi = [&]() {
+    if (gdi_mem && gdi_old) SelectObject(gdi_mem, gdi_old);
+    if (gdi_bmp) DeleteObject(gdi_bmp);
+    if (gdi_mem) DeleteDC(gdi_mem);
+    gdi_mem = NULL;
+    gdi_bmp = NULL;
+    gdi_old = NULL;
+    gdi_bits = NULL;
+  };
 
-  R.preview_bmp.clear();
+  // (the first frame's card built here, handed over with the recording as it is kept: R's own is the UI thread's)
+  std::vector<uint8_t> preview;
   bool preview_captured = false;
   Mp4Encoder mp4;
   bool enc_ok = mp4.open(wgc_ok ? dev.Get() : NULL, NULL, master_path, rw, rh, fps, want_audio);
@@ -2052,13 +2104,9 @@ static DWORD WINAPI rec_worker(LPVOID) {
     ComPtr<ABI::Windows::Foundation::IClosable> c;
     if (session && SUCCEEDED(session.As(&c))) c->Close();
     if (pool && SUCCEEDED(pool.As(&c))) c->Close();
-    EnterCriticalSection(&ws.lock);
-    if (ws.last_frame && SUCCEEDED(ws.last_frame.As(&c))) c->Close();
-    ws.last_frame.Reset();
-    LeaveCriticalSection(&ws.lock);
-    DeleteCriticalSection(&ws.lock);
-    CloseHandle(ws.first_frame_ev);
+    ws->stop();
     timeEndPeriod(1);
+    mf_end();
     if (SUCCEEDED(ro_hr)) RoUninitialize();
     InterlockedExchange(&R.running, 0);
     rec_post("error", 0, 0, 0, 0, 0, 0, "", L"", "无法初始化视频编码器");
@@ -2124,10 +2172,10 @@ static DWORD WINAPI rec_worker(LPVOID) {
     ComPtr<ID3D11Texture2D> src_tex;
     uint64_t fr_seq = 0;
     if (wgc_ok) {
-      EnterCriticalSection(&ws.lock);
-      fr = ws.last_frame;
-      fr_seq = ws.frame_seq;
-      LeaveCriticalSection(&ws.lock);
+      AcquireSRWLockShared(&ws->lock);
+      fr = ws->last_frame;
+      fr_seq = ws->frame_seq;
+      ReleaseSRWLockShared(&ws->lock);
       if (fr) {
         ComPtr<WD3D::IDirect3DSurface> surf;
         ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> acc;
@@ -2157,16 +2205,20 @@ static DWORD WINAPI rec_worker(LPVOID) {
           bool pbgra = true;
           std::vector<uint8_t> pbuf;
           if (read_cpu_srgb(rgb_tex, sx, sy, pbuf, pp, pbgra)) {
-            build_preview_bmp(pbuf.data(), rw, rh, pp, pbgra, R.preview_bmp);
+            build_preview_bmp(pbuf.data(), rw, rh, pp, pbgra, preview);
             preview_captured = true;
           }
+          // (the GPU's path reads nothing back after the card: its staging copy let go now, not at the end)
+          staging_tex.Reset();
         }
-        wrote = mp4.write_gpu_frame(dev.Get(), ctx.Get(), rgb_tex, 0, false, sx, sy, rw, rh, next_slot_hns, dur_hns);
+        wrote = mp4.write_gpu_frame(dev.Get(), ctx.Get(), rgb_tex, 0, false, sx, sy, rw, rh, next_slot_hns, dur_hns,
+                                    is_hdr);
       }
     } else {
       int pitch = 0;
       bool is_bgra = true;
       bool got = false;
+      const uint8_t *px = NULL;
       if (src_tex) {
         ID3D11Texture2D *rgb_tex = src_tex.Get();
         if (is_hdr) {
@@ -2177,15 +2229,16 @@ static DWORD WINAPI rec_worker(LPVOID) {
           rgb_tex = cached_hdr_srgb;
         }
         if (rgb_tex) got = read_cpu_srgb(rgb_tex, is_hdr ? 0 : rx, is_hdr ? 0 : ry, cpu_bgra, pitch, is_bgra);
+        px = cpu_bgra.data();
       } else {
-        got = capture_gdi(cpu_bgra, pitch, is_bgra);
+        got = capture_gdi(px, pitch, is_bgra);
       }
-      if (got) {
+      if (got && px) {
         if (!preview_captured) {
-          build_preview_bmp(cpu_bgra.data(), rw, rh, pitch, is_bgra, R.preview_bmp);
+          build_preview_bmp(px, rw, rh, pitch, is_bgra, preview);
           preview_captured = true;
         }
-        wrote = mp4.write_cpu_frame(cpu_bgra.data(), pitch, is_bgra, next_slot_hns, dur_hns);
+        wrote = mp4.write_cpu_frame(px, pitch, is_bgra, next_slot_hns, dur_hns);
       }
     }
 
@@ -2212,19 +2265,17 @@ static DWORD WINAPI rec_worker(LPVOID) {
   std::string codec_used = mp4.codec_name;
   uint64_t final_bytes = mp4.finish(cancel || frames == 0);
 
-  // Release all WGC and D3D11 objects and trim driver pools immediately.
+  // Release all WGC and D3D11 objects and trim driver pools immediately. (a frame arriving after this, on the pool's
+  // thread, finds the state told it is over: closed there, kept nowhere)
   if (pool) pool->remove_FrameArrived(token);
   ComPtr<ABI::Windows::Foundation::IClosable> closable;
   if (session && SUCCEEDED(session.As(&closable))) closable->Close();
   if (pool && SUCCEEDED(pool.As(&closable))) closable->Close();
   session.Reset();
   pool.Reset();
-  EnterCriticalSection(&ws.lock);
-  if (ws.last_frame && SUCCEEDED(ws.last_frame.As(&closable))) closable->Close();
-  ws.last_frame.Reset();
-  LeaveCriticalSection(&ws.lock);
-  DeleteCriticalSection(&ws.lock);
-  CloseHandle(ws.first_frame_ev);
+  ws->stop();
+  ws.reset();
+  free_gdi();
 
   staging_tex.Reset();
   hdr_half_copy.Reset();
@@ -2246,54 +2297,92 @@ static DWORD WINAPI rec_worker(LPVOID) {
   rec_trace_vram("rec_after_trim", NULL);
 
   timeEndPeriod(1);
+  mf_end();
   if (SUCCEEDED(ro_hr)) RoUninitialize();
+
+  // (kept only for the session it was made in: one ended meanwhile (ps_rec_end) had its file let go here)
+  bool kept = false;
+  if (!cancel && final_bytes > 0) {
+    AcquireSRWLockExclusive(&R.lock);
+    if (R.session == my_session) {
+      if (!R.master_path.empty() && R.master_path != master_path) DeleteFileW(R.master_path.c_str());
+      R.master_path = master_path;
+      R.master_bytes = final_bytes;
+      R.master_ms = last_elapsed_ms;
+      R.master_w = rw;
+      R.master_h = rh;
+      R.master_fps = fps;
+      R.master_audio = had_audio ? 1 : 0;
+      R.master_codec = codec_used;
+      R.preview_bmp.swap(preview);
+      kept = true;
+    }
+    ReleaseSRWLockExclusive(&R.lock);
+  }
   InterlockedExchange(&R.running, 0);
 
   if (cancel) {
     DeleteFileW(master_path.c_str());
     rec_post("cancelled", last_elapsed_ms, frames, 0, 0, 0, 0, codec_used.c_str(), L"", "");
-  } else if (final_bytes > 0) {
-    if (!R.master_path.empty() && R.master_path != master_path) DeleteFileW(R.master_path.c_str());
-    R.master_path = master_path;
-    R.master_bytes = final_bytes;
-    R.master_ms = last_elapsed_ms;
-    R.master_w = rw;
-    R.master_h = rh;
-    R.master_fps = fps;
-    R.master_audio = had_audio ? 1 : 0;
-    R.master_codec = codec_used;
+  } else if (kept) {
     rec_post("recorded", last_elapsed_ms, frames, final_bytes, final_bytes, 100, had_audio ? 1 : 0, codec_used.c_str(),
              master_path, "");
   } else {
     DeleteFileW(master_path.c_str());
-    rec_post("error", last_elapsed_ms, frames, 0, 0, 0, 0, codec_used.c_str(), L"", "保存录屏文件失败");
+    if (final_bytes == 0)
+      rec_post("error", last_elapsed_ms, frames, 0, 0, 0, 0, codec_used.c_str(), L"", "保存录屏文件失败");
   }
   return 0;
 }
 
 // ---- Post-Recording Export / Compression Worker Thread ----
 
-static DWORD WINAPI export_worker(LPVOID) {
+// What an export is of and what it is asked to make: taken as it is begun (ps_rec_export, the UI thread's), so the
+// worker reads nothing of R's that the UI thread may change meanwhile.
+struct ExportJob {
+  std::wstring src, dst;
+  std::string master_codec;
+  int fmt, quality, max_side, gif_fps;
+  uint64_t orig_bytes;
+  int64_t total_ms;
+  int src_w, src_h, src_fps;
+  bool src_audio;
+  LONG gen;  // R.exp_gen as it was begun: another since, it is called off
+};
+
+static bool export_called_off(const ExportJob &job) { return InterlockedCompareExchange(&R.exp_gen, 0, 0) != job.gen; }
+
+static DWORD export_work(const ExportJob &job);
+
+static DWORD WINAPI export_worker(LPVOID arg) {
+  ExportJob *job = (ExportJob *)arg;
+  DWORD r = export_work(*job);
+  delete job;
+  mf_end();
+  return r;
+}
+
+static DWORD export_work(const ExportJob &job) {
   HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-  std::wstring src = R.master_path;
-  std::wstring dst = R.exp_dest;
-  int fmt = R.exp_fmt;           // 0=MP4 H.265, 1=MP4 H.264, 2=GIF
-  int quality = R.exp_quality;   // 0=Original, 1=High, 2=Balanced, 3=Compact
-  int max_side = R.exp_max_side; // 0=Original, else 1920/1280/854
-  int gif_fps = R.exp_gif_fps > 0 ? R.exp_gif_fps : 15;
-  uint64_t orig_bytes = R.master_bytes;
-  int64_t total_ms = R.master_ms > 0 ? R.master_ms : 1;
-  int src_w = R.master_w;
-  int src_h = R.master_h;
-  int src_fps = R.master_fps > 0 ? R.master_fps : 30;
-  bool src_audio = (R.master_audio != 0);
+  const std::wstring &src = job.src;
+  const std::wstring &dst = job.dst;
+  int fmt = job.fmt;             // 0=MP4 H.265, 1=MP4 H.264, 2=GIF, 3=AV1
+  int quality = job.quality;     // 0=Original, 1=High, 2=Balanced, 3=Compact
+  int max_side = job.max_side;   // 0=Original, else percent / long edge
+  int gif_fps = job.gif_fps > 0 ? job.gif_fps : 15;
+  uint64_t orig_bytes = job.orig_bytes;
+  int64_t total_ms = job.total_ms > 0 ? job.total_ms : 1;
+  int src_w = job.src_w;
+  int src_h = job.src_h;
+  int src_fps = job.src_fps > 0 ? job.src_fps : 30;
+  bool src_audio = job.src_audio;
 
   rec_make_dirs(dst);
 
   int out_w = src_w, out_h = src_h;
   compute_scaled_dims(src_w, src_h, max_side, out_w, out_h);
   bool need_resize = (out_w != src_w || out_h != src_h);
-  bool master_is_hevc = (R.master_codec.rfind("HEVC", 0) == 0);
+  bool master_is_hevc = (job.master_codec.rfind("HEVC", 0) == 0);
   bool want_hevc = (fmt == 0);
   bool direct_copy = (fmt == 0 || fmt == 1) && quality == 0 && !need_resize && (want_hevc == master_is_hevc);
 
@@ -2304,7 +2393,7 @@ static DWORD WINAPI export_worker(LPVOID) {
       copy_file_to_clipboard(dst);
       InterlockedExchange(&R.exporting, 0);
       if (SUCCEEDED(co)) CoUninitialize();
-      rec_post("exported", total_ms, 0, sz, orig_bytes, 100, src_audio ? 1 : 0, R.master_codec.c_str(), dst, "");
+      rec_post("exported", total_ms, 0, sz, orig_bytes, 100, src_audio ? 1 : 0, job.master_codec.c_str(), dst, "");
       return 0;
     }
     InterlockedExchange(&R.exporting, 0);
@@ -2313,7 +2402,7 @@ static DWORD WINAPI export_worker(LPVOID) {
     return 0;
   }
 
-  if (!ensure_mf_started()) {
+  if (!mf_begin()) {
     InterlockedExchange(&R.exporting, 0);
     if (SUCCEEDED(co)) CoUninitialize();
     rec_post("export-error", total_ms, 0, 0, orig_bytes, 0, 0, "", dst, "初始化转码失败");
@@ -2442,19 +2531,25 @@ static DWORD WINAPI export_worker(LPVOID) {
 
     bool video_done = false;
     bool audio_done = !(has_src_audio && enc.has_audio);
+    uint8_t stream_kind[8] = {0};  // 1 video, 2 other, 0 not asked yet
 
-    while (!(video_done && audio_done) && InterlockedCompareExchange(&R.exp_cancel, 0, 0) == 0) {
+    while (!(video_done && audio_done) && !export_called_off(job)) {
       DWORD sidx = 0, flags = 0;
       LONGLONG ts = 0;
       ComPtr<IMFSample> sample;
       HRESULT hr = reader->ReadSample((DWORD)MF_SOURCE_READER_ANY_STREAM, 0, &sidx, &flags, &ts, &sample);
       if (FAILED(hr)) break;
 
-      ComPtr<IMFMediaType> cur_mt;
-      reader->GetCurrentMediaType(sidx, &cur_mt);
-      GUID major = GUID_NULL;
-      if (cur_mt) cur_mt->GetGUID(MF_MT_MAJOR_TYPE, &major);
-      bool is_video = (major == MFMediaType_Video);
+      // (each stream's kind asked once, not of every sample)
+      if (sidx >= 8) continue;
+      if (!stream_kind[sidx]) {
+        ComPtr<IMFMediaType> cur_mt;
+        reader->GetCurrentMediaType(sidx, &cur_mt);
+        GUID major = GUID_NULL;
+        if (cur_mt) cur_mt->GetGUID(MF_MT_MAJOR_TYPE, &major);
+        stream_kind[sidx] = major == MFMediaType_Video ? 1 : 2;
+      }
+      bool is_video = stream_kind[sidx] == 1;
 
       if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
         if (is_video) video_done = true;
@@ -2502,33 +2597,59 @@ static DWORD WINAPI export_worker(LPVOID) {
               if (single_nv12) {
                 D3D11_BOX cbox = {0, 0, 0, sd.Width, sd.Height, 1};
                 ctx->CopySubresourceRegion(single_nv12.Get(), 0, 0, 0, 0, dtex.Get(), sub, &cbox);
-                enc.write_gpu_frame(dev.Get(), ctx.Get(), single_nv12.Get(), 0, true, 0, 0, src_w, src_h, ts, dur);
+                enc.write_gpu_frame(dev.Get(), ctx.Get(), single_nv12.Get(), 0, true, 0, 0, src_w, src_h, ts, dur, true);
               }
             }
           }
         } else {
+          // (its rows as the buffer has them: IMF2DBuffer's first row and signed pitch where it has one, a decoder's
+          // padded or bottom-up rows read right; else contiguous, top-down; unlocked however it went)
           ComPtr<IMFMediaBuffer> buf;
-          if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buf))) {
+          ComPtr<IMF2DBuffer> buf2d;
+          BYTE *scan0 = NULL;
+          LONG pitch = 0;
+          bool locked_2d = false, locked_1d = false;
+          DWORD bufs = 0;
+          if (SUCCEEDED(sample->GetBufferCount(&bufs)) && bufs == 1 && SUCCEEDED(sample->GetBufferByIndex(0, &buf)) &&
+              SUCCEEDED(buf.As(&buf2d)) && SUCCEEDED(buf2d->Lock2D(&scan0, &pitch))) {
+            locked_2d = true;
+            if ((pitch < 0 ? -pitch : pitch) < (LONG)src_w * 4) {
+              buf2d->Unlock2D();
+              locked_2d = false;
+            }
+          }
+          if (!locked_2d) {
+            buf.Reset();
             BYTE *p = NULL;
             DWORD len = 0;
-            if (SUCCEEDED(buf->Lock(&p, NULL, &len)) && len >= (DWORD)((size_t)src_w * src_h * 4)) {
-              if (out_w == src_w && out_h == src_h) {
-                enc.write_cpu_frame(p, src_w * 4, true, ts, dur);
+            if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buf)) && SUCCEEDED(buf->Lock(&p, NULL, &len))) {
+              if (len >= (DWORD)((size_t)src_w * src_h * 4)) {
+                scan0 = p;
+                pitch = (LONG)src_w * 4;
+                locked_1d = true;
               } else {
-                scaled_rgb.resize((size_t)out_w * out_h * 4);
-                for (int y = 0; y < out_h; y++) {
-                  int sy = y * src_h / out_h;
-                  const uint8_t *sr = p + (size_t)sy * src_w * 4;
-                  uint8_t *dr = scaled_rgb.data() + (size_t)y * out_w * 4;
-                  for (int x = 0; x < out_w; x++) {
-                    int sx = x * src_w / out_w;
-                    memcpy(dr + (size_t)x * 4, sr + (size_t)sx * 4, 4);
-                  }
-                }
-                enc.write_cpu_frame(scaled_rgb.data(), out_w * 4, true, ts, dur);
+                buf->Unlock();
               }
-              buf->Unlock();
             }
+          }
+          if (locked_2d || locked_1d) {
+            if (out_w == src_w && out_h == src_h && pitch > 0) {
+              enc.write_cpu_frame(scan0, (int)pitch, true, ts, dur);
+            } else {
+              scaled_rgb.resize((size_t)out_w * out_h * 4);
+              for (int y = 0; y < out_h; y++) {
+                int sy = y * src_h / out_h;
+                const uint8_t *sr = scan0 + (ptrdiff_t)sy * pitch;
+                uint8_t *dr = scaled_rgb.data() + (size_t)y * out_w * 4;
+                for (int x = 0; x < out_w; x++) {
+                  int sx = x * src_w / out_w;
+                  memcpy(dr + (size_t)x * 4, sr + (size_t)sx * 4, 4);
+                }
+              }
+              enc.write_cpu_frame(scaled_rgb.data(), out_w * 4, true, ts, dur);
+            }
+            if (locked_2d) buf2d->Unlock2D();
+            else buf->Unlock();
           }
         }
 
@@ -2545,7 +2666,7 @@ static DWORD WINAPI export_worker(LPVOID) {
     }
     single_nv12.Reset();
 
-    bool cancelled = InterlockedCompareExchange(&R.exp_cancel, 0, 0) != 0;
+    bool cancelled = export_called_off(job);
     std::string cname = enc.codec_name;
     bool out_audio = enc.has_audio;
     uint64_t out_bytes = enc.finish(cancelled);
@@ -2565,7 +2686,10 @@ static DWORD WINAPI export_worker(LPVOID) {
     InterlockedExchange(&R.exporting, 0);
     if (SUCCEEDED(co)) CoUninitialize();
 
-    if (cancelled) return 0;
+    if (cancelled) {
+      rec_post("export-cancelled", total_ms, 0, 0, orig_bytes, 0, 0, "", dst, "");
+      return 0;
+    }
     if (out_bytes > 0) {
       copy_file_to_clipboard(dst);
       rec_post("exported", total_ms, 0, out_bytes, orig_bytes, 100, out_audio ? 1 : 0, cname.c_str(), dst, "");
@@ -2642,7 +2766,7 @@ static DWORD WINAPI export_worker(LPVOID) {
   int last_pct = -1;
   std::vector<uint8_t> rgb_frame((size_t)gif_w * gif_h * 3);
 
-  while (InterlockedCompareExchange(&R.exp_cancel, 0, 0) == 0) {
+  while (!export_called_off(job)) {
     DWORD sidx = 0, flags = 0;
     LONGLONG ts = 0;
     ComPtr<IMFSample> sample;
@@ -2739,7 +2863,7 @@ static DWORD WINAPI export_worker(LPVOID) {
     }
   }
 
-  bool cancelled = InterlockedCompareExchange(&R.exp_cancel, 0, 0) != 0;
+  bool cancelled = export_called_off(job);
   uint64_t out_bytes = 0;
   if (cancelled) {
     gif.abort();
@@ -2755,11 +2879,15 @@ static DWORD WINAPI export_worker(LPVOID) {
   InterlockedExchange(&R.exporting, 0);
   if (SUCCEEDED(co)) CoUninitialize();
 
-  if (cancelled) return 0;
+  if (cancelled) {
+    rec_post("export-cancelled", total_ms, 0, 0, orig_bytes, 0, 0, "GIF", dst, "");
+    return 0;
+  }
   if (out_bytes > 0) {
     copy_file_to_clipboard(dst);
     rec_post("exported", total_ms, 0, out_bytes, orig_bytes, 100, 0, "GIF", dst, "");
   } else {
+    DeleteFileW(dst.c_str());  // (a GIF begun and not finished: no half file left)
     rec_post("export-error", total_ms, 0, 0, orig_bytes, 0, 0, "GIF", dst, "生成 GIF 失败");
   }
   return 0;
@@ -2802,10 +2930,9 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   R.my = mi.rcMonitor.top;
   R.mw = mi.rcMonitor.right - mi.rcMonitor.left;
   R.mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) {
-    rec_frame_show(RGB(0x2F, 0x9B, 0xFF));
-    rec_draw_open(x, y, w, h);
-  }
+  // (the clicks' and keys' overlay only told where: nothing of it is made until a recording asks for it)
+  rec_draw_open(x, y, w, h);
+  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) rec_frame_show(RGB(0x2F, 0x9B, 0xFF));
   return 1;
 }
 
@@ -2831,13 +2958,15 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
   if (!R.wake_ev) R.wake_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
   ResetEvent(R.wake_ev);
   InterlockedExchange(&R.running, 1);
-  rec_frame_show(RGB(0xEF, 0x44, 0x44));
-  rec_draw_set_recording(1);
-  R.rec_thread = CreateThread(NULL, 0, rec_worker, NULL, 0, NULL);
+  LONG session = InterlockedCompareExchange(&R.session, 0, 0);
+  R.rec_thread = CreateThread(NULL, 0, rec_worker, (LPVOID)(intptr_t)session, 0, NULL);
   if (!R.rec_thread) {
     InterlockedExchange(&R.running, 0);
     return 0;
   }
+  // (the red frame and the overlay's hooks only once the worker is there: none left behind where it is not)
+  rec_frame_show(RGB(0xEF, 0x44, 0x44));
+  rec_draw_set_recording(1);
   return 1;
 }
 
@@ -2859,28 +2988,50 @@ void ps_rec_stop(int32_t cancel) {
 }
 
 int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, int32_t max_side, int32_t gif_fps) {
-  if (R.master_path.empty() || InterlockedCompareExchange(&R.exporting, 0, 0) != 0) return 0;
+  // (one called off a moment ago may still be letting go of its encoder: waited for, briefly)
+  if (InterlockedCompareExchange(&R.exporting, 0, 0) != 0 && R.exp_thread &&
+      WaitForSingleObject(R.exp_thread, 3000) != WAIT_OBJECT_0)
+    return 0;
+  if (InterlockedCompareExchange(&R.exporting, 0, 0) != 0) return 0;
   if (R.exp_thread) {
-    WaitForSingleObject(R.exp_thread, 3000);
     CloseHandle(R.exp_thread);
     R.exp_thread = NULL;
   }
   int len = (int)Moonbit_array_length(dest_path);
-  R.exp_dest = utf8_to_wide((const char *)dest_path, len);
-  if (R.exp_dest.empty()) return 0;
-  R.exp_fmt = fmt;
-  R.exp_quality = quality;
-  R.exp_max_side = max_side;
-  R.exp_gif_fps = gif_fps;
-  InterlockedExchange(&R.exp_cancel, 0);
+  ExportJob *job = new ExportJob();
+  job->dst = utf8_to_wide((const char *)dest_path, len);
+  AcquireSRWLockShared(&R.lock);
+  job->src = R.master_path;
+  job->master_codec = R.master_codec;
+  job->orig_bytes = R.master_bytes;
+  job->total_ms = R.master_ms;
+  job->src_w = R.master_w;
+  job->src_h = R.master_h;
+  job->src_fps = R.master_fps;
+  job->src_audio = R.master_audio != 0;
+  ReleaseSRWLockShared(&R.lock);
+  if (job->src.empty() || job->dst.empty()) {
+    delete job;
+    return 0;
+  }
+  job->fmt = fmt;
+  job->quality = quality;
+  job->max_side = max_side;
+  job->gif_fps = gif_fps;
+  job->gen = InterlockedIncrement(&R.exp_gen);
   InterlockedExchange(&R.exporting, 1);
-  R.exp_thread = CreateThread(NULL, 0, export_worker, NULL, 0, NULL);
+  R.exp_thread = CreateThread(NULL, 0, export_worker, job, 0, NULL);
   if (!R.exp_thread) {
+    delete job;
     InterlockedExchange(&R.exporting, 0);
     return 0;
   }
   return 1;
 }
+
+// The export under way called off: its half file deleted by its worker, the recording kept ({"state":
+// "export-cancelled"} told once it has stopped).
+void ps_rec_export_cancel(void) { InterlockedIncrement(&R.exp_gen); }
 
 int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
   int slen = (int)Moonbit_array_length(src_path);
@@ -2901,65 +3052,157 @@ int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
   return 1;
 }
 
-int32_t ps_rec_has_av1(void) {
-  static int cached = -1;
-  if (cached >= 0) return cached;
-  if (!ensure_mf_started()) {
-    cached = 0;
-    return 0;
-  }
-  MFT_REGISTER_TYPE_INFO ot = {MFMediaType_Video, PS_MFVideoFormat_AV1};
-  IMFActivate **acts = NULL;
-  UINT32 cnt = 0;
-  HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER,
-                         MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_LOCALMFT | MFT_ENUM_FLAG_SORTANDFILTER,
-                         NULL, &ot, &acts, &cnt);
-  if (SUCCEEDED(hr) && acts) {
-    for (UINT32 i = 0; i < cnt; i++) {
-      if (acts[i]) acts[i]->Release();
+// Whether a hardware AV1 encoder is here: -1 not known yet (asked now, on a thread of its own: its answer told as
+// {"do":"rec-av1","on":0|1}), else 0 or 1. Never on the UI thread: Media Foundation's start and an MFT enumeration.
+static volatile LONG g_av1 = -1;    // -1 not asked, -2 being asked, 0 / 1 known
+static DWORD WINAPI av1_probe(LPVOID) {
+  int here = 0;
+  HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  if (mf_begin()) {
+    MFT_REGISTER_TYPE_INFO ot = {MFMediaType_Video, PS_MFVideoFormat_AV1};
+    IMFActivate **acts = NULL;
+    UINT32 cnt = 0;
+    HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER,
+                           MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_LOCALMFT | MFT_ENUM_FLAG_SORTANDFILTER, NULL, &ot,
+                           &acts, &cnt);
+    if (SUCCEEDED(hr) && acts) {
+      for (UINT32 i = 0; i < cnt; i++)
+        if (acts[i]) acts[i]->Release();
+      CoTaskMemFree(acts);
     }
-    CoTaskMemFree(acts);
+    here = (SUCCEEDED(hr) && cnt > 0) ? 1 : 0;
+    mf_end();
   }
-  cached = (SUCCEEDED(hr) && cnt > 0) ? 1 : 0;
-  return cached;
+  if (SUCCEEDED(co)) CoUninitialize();
+  InterlockedExchange(&g_av1, here);
+  char buf[48];
+  int n = snprintf(buf, sizeof buf, "{\"do\":\"rec-av1\",\"on\":%d}", here);
+  if (n > 0) mb_post("ps", buf, (size_t)n, NULL, 0);
+  return 0;
+}
+
+int32_t ps_rec_has_av1(void) {
+  LONG v = InterlockedCompareExchange(&g_av1, 0, 0);
+  if (v >= 0) return v;
+  if (v == -1 && InterlockedCompareExchange(&g_av1, -2, -1) == -1) {
+    HANDLE t = CreateThread(NULL, 0, av1_probe, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+    else InterlockedExchange(&g_av1, 0);
+  }
+  return -1;
 }
 
 moonbit_bytes_t ps_rec_preview(void) {
-  if (R.preview_bmp.empty()) return moonbit_make_bytes(0, 0);
-  return rec_bytes_of(R.preview_bmp.data(), R.preview_bmp.size());
+  AcquireSRWLockShared(&R.lock);
+  moonbit_bytes_t b = R.preview_bmp.empty() ? moonbit_make_bytes(0, 0)
+                                            : rec_bytes_of(R.preview_bmp.data(), R.preview_bmp.size());
+  ReleaseSRWLockShared(&R.lock);
+  return b;
+}
+
+// What a panel ended leaves to let go once its workers are through: their threads waited for here, on a thread of
+// its own (the UI thread never waits on an encoder's finishing), then the recording's file deleted.
+struct EndedRec {
+  HANDLE rec_thread, exp_thread;
+  std::wstring master_path;
+};
+
+static DWORD WINAPI rec_reaper(LPVOID arg) {
+  EndedRec *e = (EndedRec *)arg;
+  if (e->rec_thread) {
+    WaitForSingleObject(e->rec_thread, INFINITE);
+    CloseHandle(e->rec_thread);
+  }
+  if (e->exp_thread) {
+    WaitForSingleObject(e->exp_thread, INFINITE);
+    CloseHandle(e->exp_thread);
+  }
+  if (!e->master_path.empty()) DeleteFileW(e->master_path.c_str());
+  delete e;
+  return 0;
 }
 
 void ps_rec_end(void) {
   rec_frame_hide();
   rec_draw_close();
+  // (another session from now: a recording still finishing keeps nothing of this one, an export is called off)
+  AcquireSRWLockExclusive(&R.lock);
+  InterlockedIncrement(&R.session);
+  EndedRec *e = new EndedRec();
+  e->master_path.swap(R.master_path);
+  R.master_bytes = 0;
+  R.preview_bmp.clear();
+  R.preview_bmp.shrink_to_fit();
+  ReleaseSRWLockExclusive(&R.lock);
   if (InterlockedCompareExchange(&R.running, 0, 0) != 0) {
     InterlockedExchange(&R.stop_req, 2);
     if (R.wake_ev) SetEvent(R.wake_ev);
   }
-  if (R.rec_thread) {
-    WaitForSingleObject(R.rec_thread, 5000);
-    CloseHandle(R.rec_thread);
-    R.rec_thread = NULL;
-  }
-  if (InterlockedCompareExchange(&R.exporting, 0, 0) != 0) {
-    InterlockedExchange(&R.exp_cancel, 1);
-  }
-  if (R.exp_thread) {
-    WaitForSingleObject(R.exp_thread, 5000);
-    CloseHandle(R.exp_thread);
-    R.exp_thread = NULL;
-  }
-  if (R.wake_ev) {
-    CloseHandle(R.wake_ev);
-    R.wake_ev = NULL;
-  }
-  if (!R.master_path.empty()) {
-    DeleteFileW(R.master_path.c_str());
-    R.master_path.clear();
-  }
-  R.master_bytes = 0;
-  R.preview_bmp.clear();
+  InterlockedIncrement(&R.exp_gen);
+  e->rec_thread = R.rec_thread;
+  e->exp_thread = R.exp_thread;
+  R.rec_thread = NULL;
+  R.exp_thread = NULL;
   R.prepared = 0;
+  if (!e->rec_thread && !e->exp_thread) {
+    if (!e->master_path.empty()) DeleteFileW(e->master_path.c_str());
+    delete e;
+    return;
+  }
+  HANDLE t = CreateThread(NULL, 0, rec_reaper, e, 0, NULL);
+  if (t) {
+    CloseHandle(t);
+  } else {
+    rec_reaper(e);
+  }
+}
+
+// The recordings' temporary files of runs no longer here (a run ended while it recorded, or killed): deleted as the
+// run starts, on a thread of its own, never on the UI thread. "PinShot_rec_<pid>_<tick>.mp4": a pid that is not a
+// running process is gone; one that is (this run's, or a test run's beside it) is left alone.
+static DWORD WINAPI rec_sweep_work(LPVOID) {
+  wchar_t tmp[MAX_PATH] = {}, pat[MAX_PATH + 32] = {};
+  DWORD n = GetTempPathW(MAX_PATH, tmp);
+  if (n == 0 || n >= MAX_PATH) return 0;
+  swprintf_s(pat, L"%lsPinShot_rec_*.mp4", tmp);
+  WIN32_FIND_DATAW fd;
+  HANDLE f = FindFirstFileW(pat, &fd);
+  if (f == INVALID_HANDLE_VALUE) return 0;
+  do {
+    unsigned long pid = wcstoul(fd.cFileName + wcslen(L"PinShot_rec_"), NULL, 10);
+    bool alive = false;
+    if (pid != 0) {
+      HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+      if (p) {
+        alive = WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
+        CloseHandle(p);
+      } else {
+        alive = GetLastError() == ERROR_ACCESS_DENIED;  // (there, another user's: not ours to judge)
+      }
+    }
+    if (!alive) {
+      wchar_t full[MAX_PATH * 2];
+      swprintf_s(full, L"%ls%ls", tmp, fd.cFileName);
+      DeleteFileW(full);
+    }
+  } while (FindNextFileW(f, &fd));
+  FindClose(f);
+  return 0;
+}
+
+void ps_rec_sweep_temp(void) {
+  // (a thread of its own that ends with it: no pool's thread kept waiting after)
+  HANDLE t = CreateThread(NULL, 64 * 1024, rec_sweep_work, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+  if (t) CloseHandle(t);
+}
+
+// The run ending (ps_quit): the recording kept for export deleted (a worker still writing one leaves it to the next
+// run's sweep).
+void ps_rec_quit(void) {
+  AcquireSRWLockShared(&R.lock);
+  std::wstring p = R.master_path;
+  ReleaseSRWLockShared(&R.lock);
+  if (!p.empty()) DeleteFileW(p.c_str());
 }
 
 extern void mb_app_next_clear(void);

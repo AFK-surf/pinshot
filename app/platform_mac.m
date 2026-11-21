@@ -492,12 +492,9 @@ int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
   return 0;
 }
 int32_t ps_rec_has_av1(void) { return 0; }
+void ps_rec_export_cancel(void) {}
 moonbit_bytes_t ps_rec_preview(void) { return moonbit_make_bytes(0, 0); }
 void ps_rec_end(void) {}
 void ps_rec_exclude(int32_t wid) { (void)wid; }
 void ps_next_win_clear(void) {}
-void ps_rec_draw_tool(int32_t tool) { (void)tool; }
-void ps_rec_draw_color(int32_t rgb) { (void)rgb; }
-void ps_rec_draw_undo(void) {}
-void ps_rec_draw_clear(void) {}
 void ps_rec_input_show(int32_t on) { (void)on; }

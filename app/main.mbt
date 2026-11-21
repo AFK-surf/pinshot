@@ -175,15 +175,11 @@ fn told(json : String, bytes : Bytes?) -> Unit {
         s("err"),
       )
     }
-    "rec-draw" => {
-      let n = fn(k : String) {
-        match o.get(k) {
-          Some(Number(v, ..)) => v.to_int()
-          _ => 0
-        }
+    "rec-av1" =>
+      match o.get("on") {
+        Some(Number(v, ..)) => rec_av1_told(v.to_int())
+        _ => ()
       }
-      rec_draw_told(n("tool"), n("count"))
-    }
     "tick" =>
       match o.get("wid") {
         Some(Number(w, ..)) => pin_tick(w.to_int())

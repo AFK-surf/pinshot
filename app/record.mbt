@@ -36,6 +36,9 @@ extern "C" fn ps_rec_reuse(src_path : Bytes, dst_path : Bytes) -> Int = "ps_rec_
 extern "C" fn ps_rec_has_av1() -> Int = "ps_rec_has_av1"
 
 ///|
+extern "C" fn ps_rec_export_cancel() -> Unit = "ps_rec_export_cancel"
+
+///|
 extern "C" fn ps_rec_preview() -> Bytes = "ps_rec_preview"
 
 ///|
@@ -403,11 +406,6 @@ fn rec_out() -> Unit {
   rec_err.set("")
   rec_clear_exports()
   rec_clear_preview()
-  let av1_ok = ps_rec_has_av1() != 0
-  rec_has_av1.set(av1_ok)
-  if rec_exp_fmt.untracked() == 3 && !av1_ok {
-    rec_exp_fmt.set(0)
-  }
   @signals.end_batch()
   ps_rec_input_show(if rec_input.untracked() { 1 } else { 0 })
   ps_next_win_clear()
@@ -674,11 +672,30 @@ fn rec_run_export(ask_dialog : Bool) -> Unit {
 }
 
 ///|
+/// Whether a hardware AV1 encoder is here, as the native side knows it (-1: not yet, asked on its own thread: told
+/// later as {"do":"rec-av1"}); asked only once a recording is there to export, never as the panel opens.
+fn rec_av1_told(v : Int) -> Unit {
+  if v < 0 {
+    return
+  }
+  @signals.start_batch()
+  rec_has_av1.set(v == 1)
+  if rec_exp_fmt.untracked() == 3 && v != 1 {
+    rec_exp_fmt.set(0)
+  }
+  @signals.end_batch()
+  rec_schedule_fit(false)
+}
+
+///|
 fn rec_cancel() -> Unit {
   let ph = rec_phase.untracked()
   if ph == 1 || ph == 2 {
     rec_phase.set(3)
     ps_rec_stop(1)
+  } else if ph == 5 {
+    // (an export under way called off alone: the recording kept, back to choosing; told "export-cancelled")
+    ps_rec_export_cancel()
   } else if ph != 3 {
     rec_close()
   }
@@ -712,12 +729,6 @@ fn rec_gone() -> Unit {
   rec_clear_exports()
   rec_clear_preview()
   trim_soon()
-}
-
-///|
-/// Kept for protocol compatibility with native messages (no-op now that live annotations were removed).
-fn rec_draw_told(_tool : Int, _count : Int) -> Unit {
-  ()
 }
 
 ///|
@@ -778,7 +789,16 @@ fn rec_told(
       rec_phase.set(4)
       @signals.end_batch()
       rec_schedule_fit(true)
+      rec_av1_told(ps_rec_has_av1())
       log("rec: master ready \{codec} audio=\{audio} \{frames}f \{ms}ms \{bytes}B")
+    }
+    "export-cancelled" => {
+      @signals.start_batch()
+      rec_exp_pct.set(0)
+      rec_phase.set(4)
+      @signals.end_batch()
+      rec_schedule_fit(false)
+      log("rec: export cancelled, the recording kept")
     }
     "exporting" => {
       @signals.start_batch()
@@ -818,6 +838,8 @@ fn rec_told(
       log("rec: export-error \{err}")
     }
     "error" => {
+      // (the recording's frame and its clicks' overlay let go: no recording runs)
+      ps_rec_stop(1)
       ps_capture_open(0)
       @signals.start_batch()
       rec_err.set(if err != "" { tr(err) } else { tr("录屏失败") })
@@ -1738,7 +1760,8 @@ fn rec_window(root : @view.View) -> Unit {
               .presses(Is(true))
               .cursor(Is(Some(Hand)))
               .says(By(fn() { Some(@view.said(Button, label=tr("关闭 Esc"))) }))
-              .on_press(rec_close)
+              // (while it exports: that export called off, the recording kept, as Esc does)
+              .on_press(fn() { if rec_phase.untracked() == 5 { rec_cancel() } else { rec_close() } })
               .ground(By(fn() { if cb.pressed() { 0xFFFFFF1EL } else { mix_rgba(0L, 0xFFFFFF12L, hov()) } }))
               |> ignore
               cb.box(fn(g) {

@@ -721,6 +721,8 @@ static void tray_window_made(void) {
 // A capture asked for by the app (the icon's menu): as the shortcut.
 void ps_capture_ask(void) { capture_asked("menu"); }
 
+void ps_rec_sweep_temp(void);
+
 // The run begun: 1 it is the one run (its icon put, its window made), 0 another runs already (told `again`: 0 take
 // the screen, as its shortcut does; 1 open the settings; 2 quit): this one ends.
 int32_t ps_start(int32_t again) {
@@ -757,6 +759,8 @@ int32_t ps_start(int32_t again) {
   ChangeWindowMessageFilterEx(tray_hwnd, taskbar_created, MSGFLT_ALLOW, NULL);
   tray_put();
   atexit(tray_gone);
+  // (recordings' temporary files left by runs gone: deleted on a pool thread, record_win.cpp)
+  ps_rec_sweep_temp();
   // (each monitor's capture kept on from now: capture_wgc.cpp; PINSHOT_CAPTURE=gdi none, GDI's every time)
   const char *how = getenv("PINSHOT_CAPTURE");
   wgc_off = how && !strcmp(how, "gdi");
@@ -1583,9 +1587,11 @@ void ps_run_handover(void) {
   }
 }
 
-// The run ended (the icon's 退出): its icon taken away first.
+// The run ended (the icon's 退出): its icon taken away first, a recording kept for export deleted (record_win.cpp).
+void ps_rec_quit(void);
 void ps_quit(void) {
   tray_gone();
+  ps_rec_quit();
   fflush(stdout);
   TerminateProcess(GetCurrentProcess(), 0);
   ExitProcess(0);
