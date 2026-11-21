@@ -91,7 +91,7 @@ static struct {
   ULONGLONG begun;         // when it began (GetTickCount64)
 } L;
 
-extern void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed);
+extern void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed, int handles);
 
 static COLORREF frame_want_color(void) {
   if (L.paused) return RGB(0x9E, 0xA4, 0xB2);
@@ -105,7 +105,7 @@ static void frame_sync_color(void) {
   if (c != L.frame_color || d != L.frame_dashed) {
     L.frame_color = c;
     L.frame_dashed = d;
-    if (L.frame) ps_update_region_frame(L.frame, L.x, L.y, L.w, L.h, c, d);
+    if (L.frame) ps_update_region_frame(L.frame, L.x, L.y, L.w, L.h, c, d, 0);
   }
 }
 
@@ -603,7 +603,7 @@ static void frame_show(void) {
                             L"PinShot.LongFrame", L"", WS_POPUP, L.x, L.y, 16, 16, NULL, NULL, GetModuleHandleW(NULL), NULL);
   if (!L.frame) return;
   exclude(L.frame);
-  ps_update_region_frame(L.frame, L.x, L.y, L.w, L.h, L.frame_color ? L.frame_color : RGB(0x2F, 0x9B, 0xFF), L.frame_dashed);
+  ps_update_region_frame(L.frame, L.x, L.y, L.w, L.h, L.frame_color ? L.frame_color : RGB(0x2F, 0x9B, 0xFF), L.frame_dashed, 0);
   ShowWindow(L.frame, SW_SHOWNOACTIVATE);
 }
 

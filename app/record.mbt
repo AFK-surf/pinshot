@@ -203,6 +203,9 @@ let rec_discard_cancel : Ref[() -> Unit] = Ref(fn() {  })
 let rec_tip : @signals.Signal[String] = @signals.signal("")
 
 ///|
+let rec_dim_tip_cancel : Ref[() -> Unit] = Ref(fn() {  })
+
+///|
 /// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma so alpha reaches 0 before every window edge).
 let rec_pad_l : Double = 30.0
 
@@ -749,6 +752,32 @@ fn rec_run_export(ask_dialog : Bool) -> Unit {
 }
 
 ///|
+/// Live region resize reported from the pre-recording interactive frame (`record_win.cpp`).
+fn rec_rect_told(x : Int, y : Int, w : Int, h : Int) -> Unit {
+  if rec_wid.val == 0 || w <= 0 || h <= 0 {
+    return
+  }
+  rec_part.val = { x, y, w, h }
+  let label = "\{w} × \{h}"
+  rec_tip.set(label)
+  (rec_dim_tip_cancel.val)()
+  match rec_root.val {
+    Some(root) =>
+      rec_dim_tip_cancel.val = root.at_moment(
+        root.cause_at() + 900.0,
+        fn() {
+          rec_dim_tip_cancel.val = fn() {  }
+          if rec_tip.untracked() == label {
+            rec_tip.set("")
+          }
+        },
+        later=true,
+      )
+    None => ()
+  }
+}
+
+///|
 /// Whether a hardware AV1 encoder is here, as the native side knows it (-1: not yet, asked on its own thread: told
 /// later as {"do":"rec-av1"}); asked only once a recording is there to export, never as the panel opens.
 fn rec_av1_told(v : Int) -> Unit {
@@ -842,6 +871,8 @@ fn rec_gone() -> Unit {
   (rec_handoff_cancel.val)()
   rec_handoff_cancel.val = fn() {  }
   rec_disarm_discard()
+  (rec_dim_tip_cancel.val)()
+  rec_dim_tip_cancel.val = fn() {  }
   rec_tip.set("")
   if rec_closing_overlay.val {
     rec_closing_overlay.val = false

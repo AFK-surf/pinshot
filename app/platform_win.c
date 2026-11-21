@@ -1828,9 +1828,10 @@ static inline float rf_aa(float d, float r, float feather) {
 }
 
 // Paints a static premultiplied-alpha rounded viewfinder frame (soft outer glow + subtle dark contrast casing +
-// sleek main stroke [optionally dashed when paused] + bright rounded L-corner brackets) onto a WS_EX_LAYERED HWND
-// via UpdateLayeredWindow. Only the thin outer border band is iterated (< 0.5 ms); 0% ongoing CPU.
-void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed) {
+// sleek main stroke [optionally dashed when paused]; when `handles` is non-zero, also draws bright rounded L-corner
+// brackets, mid-edge pill grabbers, and an invisible alpha=1 border hit band while keeping the interior 100% alpha=0
+// click-through) onto a WS_EX_LAYERED HWND via UpdateLayeredWindow. Only the thin outer border band is iterated.
+void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed, int handles) {
   if (!hwnd || rw <= 0 || rh <= 0) return;
   UINT dpi = GetDpiForWindow(hwnd);
   if (dpi < 96) dpi = 96;
@@ -1869,13 +1870,17 @@ void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF 
   float blen = fminf(fminf((float)rw, (float)rh) * 0.16f, 16.0f * s);
   blen = fmaxf(blen, rad + 3.0f * s);
   blen = fminf(blen, fminf(hx, hy) * 0.45f);
+  int show_ph = handles && (float)rw >= 54.0f * s;
+  int show_pv = handles && (float)rh >= 54.0f * s;
+  float plen = 7.0f * s;
+  float pthk = 1.75f * s;
 
   float cr = (float)GetRValue(color) / 255.0f;
   float cg = (float)GetGValue(color) / 255.0f;
   float cb = (float)GetBValue(color) / 255.0f;
-  float hr = fminf(1.0f, cr + 0.22f);
-  float hg = fminf(1.0f, cg + 0.22f);
-  float hb = fminf(1.0f, cb + 0.22f);
+  float hr = fminf(1.0f, cr + 0.28f);
+  float hg = fminf(1.0f, cg + 0.28f);
+  float hb = fminf(1.0f, cb + 0.28f);
 
   BITMAPINFO bi;
   memset(&bi, 0, sizeof bi);
@@ -1901,15 +1906,17 @@ void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF 
 
   float sigma = 3.0f * s;
   float inv2s2 = 1.0f / (2.0f * sigma * sigma);
-  float half_w = 0.95f * s;
+  float half_w = handles ? (0.95f * s) : (1.1f * s);
   float brk_hw = 1.65f * s;
+  float hit_reach = 7.0f * s;
   float dash_per = 13.0f * s;
   float dash_len = 7.0f * s;
 
-  int band_l = (int)ceilf(lx0 + brk_hw + 3.0f * s);
-  int band_t = (int)ceilf(ly0 + brk_hw + 3.0f * s);
-  int band_r = (int)floorf(lx1 - brk_hw - 3.0f * s);
-  int band_b = (int)floorf(ly1 - brk_hw - 3.0f * s);
+  float inner_pad = handles ? (hit_reach + 2.0f * s) : (brk_hw + 3.0f * s);
+  int band_l = (int)ceilf(lx0 + inner_pad);
+  int band_t = (int)ceilf(ly0 + inner_pad);
+  int band_r = (int)floorf(lx1 - inner_pad);
+  int band_b = (int)floorf(ly1 - inner_pad);
   if (band_l < 0) band_l = 0;
   if (band_t < 0) band_t = 0;
   if (band_r > fw) band_r = fw;
@@ -1933,20 +1940,32 @@ void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF 
       float sd = sqrtf(ox * ox + oy * oy) + (mq < 0.0f ? mq : 0.0f) - rad;
       float d = fabsf(sd);
 
-      // Rounded L-corner bracket distance (exact rounded arc + both straight arms + rounded endcaps)
-      float d_brk;
-      if (ax >= hx - blen && ay >= hy - blen) {
-        d_brk = d;
-      } else if (ax < hx - blen && ay >= hy - blen) {
-        float ex = ax - (hx - blen);
-        float ey = ay - hy;
-        d_brk = sqrtf(ex * ex + ey * ey);
-      } else if (ay < hy - blen && ax >= hx - blen) {
-        float ex = ax - hx;
-        float ey = ay - (hy - blen);
-        d_brk = sqrtf(ex * ex + ey * ey);
-      } else {
-        d_brk = 1e6f;
+      float d_brk = 1e6f;
+      float d_pill = 1e6f;
+      if (handles) {
+        if (ax >= hx - blen && ay >= hy - blen) {
+          d_brk = d;
+        } else if (ax < hx - blen && ay >= hy - blen) {
+          float ex = ax - (hx - blen);
+          float ey = ay - hy;
+          d_brk = sqrtf(ex * ex + ey * ey);
+        } else if (ay < hy - blen && ax >= hx - blen) {
+          float ex = ax - hx;
+          float ey = ay - (hy - blen);
+          d_brk = sqrtf(ex * ex + ey * ey);
+        }
+        if (show_ph) {
+          float pex = fmaxf(0.0f, ax - (plen - pthk));
+          float pey = ay - hy;
+          float dh = sqrtf(pex * pex + pey * pey);
+          if (dh < d_pill) d_pill = dh;
+        }
+        if (show_pv) {
+          float pex = ax - hx;
+          float pey = fmaxf(0.0f, ay - (plen - pthk));
+          float dv = sqrtf(pex * pex + pey * pey);
+          if (dv < d_pill) d_pill = dv;
+        }
       }
 
       // Layer 1: soft outward glow
@@ -1960,9 +1979,13 @@ void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF 
       }
 
       // Layer 2: delicate dark outer contrast casing (keeps frame crisp on pure white windows)
-      float da1 = 0.32f * rf_aa(d, half_w + 1.35f * s, 0.7f);
-      float da2 = 0.40f * rf_aa(d_brk, brk_hw + 1.35f * s, 0.7f);
-      float da = da1 > da2 ? da1 : da2;
+      float da = 0.32f * rf_aa(d, half_w + 1.35f * s, 0.7f);
+      if (handles) {
+        float da2 = 0.42f * rf_aa(d_brk, brk_hw + 1.35f * s, 0.7f);
+        float da3 = 0.44f * rf_aa(d_pill, pthk + 1.3f * s, 0.7f);
+        if (da2 > da) da = da2;
+        if (da3 > da) da = da3;
+      }
       if (da > 0.001f) {
         float na = da + out_a * (1.0f - da);
         if (na > 0.0001f) {
@@ -1992,17 +2015,30 @@ void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF 
         out_a = na;
       }
 
-      // Layer 4: bright rounded L-corner viewfinder brackets
-      float ba = rf_aa(d_brk, brk_hw, 0.65f);
-      if (ba > 0.001f) {
-        float na = ba + out_a * (1.0f - ba);
-        if (na > 0.0001f) {
-          float inv = 1.0f / na;
-          out_r = (hr * ba + out_r * out_a * (1.0f - ba)) * inv;
-          out_g = (hg * ba + out_g * out_a * (1.0f - ba)) * inv;
-          out_b = (hb * ba + out_b * out_a * (1.0f - ba)) * inv;
+      // Layer 4: resize signifiers (only when `handles != 0`, i.e., pre-recording Ready phase)
+      if (handles) {
+        float ba = rf_aa(d_brk, brk_hw, 0.65f);
+        if (ba > 0.001f) {
+          float na = ba + out_a * (1.0f - ba);
+          if (na > 0.0001f) {
+            float inv = 1.0f / na;
+            out_r = (hr * ba + out_r * out_a * (1.0f - ba)) * inv;
+            out_g = (hg * ba + out_g * out_a * (1.0f - ba)) * inv;
+            out_b = (hb * ba + out_b * out_a * (1.0f - ba)) * inv;
+          }
+          out_a = na;
         }
-        out_a = na;
+        float pa = rf_aa(d_pill, pthk, 0.65f);
+        if (pa > 0.001f) {
+          float na = pa + out_a * (1.0f - pa);
+          if (na > 0.0001f) {
+            float inv = 1.0f / na;
+            out_r = (1.0f * pa + out_r * out_a * (1.0f - pa)) * inv;
+            out_g = (1.0f * pa + out_g * out_a * (1.0f - pa)) * inv;
+            out_b = (1.0f * pa + out_b * out_a * (1.0f - pa)) * inv;
+          }
+          out_a = na;
+        }
       }
 
       if (out_a > 0.001f) {
@@ -2015,6 +2051,9 @@ void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF 
         if (g8 > a8) g8 = a8;
         if (b8 > a8) b8 = a8;
         row[px] = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
+      } else if (handles && (d <= hit_reach || d_brk <= hit_reach || d_pill <= hit_reach)) {
+        // Invisible alpha=1 hit ring along the border so hover/resize grabs effortlessly while interior stays click-through.
+        row[px] = 0x01000000u;
       }
     }
   }

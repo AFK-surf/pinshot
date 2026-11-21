@@ -226,7 +226,7 @@ static int copy_file_to_clipboard(const std::wstring &path) {
 
 // ---- recording border frame (UI thread) ----
 
-extern "C" void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed);
+extern "C" void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed, int handles);
 
 static struct {
   int prepared;
@@ -236,6 +236,10 @@ static struct {
   HWND frame;
   COLORREF frame_color;
   int frame_dashed;
+  int frame_interactive;   // 1 in Ready phase (resizable border/corners), 0 once recording starts (100% click-through)
+  int drag_hx, drag_hy;
+  int drag_sx, drag_sy;
+  int drag_rx, drag_ry, drag_rw, drag_rh;
 
   HANDLE rec_thread;
   HANDLE exp_thread;
@@ -366,12 +370,136 @@ static void rec_exclude_hwnd(HWND h) {
   if (!getenv("PINSHOT_REC_SHOW")) SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE);
 }
 
+static int rec_frame_hit(HWND h, int sx, int sy, int *out_hx, int *out_hy) {
+  UINT dpi = GetDpiForWindow(h);
+  if (dpi < 96) dpi = 96;
+  int reach = (int)roundf(10.0f * (float)dpi / 96.0f);
+  int corner = (int)roundf(18.0f * (float)dpi / 96.0f);
+  if (reach < 8) reach = 8;
+  if (corner < 16) corner = 16;
+  int x0 = R.x, y0 = R.y, x1 = R.x + R.w, y1 = R.y + R.h;
+  if (sx < x0 - reach || sx > x1 + reach || sy < y0 - reach || sy > y1 + reach) return 0;
+  if (sx > x0 + reach && sx < x1 - reach && sy > y0 + reach && sy < y1 - reach) return 0;
+  int hx = 0, hy = 0;
+  if (abs(sx - x0) <= reach) hx = -1;
+  else if (abs(sx - x1) <= reach) hx = 1;
+  if (abs(sy - y0) <= reach) hy = -1;
+  else if (abs(sy - y1) <= reach) hy = 1;
+  if (hx != 0 && hy == 0) {
+    if (sy <= y0 + corner) hy = -1;
+    else if (sy >= y1 - corner) hy = 1;
+  } else if (hy != 0 && hx == 0) {
+    if (sx <= x0 + corner) hx = -1;
+    else if (sx >= x1 - corner) hx = 1;
+  }
+  if (hx == 0 && hy == 0) return 0;
+  *out_hx = hx;
+  *out_hy = hy;
+  return 1;
+}
+
+static LPCTSTR rec_frame_cursor_for(int hx, int hy) {
+  if (hx == 0 && hy != 0) return IDC_SIZENS;
+  if (hy == 0 && hx != 0) return IDC_SIZEWE;
+  if ((hx < 0 && hy < 0) || (hx > 0 && hy > 0)) return IDC_SIZENWSE;
+  return IDC_SIZENESW;
+}
+
+static void rec_post_rect(void) {
+  char buf[96];
+  int n = snprintf(buf, sizeof buf, "{\"do\":\"rec-rect\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d}", R.x, R.y, R.w, R.h);
+  if (n > 0) mb_post("ps", buf, (size_t)n, NULL, 0);
+}
+
 static LRESULT CALLBACK rec_frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
-  if (msg == WM_NCHITTEST) return HTTRANSPARENT;
+  if (msg == WM_NCHITTEST) {
+    if (!R.frame_interactive) return HTTRANSPARENT;
+    int sx = (int)(short)LOWORD(lp), sy = (int)(short)HIWORD(lp);
+    int hx = 0, hy = 0;
+    return rec_frame_hit(h, sx, sy, &hx, &hy) ? HTCLIENT : HTTRANSPARENT;
+  }
+  if (msg == WM_SETCURSOR && R.frame_interactive && LOWORD(lp) == HTCLIENT) {
+    int hx = R.drag_hx, hy = R.drag_hy;
+    if (hx == 0 && hy == 0) {
+      POINT pt;
+      if (GetCursorPos(&pt)) rec_frame_hit(h, pt.x, pt.y, &hx, &hy);
+    }
+    if (hx != 0 || hy != 0) {
+      SetCursor(LoadCursor(NULL, rec_frame_cursor_for(hx, hy)));
+      return TRUE;
+    }
+  }
+  if (msg == WM_LBUTTONDOWN && R.frame_interactive) {
+    POINT pt;
+    if (GetCursorPos(&pt)) {
+      int hx = 0, hy = 0;
+      if (rec_frame_hit(h, pt.x, pt.y, &hx, &hy)) {
+        R.drag_hx = hx;
+        R.drag_hy = hy;
+        R.drag_sx = pt.x;
+        R.drag_sy = pt.y;
+        R.drag_rx = R.x;
+        R.drag_ry = R.y;
+        R.drag_rw = R.w;
+        R.drag_rh = R.h;
+        SetCapture(h);
+        SetCursor(LoadCursor(NULL, rec_frame_cursor_for(hx, hy)));
+        return 0;
+      }
+    }
+  }
+  if (msg == WM_MOUSEMOVE && (R.drag_hx != 0 || R.drag_hy != 0)) {
+    POINT pt;
+    if (GetCursorPos(&pt)) {
+      int dx = pt.x - R.drag_sx;
+      int dy = pt.y - R.drag_sy;
+      int min_sz = 64;
+      int ml = R.mx, mt = R.my, mr = R.mx + R.mw, mb = R.my + R.mh;
+      int x0 = R.drag_rx, y0 = R.drag_ry;
+      int x1 = R.drag_rx + R.drag_rw, y1 = R.drag_ry + R.drag_rh;
+      if (R.drag_hx < 0) {
+        x0 = std::max(ml, std::min(x1 - min_sz, x0 + dx));
+      } else if (R.drag_hx > 0) {
+        x1 = std::min(mr, std::max(x0 + min_sz, x1 + dx));
+      }
+      if (R.drag_hy < 0) {
+        y0 = std::max(mt, std::min(y1 - min_sz, y0 + dy));
+      } else if (R.drag_hy > 0) {
+        y1 = std::min(mb, std::max(y0 + min_sz, y1 + dy));
+      }
+      int nw = (x1 - x0) & ~1;
+      int nh = (y1 - y0) & ~1;
+      if (nw < min_sz) nw = min_sz;
+      if (nh < min_sz) nh = min_sz;
+      int nx = R.drag_hx < 0 ? (x1 - nw) : x0;
+      int ny = R.drag_hy < 0 ? (y1 - nh) : y0;
+      if (nx < ml) nx = ml;
+      if (ny < mt) ny = mt;
+      if (nx + nw > mr) nw = (mr - nx) & ~1;
+      if (ny + nh > mb) nh = (mb - ny) & ~1;
+      if (nw >= min_sz && nh >= min_sz && (nx != R.x || ny != R.y || nw != R.w || nh != R.h)) {
+        R.x = nx;
+        R.y = ny;
+        R.w = nw;
+        R.h = nh;
+        ps_update_region_frame(h, R.x, R.y, R.w, R.h, R.frame_color, 0, 1);
+        rec_post_rect();
+      }
+    }
+    return 0;
+  }
+  if ((msg == WM_LBUTTONUP || msg == WM_CAPTURECHANGED) && (R.drag_hx != 0 || R.drag_hy != 0)) {
+    R.drag_hx = 0;
+    R.drag_hy = 0;
+    if (msg == WM_LBUTTONUP && GetCapture() == h) ReleaseCapture();
+    rec_draw_open(R.x, R.y, R.w, R.h);
+    rec_post_rect();
+    return 0;
+  }
   return DefWindowProcW(h, msg, wp, lp);
 }
 
-static void rec_frame_show(COLORREF color, int dashed) {
+static void rec_frame_show(COLORREF color, int dashed, int interactive) {
   const char *cl = getenv("PINSHOT_TEST_CLOAKED");
   if (cl && cl[0]) return;
   static int registered = 0;
@@ -387,13 +515,24 @@ static void rec_frame_show(COLORREF color, int dashed) {
   }
   R.frame_color = color;
   R.frame_dashed = dashed;
+  R.frame_interactive = interactive ? 1 : 0;
+  if (!interactive) {
+    R.drag_hx = 0;
+    R.drag_hy = 0;
+  }
+  DWORD ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | (interactive ? 0 : WS_EX_TRANSPARENT);
   if (!R.frame) {
-    R.frame = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                              L"PinShot.RecFrame", L"", WS_POPUP, R.x, R.y, 16, 16, NULL, NULL, GetModuleHandleW(NULL), NULL);
+    R.frame = CreateWindowExW(ex, L"PinShot.RecFrame", L"", WS_POPUP, R.x, R.y, 16, 16, NULL, NULL, GetModuleHandleW(NULL), NULL);
     if (!R.frame) return;
     rec_exclude_hwnd(R.frame);
+  } else {
+    DWORD cur = (DWORD)GetWindowLongW(R.frame, GWL_EXSTYLE);
+    if (((cur & WS_EX_TRANSPARENT) != 0) != (!interactive)) {
+      SetWindowLongW(R.frame, GWL_EXSTYLE, (LONG)ex);
+      SetWindowPos(R.frame, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
   }
-  ps_update_region_frame(R.frame, R.x, R.y, R.w, R.h, color, dashed);
+  ps_update_region_frame(R.frame, R.x, R.y, R.w, R.h, color, dashed, interactive);
   ShowWindow(R.frame, SW_SHOWNOACTIVATE);
 }
 
@@ -2915,7 +3054,7 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   R.mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
   // (the clicks' and keys' overlay only told where: nothing of it is made until a recording asks for it)
   rec_draw_open(x, y, w, h);
-  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) rec_frame_show(RGB(0x2F, 0x9B, 0xFF), 0);
+  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) rec_frame_show(RGB(0x2F, 0x9B, 0xFF), 0, 1);
   return 1;
 }
 
@@ -2948,7 +3087,7 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
     return 0;
   }
   // (the red frame and the overlay's hooks only once the worker is there: none left behind where it is not)
-  rec_frame_show(RGB(0xEF, 0x44, 0x44), 0);
+  rec_frame_show(RGB(0xEF, 0x44, 0x44), 0, 0);
   rec_draw_set_recording(1);
   return 1;
 }
@@ -2959,7 +3098,7 @@ void ps_rec_pause(int32_t on) {
   InterlockedExchange(&R.pause_req, p);
   if (R.wake_ev) SetEvent(R.wake_ev);
   rec_draw_set_recording(p ? 0 : 1);
-  rec_frame_show(p ? RGB(0xF5, 0xA5, 0x24) : RGB(0xEF, 0x44, 0x44), p);
+  rec_frame_show(p ? RGB(0xF5, 0xA5, 0x24) : RGB(0xEF, 0x44, 0x44), p, 0);
 }
 
 void ps_rec_stop(int32_t cancel) {

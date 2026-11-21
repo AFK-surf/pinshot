@@ -187,6 +187,15 @@ fn told(json : String, bytes : Bytes?) -> Unit {
         Some(Number(v, ..)) => rec_av1_told(v.to_int())
         _ => ()
       }
+    "rec-rect" => {
+      let n = fn(k : String) {
+        match o.get(k) {
+          Some(Number(v, ..)) => v.to_int()
+          _ => 0
+        }
+      }
+      rec_rect_told(n("x"), n("y"), n("w"), n("h"))
+    }
     "tick" =>
       match o.get("wid") {
         Some(Number(w, ..)) => pin_tick(w.to_int())
