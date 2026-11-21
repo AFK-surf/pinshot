@@ -219,20 +219,22 @@ static int file_is(HANDLE f, const char *sha) {
   BCRYPT_ALG_HANDLE alg = NULL;
   BCRYPT_HASH_HANDLE h = NULL;
   int ok = 0;
-  static uint8_t buf[64 * 1024];
-  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == 0 &&
+  // (read in 64 KB pieces, its buffer only while it is read: none kept in the program for good)
+  uint8_t *buf = (uint8_t *)malloc(64 * 1024);
+  if (buf && BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == 0 &&
       BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0) == 0) {
     LARGE_INTEGER zero = {0};
     SetFilePointerEx(f, zero, NULL, FILE_BEGIN);
     DWORD n = 0;
     ok = 1;
-    while (ReadFile(f, buf, sizeof buf, &n, NULL) && n > 0)
+    while (ReadFile(f, buf, 64 * 1024, &n, NULL) && n > 0)
       if (BCryptHashData(h, buf, n, 0) != 0) ok = 0;
     uint8_t got[32];
     ok = ok && BCryptFinishHash(h, got, 32, 0) == 0 && memcmp(got, want, 32) == 0;
   }
   if (h) BCryptDestroyHash(h);
   if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+  free(buf);
   return ok;
 }
 
@@ -276,7 +278,7 @@ static DWORD WINAPI fetch_work(void *arg) {
   BCRYPT_ALG_HANDLE alg = NULL;
   BCRYPT_HASH_HANDLE hash = NULL;
   uint8_t *body = NULL;
-  size_t body_n = 0;
+  size_t body_n = 0, body_cap = 0;
   wchar_t *part = NULL;
   const char *why = NULL;
   char json[192];
@@ -343,8 +345,6 @@ static DWORD WINAPI fetch_work(void *arg) {
       why = "no sha256";
       goto done;
     }
-  } else {
-    body = (uint8_t *)malloc(SMALL_MOST);
   }
   for (;;) {
     DWORD n = 0;
@@ -372,6 +372,18 @@ static DWORD WINAPI fetch_work(void *arg) {
       if (body_n + n > SMALL_MOST) {
         why = "too large";
         goto done;
+      }
+      // (grown as it comes, to what it is: latest.json is a few hundred bytes, not the 1 MB it may be at most)
+      if (body_n + n > body_cap) {
+        size_t cap = body_cap ? body_cap * 2 : 16 * 1024;
+        while (cap < body_n + n) cap *= 2;
+        if (cap > SMALL_MOST) cap = SMALL_MOST;
+        uint8_t *grown = (uint8_t *)realloc(body, cap);
+        if (!grown) {
+          why = "out of memory";
+          goto done;
+        }
+        body = grown, body_cap = cap;
       }
       memcpy(body + body_n, buf, n);
       body_n += n;
@@ -426,6 +438,10 @@ int32_t ps_fetch(moonbit_bytes_t url, moonbit_bytes_t path, moonbit_bytes_t sha2
   if (((const char *)path)[0] && !from_hex((const char *)sha256, sha_bytes, 32)) return 0;
   if (InterlockedCompareExchange(&fetch_busy, 1, 0) != 0) return 0;
   Fetch *f = (Fetch *)calloc(1, sizeof(Fetch));
+  if (!f) {
+    InterlockedExchange(&fetch_busy, 0);
+    return 0;
+  }
   f->url = up_wide((const char *)url);
   f->path = ((const char *)path)[0] ? up_wide((const char *)path) : NULL;
   lstrcpynA(f->sha, (const char *)sha256, sizeof f->sha);
@@ -448,22 +464,23 @@ int32_t ps_fetch(moonbit_bytes_t url, moonbit_bytes_t path, moonbit_bytes_t sha2
 // written until it ends. Where it ends and this run is still here (it failed, or could not quit this run), that is
 // told: {"do":"setup-ended","code":N}. 1 it was started, -1 it is not that file, 0 it could not be started.
 typedef struct {
-  HANDLE process, file, wait;
+  HANDLE process, file;
 } SetupRun;
 
-static void CALLBACK setup_ended(void *arg, BOOLEAN timed_out) {
-  (void)timed_out;
+// (a thread of its own waits for the installer, then lets go of all it held: no wait handle registered that the
+// installer's end could race, as RegisterWaitForSingleObject's could, firing before its handle was even kept)
+static DWORD WINAPI setup_watch(void *arg) {
   SetupRun *s = (SetupRun *)arg;
+  WaitForSingleObject(s->process, INFINITE);
   DWORD code = 1;
   GetExitCodeProcess(s->process, &code);
-  char json[64];
-  snprintf(json, sizeof json, "{\"do\":\"setup-ended\",\"code\":%lu}", (unsigned long)code);
-  up_tell(json, NULL, 0);
-  // (let go of from its own callback: without waiting, as that requires)
-  UnregisterWaitEx(s->wait, NULL);
   CloseHandle(s->process);
   CloseHandle(s->file);
   free(s);
+  char json[64];
+  snprintf(json, sizeof json, "{\"do\":\"setup-ended\",\"code\":%lu}", (unsigned long)code);
+  up_tell(json, NULL, 0);
+  return 0;
 }
 
 int32_t ps_run_setup(moonbit_bytes_t path, moonbit_bytes_t sha256) {
@@ -489,9 +506,15 @@ int32_t ps_run_setup(moonbit_bytes_t path, moonbit_bytes_t sha256) {
     return 0;
   }
   SetupRun *s = (SetupRun *)calloc(1, sizeof(SetupRun));
-  s->process = e.hProcess;
-  s->file = file;
-  if (!RegisterWaitForSingleObject(&s->wait, e.hProcess, setup_ended, s, INFINITE, WT_EXECUTEONLYONCE)) {
+  HANDLE t = NULL;
+  if (s) {
+    s->process = e.hProcess;
+    s->file = file;
+    t = CreateThread(NULL, 64 * 1024, setup_watch, s, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+  }
+  if (t) {
+    CloseHandle(t);
+  } else {
     // (not watched: the file let go of; the installer goes on all the same)
     CloseHandle(e.hProcess);
     CloseHandle(file);
@@ -579,7 +602,9 @@ int32_t ps_idle_ms(void) {
   LASTINPUTINFO li;
   li.cbSize = sizeof li;
   if (!GetLastInputInfo(&li)) return 0;
-  return (int32_t)(GetTickCount() - li.dwTime);
+  // (a DWORD's difference, right across GetTickCount's wrap; past 24.8 days, as long as an Int says)
+  DWORD idle = GetTickCount() - li.dwTime;
+  return idle > 0x7FFFFFFFu ? 0x7FFFFFFF : (int32_t)idle;
 }
 
 static void CALLBACK update_tick(void *arg, BOOLEAN fired) {
@@ -588,9 +613,16 @@ static void CALLBACK update_tick(void *arg, BOOLEAN fired) {
   up_tell("{\"do\":\"update-tick\"}", NULL, 0);
 }
 
-// {"do":"update-tick"} told after `first_ms`, then every `every_ms` (once: a second call does nothing).
+// {"do":"update-tick"} told after `first_ms`, then every `every_ms` (once: a second call does nothing while they go);
+// `every_ms` 0: they stop (自动更新 turned off: no timer kept for nothing).
 void ps_update_ticks(int32_t first_ms, int32_t every_ms) {
   static HANDLE timer;
+  if (every_ms <= 0) {
+    if (timer) DeleteTimerQueueTimer(NULL, timer, NULL);
+    timer = NULL;
+    return;
+  }
   if (timer) return;
-  CreateTimerQueueTimer(&timer, NULL, update_tick, NULL, (DWORD)first_ms, (DWORD)every_ms, WT_EXECUTEDEFAULT);
+  if (!CreateTimerQueueTimer(&timer, NULL, update_tick, NULL, (DWORD)first_ms, (DWORD)every_ms, WT_EXECUTEDEFAULT))
+    timer = NULL;
 }

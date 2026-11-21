@@ -212,6 +212,18 @@ extern "C" fn ps_wallpaper() -> Bytes = "ps_wallpaper"
 extern "C" fn ps_read_file(path : Bytes) -> Bytes = "ps_read_file"
 
 ///|
+/// A picture (PNG or JPEG) as a JPEG of `quality`, by the system's codecs (Windows' WIC): empty where it cannot be
+/// (another kind of picture, a Mac), the app's own encoder then.
+#borrow(pic)
+extern "C" fn ps_picture_jpeg(pic : Bytes, quality : Int) -> Bytes = "ps_picture_jpeg"
+
+///|
+/// A picture (PNG or JPEG) mirrored first (`flipped` 1) then turned `turns` quarters clockwise, by the system's codecs:
+/// `shown` 1 as a pin shows it (a top-down BMP where opaque, else PNG), 0 a PNG. Empty where it cannot be.
+#borrow(pic)
+extern "C" fn ps_picture_oriented(pic : Bytes, turns : Int, flipped : Int, shown : Int) -> Bytes = "ps_picture_oriented"
+
+///|
 /// `data` written to `path` whole (its folder made): 1 when it is there.
 #borrow(path, data)
 extern "C" fn ps_write_file(path : Bytes, data : Bytes) -> Int = "ps_write_file"

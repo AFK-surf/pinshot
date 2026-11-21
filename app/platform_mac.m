@@ -493,6 +493,15 @@ int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
 }
 int32_t ps_rec_has_av1(void) { return 0; }
 void ps_rec_export_cancel(void) {}
+// (the system's codecs not asked here: the app turns and encodes pictures itself)
+moonbit_bytes_t ps_picture_jpeg(moonbit_bytes_t pic, int32_t quality) {
+  (void)pic, (void)quality;
+  return moonbit_make_bytes(0, 0);
+}
+moonbit_bytes_t ps_picture_oriented(moonbit_bytes_t pic, int32_t turns, int32_t flipped, int32_t shown) {
+  (void)pic, (void)turns, (void)flipped, (void)shown;
+  return moonbit_make_bytes(0, 0);
+}
 moonbit_bytes_t ps_rec_preview(void) { return moonbit_make_bytes(0, 0); }
 void ps_rec_end(void) {}
 void ps_rec_exclude(int32_t wid) { (void)wid; }

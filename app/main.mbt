@@ -127,7 +127,13 @@ fn told(json : String, bytes : Bytes?) -> Unit {
       asked_at.val = n("t")
       prepare_capture(n("x").to_int(), n("y").to_int(), n("w").to_int(), n("h").to_int(), n("dpi"))
     }
-    "capture" => if capturing.untracked() { capture_taken() }
+    "capture" =>
+      if capturing.untracked() {
+        capture_taken()
+      } else {
+        // (taken after the capture was called off, as GDI's may be: its pixels let go now, not kept till the next)
+        ps_capture_release()
+      }
     "capture-failed" => toast(tr("截图失败，请重试。"))
     "pin-clipboard" => pin_clipboard()
     "ocr" => ocr_told(o, bytes)

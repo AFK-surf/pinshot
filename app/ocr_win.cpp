@@ -130,25 +130,35 @@ static HRESULT bitmap_of(const uint8_t *png, int len, double scale_up, UINT32 mo
                                            WI::BitmapAlphaMode_Premultiplied, &bmp)))
     return hr;
   {
+    // (whatever fails on the way, the buffer's reference, the buffer and the bitmap closed: their memory given back
+    // now, not whenever the last reference goes)
     ComPtr<WI::IBitmapBuffer> buf;
-    if (FAILED(hr = bmp->LockBuffer(WI::BitmapBufferAccessMode_Write, &buf))) return hr;
-    WI::BitmapPlaneDescription plane;
-    if (FAILED(hr = buf->GetPlaneDescription(0, &plane))) return hr;
-    ComPtr<WF::IMemoryBuffer> mem;
-    if (FAILED(hr = buf.As(&mem))) return hr;
     ComPtr<WF::IMemoryBufferReference> ref;
-    if (FAILED(hr = mem->CreateReference(&ref))) return hr;
+    auto close_all = [&](bool bitmap_too) {
+      ComPtr<WF::IClosable> c;
+      if (ref && SUCCEEDED(ref.As(&c))) c->Close();
+      if (buf && SUCCEEDED(buf.As(&c))) c->Close();
+      if (bitmap_too && bmp && SUCCEEDED(bmp.As(&c))) c->Close();
+    };
+    WI::BitmapPlaneDescription plane;
+    ComPtr<WF::IMemoryBuffer> mem;
     ComPtr<::Windows::Foundation::IMemoryBufferByteAccess> access;
-    if (FAILED(hr = ref.As(&access))) return hr;
     BYTE *data = NULL;
     UINT32 cap = 0;
-    if (FAILED(hr = access->GetBuffer(&data, &cap))) return hr;
-    if ((UINT64)plane.StartIndex + (UINT64)plane.Stride * nh > cap) return E_FAIL;
+    if (FAILED(hr = bmp->LockBuffer(WI::BitmapBufferAccessMode_Write, &buf)) ||
+        FAILED(hr = buf->GetPlaneDescription(0, &plane)) || FAILED(hr = buf.As(&mem)) ||
+        FAILED(hr = mem->CreateReference(&ref)) || FAILED(hr = ref.As(&access)) ||
+        FAILED(hr = access->GetBuffer(&data, &cap))) {
+      close_all(true);
+      return hr;
+    }
+    if ((UINT64)plane.StartIndex + (UINT64)plane.Stride * nh > cap) {
+      close_all(true);
+      return E_FAIL;
+    }
     WICRect all = {0, 0, (INT)nw, (INT)nh};
     hr = conv->CopyPixels(&all, (UINT)plane.Stride, cap - plane.StartIndex, data + plane.StartIndex);
-    ComPtr<WF::IClosable> c;
-    if (SUCCEEDED(ref.As(&c))) c->Close();
-    if (SUCCEEDED(buf.As(&c))) c->Close();
+    close_all(FAILED(hr));
     if (FAILED(hr)) return hr;
   }
   out = bmp;
@@ -160,7 +170,41 @@ static HRESULT bitmap_of(const uint8_t *png, int len, double scale_up, UINT32 mo
 // The engine: the first of the person's profile languages whose OCR is installed, except when that language is English
 // and a CJK recognizer is also installed (the CJK one reads Latin letters and digits among Chinese as well, while the
 // English one reads Chinese as nonsense: a Windows in English with Chinese added still reads Chinese). S_FALSE: none.
+// Which language that is is found once a run (finding it may make two engines: the profile's, then the CJK one); each
+// reading after makes the one engine of the language found.
+static SRWLOCK chosen_lock = SRWLOCK_INIT;
+static std::wstring chosen;  // the language tag found ("" not yet)
+static HRESULT engine_found(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcrEngine> &engine);
 static HRESULT engine_of(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcrEngine> &engine) {
+  AcquireSRWLockShared(&chosen_lock);
+  std::wstring tag = chosen;
+  ReleaseSRWLockShared(&chosen_lock);
+  if (!tag.empty()) {
+    ComPtr<WG::ILanguageFactory> lf;
+    ComPtr<WG::ILanguage> lang;
+    if (SUCCEEDED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Globalization_Language).Get(),
+                                         IID_PPV_ARGS(&lf))) &&
+        SUCCEEDED(lf->CreateLanguage(HStringReference(tag.c_str(), (unsigned)tag.size()).Get(), &lang)) &&
+        SUCCEEDED(st->TryCreateFromLanguage(lang.Get(), &engine)) && engine)
+      return S_OK;
+    engine.Reset();
+  }
+  HRESULT hr = engine_found(st, engine);
+  if (hr == S_OK && engine) {
+    ComPtr<WG::ILanguage> lang;
+    HString t;
+    if (SUCCEEDED(engine->get_RecognizerLanguage(&lang)) && lang && SUCCEEDED(lang->get_LanguageTag(t.GetAddressOf()))) {
+      UINT32 n = 0;
+      const wchar_t *s = WindowsGetStringRawBuffer(t.Get(), &n);
+      AcquireSRWLockExclusive(&chosen_lock);
+      if (s && n) chosen.assign(s, n);
+      ReleaseSRWLockExclusive(&chosen_lock);
+    }
+  }
+  return hr;
+}
+
+static HRESULT engine_found(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcrEngine> &engine) {
   ComPtr<WFC::IVectorView<WG::Language *>> langs;
   HRESULT hr = st->get_AvailableRecognizerLanguages(&langs);
   if (FAILED(hr)) return hr;
@@ -181,6 +225,7 @@ static HRESULT engine_of(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcrEng
       engine = prof;
       return S_OK;
     }
+    // (English: the CJK one looked for below; the profile's kept only should there be none)
   }
   static const wchar_t *firsts[] = {L"zh-Hans", L"zh-Hant", L"zh", L"ja", L"ko"};
   for (const wchar_t *want : firsts) {
@@ -308,19 +353,35 @@ struct OcrJob {
   uint8_t png[1];
 };
 
+// One reading at a time: asked for while one goes, the new one waits (one at most: a newer one takes its place, the
+// app wants only the last it asked for), and the thread reading takes it as it is through. No readings pile up.
+static SRWLOCK jobs_lock = SRWLOCK_INIT;
+static OcrJob *job_next;   // waiting
+static bool job_running;   // a thread reads
+
 static DWORD WINAPI ocr_thread(LPVOID p) {
   OcrJob *job = (OcrJob *)p;
-  RoInitialize(RO_INIT_MULTITHREADED);
-  OcrOut o = {"", "", "", 0, 0.0};
-  ocr_run(job->png, job->len, &o);
-  char json[256];
-  int n = snprintf(json, sizeof json, "{\"do\":\"ocr\",\"id\":%d,\"why\":\"%s\",\"lang\":\"%.40s\",\"lines\":%d,\"ms\":%.0f}",
-                   job->id, o.why, o.lang.c_str(), o.lines, o.ms);
-  if (n < 0) n = 0;
-  else if (n >= (int)sizeof json) n = (int)sizeof json - 1;
-  mb_post("ps", json, (size_t)n, (const uint8_t *)o.text.data(), o.text.size());
-  free(job);
-  RoUninitialize();
+  HRESULT ro = RoInitialize(RO_INIT_MULTITHREADED);
+  while (job) {
+    OcrOut o = {"", "", "", 0, 0.0};
+    ocr_run(job->png, job->len, &o);
+    char json[256];
+    int n = snprintf(json, sizeof json,
+                     "{\"do\":\"ocr\",\"id\":%d,\"why\":\"%s\",\"lang\":\"%.40s\",\"lines\":%d,\"ms\":%.0f}", job->id,
+                     o.why, o.lang.c_str(), o.lines, o.ms);
+    if (n < 0) n = 0;
+    else if (n >= (int)sizeof json) n = (int)sizeof json - 1;
+    mb_post("ps", json, (size_t)n, (const uint8_t *)o.text.data(), o.text.size());
+    free(job);
+    AcquireSRWLockExclusive(&jobs_lock);
+    job = job_next;
+    job_next = NULL;
+    if (!job) job_running = false;
+    ReleaseSRWLockExclusive(&jobs_lock);
+  }
+  // (the engine's DLLs given back once nothing reads: the OCR is not kept loaded between readings)
+  CoFreeUnusedLibraries();
+  if (SUCCEEDED(ro)) RoUninitialize();
   return 0;
 }
 
@@ -333,8 +394,20 @@ extern "C" int ps_ocr(int id, moonbit_bytes_t png) {
   job->id = id;
   job->len = len;
   memcpy(job->png, png, len);
+  AcquireSRWLockExclusive(&jobs_lock);
+  if (job_running) {
+    free(job_next);  // (asked for before and not begun: the app no longer waits for it)
+    job_next = job;
+    ReleaseSRWLockExclusive(&jobs_lock);
+    return 1;
+  }
+  job_running = true;
+  ReleaseSRWLockExclusive(&jobs_lock);
   HANDLE t = CreateThread(NULL, 0, ocr_thread, job, 0, NULL);
   if (!t) {
+    AcquireSRWLockExclusive(&jobs_lock);
+    job_running = false;
+    ReleaseSRWLockExclusive(&jobs_lock);
     free(job);
     return 0;
   }

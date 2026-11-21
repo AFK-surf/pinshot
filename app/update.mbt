@@ -233,7 +233,21 @@ fn start_updates(updated : Bool) -> Unit {
     log("update: now \{app_version}")
     ps_tray_note(cstr(tr("PinShot 已更新到 ") + app_version), cstr(tr("点这里打开设置。")))
   }
-  ps_update_ticks(if update_now_test() { 2000 } else { 60 * 1000 }, if update_now_test() { 3000 } else { 10 * 60 * 1000 })
+  update_ticks_now()
+}
+
+///|
+/// The ticks going while 自动更新 is on (or a test run updates at once), none while it is off: nothing waits for
+/// nothing in the background.
+fn update_ticks_now() -> Unit {
+  if !updates_here() || (test_run() && @ui.env("PINSHOT_UPDATE_URL") == "") {
+    return
+  }
+  if settings.untracked().auto_update || update_now_test() {
+    ps_update_ticks(if update_now_test() { 2000 } else { 60 * 1000 }, if update_now_test() { 3000 } else { 10 * 60 * 1000 })
+  } else {
+    ps_update_ticks(0, 0)
+  }
 }
 
 ///|
@@ -542,6 +556,7 @@ fn update_settings(g : @view.View) -> Unit {
     set_row(g, "自动更新", fn(r) {
       switch(r, fn() { settings.get().auto_update }, fn(on) {
         change_settings(fn(s) { { ..s, auto_update: on } })
+        update_ticks_now()
         if on {
           update_tick()
         }

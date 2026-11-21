@@ -226,7 +226,7 @@ fn close_capture() -> Unit {
         r.at_moment(r.cause_at() + 120.0, fn() {
           if !capturing.untracked() {
             ps_hide(0)
-            ps_gpu_flush()
+            trim_soon()
           }
         }, later=true)
         |> ignore
@@ -254,11 +254,9 @@ fn close_capture() -> Unit {
 }
 
 ///|
-/// The memory the capture held given back to the system a moment after it closed (its decode let go by then).
+/// The memory the capture held given back to the system a moment after it closed (its decode let go by then): the
+/// native side's own timer (ps_gpu_flush), not the overlay's clock, which stops with its frames once it is hidden.
 fn trim_soon() -> Unit {
   if @hostapi.platform() == 0 { return }
-  match overlay_root.val {
-    Some(r) => r.at_moment(now() + 300.0, fn() { ps_gpu_flush() }, later=true) |> ignore
-    None => ps_gpu_flush()
-  }
+  ps_gpu_flush()
 }

@@ -114,9 +114,15 @@ fn file_name() -> String {
 fn write_picture_file(path : String, png : Bytes) -> Unit {
   let lower = path.to_lower()
   if lower.has_suffix(".jpg") || lower.has_suffix(".jpeg") {
+    let q = if settings.untracked().save_format == 2 { 80 } else { 92 }
+    // (the system's encoder where it can, platform_win's ps_picture_jpeg: tens of milliseconds, not seconds)
+    let native = ps_picture_jpeg(png, q)
+    if native.length() > 0 {
+      ps_write_file(cstr(path), native) |> ignore
+      return
+    }
     match picture_rgba(png) {
       Some((w, h, px)) => {
-        let q = if settings.untracked().save_format == 2 { 80 } else { 92 }
         ps_write_file(cstr(path), @pixels.jpeg(w, h, px, quality=q)) |> ignore
         trim_soon()
         return

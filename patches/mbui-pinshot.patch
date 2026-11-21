@@ -1,5 +1,5 @@
 diff --git a/libs/mbui/src/host/win_app.c b/libs/mbui/src/host/win_app.c
-index 11e72202..f2c8d360 100644
+index 11e72202..296f20e3 100644
 --- a/libs/mbui/src/host/win_app.c
 +++ b/libs/mbui/src/host/win_app.c
 @@ -336,9 +336,25 @@ static void draw_frame(void) {
@@ -28,18 +28,21 @@ index 11e72202..f2c8d360 100644
  void mb_host_window_hold(void) { window_held = 1; }
  
  void mb_host_window_show(void) {
-@@ -354,6 +370,10 @@ static void held_shown_now(void) {
+@@ -352,7 +368,12 @@ static void held_shown_now(void) {
+     WinSlot *w = &win_slots[k];
+     if (!w->h || w->held != 2) continue;
      w->held = 0;
-     cloak(w->h, FALSE);
-   }
+-    cloak(w->h, FALSE);
++    // (a window the app keeps cloaked itself, a test run's, stays so: its frame drawn, never seen)
++    if (!GetPropW(w->h, L"PinShot.Cloaked")) cloak(w->h, FALSE);
++  }
 +  if (win0_reveal == 2 && hwnd) {
 +    win0_reveal = 0;
 +    cloak(hwnd, FALSE);
-+  }
+   }
    if (window_to_show && !window_shown && hwnd) {
      window_to_show = 0;
-     window_shown = 1;
-@@ -363,6 +383,7 @@ static void held_shown_now(void) {
+@@ -363,6 +384,7 @@ static void held_shown_now(void) {
  
  // What the frames presented since the last round owe the compositor waited for, and what was held shown then.
  static void frames_paced(void) {
@@ -47,7 +50,7 @@ index 11e72202..f2c8d360 100644
    mb_render_pace();
    held_shown_now();
  }
-@@ -581,6 +602,7 @@ static void key_down(WPARAM vk) {
+@@ -581,6 +603,7 @@ static void key_down(WPARAM vk) {
      case VK_PRIOR: code = ws->ime_active ? 0 : 15; break;
      case VK_NEXT: code = ws->ime_active ? 0 : 16; break;
    }
@@ -55,7 +58,7 @@ index 11e72202..f2c8d360 100644
    if (code) {
      mb_cb.key(code, mods);
      return;
-@@ -1484,7 +1506,16 @@ static char *utf8_of(const WCHAR *s, int n) {
+@@ -1484,7 +1507,16 @@ static char *utf8_of(const WCHAR *s, int n) {
  // spec says; one of a role where the last of the role was left as it closed (roles_kept), a second of a role open
  // beside the first of it down and to the right of the last one opened, never over it. Out of sight (cloaked) till its
  // first frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
@@ -72,7 +75,7 @@ index 11e72202..f2c8d360 100644
    if (!hwnd || !*win_class) return 0;
    int wid = 0;
    for (int k = 1; k < MB_WINS; k++)
-@@ -1551,25 +1582,28 @@ static int win_open(moonbit_string_t what) {
+@@ -1551,25 +1583,28 @@ static int win_open(moonbit_string_t what) {
    }
    jv_free(&spec);
    free(u);
@@ -104,7 +107,7 @@ index 11e72202..f2c8d360 100644
    drop_start(wid);
    w->held = cloak(h, TRUE) ? 1 : 0;
    ShowWindow(h, SW_SHOW);
-@@ -1635,7 +1669,12 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
+@@ -1635,7 +1670,12 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
    // (a frame built while the window is not shown: nothing of it on the screen)
    if (!presenting) return;
    // (a window held whose frame this is: shown once the compositor has it, held_shown_now)

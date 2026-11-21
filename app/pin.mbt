@@ -260,16 +260,27 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   let turns = turns % 4
   let old = p.key.untracked()
   let key = if turns == 0 && !flipped {
+    // (the picture as pinned handed over again: let go of while the pin showed another)
+    if old != p.key_first {
+      @ui.add_image(p.key_first, p.png)
+    }
     p.key_first
   } else {
-    guard picture_rgba(p.png) is Some((w, h, px)) else {
-      log("pin: its picture could not be read to turn it")
-      return
+    // (turned by the system's codecs where it can, platform_win's ps_picture_oriented; else here)
+    let native = ps_picture_oriented(p.png, turns, if flipped { 1 } else { 0 }, 1)
+    let shown = if native.length() > 0 {
+      native
+    } else {
+      guard picture_rgba(p.png) is Some((w, h, px)) else {
+        log("pin: its picture could not be read to turn it")
+        return
+      }
+      let (tw, th, out) = oriented(w, h, px, turns, flipped)
+      shown_bytes(tw, th, out)
     }
-    let (tw, th, out) = oriented(w, h, px, turns, flipped)
     pin_key_n.val += 1
     let key = p.key_first + ":" + pin_key_n.val.to_string()
-    @ui.add_image(key, shown_bytes(tw, th, out))
+    @ui.add_image(key, shown)
     key
   }
   p.turns = turns
@@ -278,7 +289,8 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   p.w = if odd { p.first_h } else { p.first_w }
   p.h = if odd { p.first_w } else { p.first_h }
   p.key.set(key)
-  if old != key && old != p.key_first {
+  // (only the picture shown kept: the one as pinned too, while turned, was a second texture and its bytes for nothing)
+  if old != key {
     @ui.forget_image(old)
   }
   let (cx, cy) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
@@ -333,6 +345,10 @@ fn pin_as_pinned(p : Pin) -> Bool {
 fn shown_picture(p : Pin) -> Bytes {
   if p.turns == 0 && !p.flipped {
     return p.png
+  }
+  let native = ps_picture_oriented(p.png, p.turns, if p.flipped { 1 } else { 0 }, 0)
+  if native.length() > 0 {
+    return native
   }
   guard picture_rgba(p.png) is Some((w, h, px)) else { return p.png }
   let (tw, th, out) = oriented(w, h, px, p.turns, p.flipped)
@@ -606,6 +622,12 @@ fn set_alpha(p : Pin, a : Int) -> Unit {
 
 ///|
 fn copy_pin(p : Pin) -> Unit {
+  // (a test run copies into a file, never onto the person's clipboard)
+  let test_to = @ui.env("PINSHOT_TEST_COPY")
+  if test_to != "" {
+    ps_write_file(cstr(test_to), shown_picture(p)) |> ignore
+    return
+  }
   @hostapi.clipboard_set_image(shown_picture(p))
 }
 

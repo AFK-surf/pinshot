@@ -96,6 +96,7 @@ double ps_now_ms(void) { return ps_ms(); }
 #define PS_FREE_TIMER 7
 #define PS_WGC_TIMER 8       // the captures made again a moment after the monitors wake (tray_proc)
 #define PS_IDLE_TRIM_TIMER 9 // Instant mode: trim D3D11 driver pools after sitting idle (tray_proc)
+#define PS_TRIM_SOON_TIMER 10 // what a closed window held given back a moment later (ps_gpu_flush)
 #define IDLE_TRIM_MS 60000
 static int wgc_off;          // PINSHOT_CAPTURE=gdi: no capture kept
 // GUID_CONSOLE_DISPLAY_STATE (the monitors off 0, on 1, dimmed 2)
@@ -553,6 +554,8 @@ static NOTIFYICONDATAW tray;
 static int tray_on;  // the icon is in the notification area (ps_tray_on)
 static UINT taskbar_created;
 static HANDLE one_run;
+static HPOWERNOTIFY power_note;  // (the monitors' state told the tray window: let go as it goes, ps_run_handover)
+static int wts_note;
 
 enum { HK_CAPTURE = 1, HK_PIN_CLIP = 2, HK_PINS = 3, HK_MOST = 4 };
 static int hk_on[HK_MOST];
@@ -686,8 +689,10 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       else capture_asked("again");
       return 0;
     case WM_PS_TRIM:
+      // (never while a capture is open or being taken: one begun meanwhile keeps what it draws with)
+      if (capture_open || cap_busy) return 0;
       gpu_trim_now(0);
-      if (keep_gpu_warm && !capture_open && !cap_busy) SetTimer(h, PS_IDLE_TRIM_TIMER, idle_trim_ms(), NULL);
+      if (keep_gpu_warm) SetTimer(h, PS_IDLE_TRIM_TIMER, idle_trim_ms(), NULL);
       return 0;
     case WM_PS_ASK:
       if (ask_waiting[0] && !capture_open) {
@@ -697,8 +702,9 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         capture_asked(by);
       }
       return 0;
-    case WM_DISPLAYCHANGE:  // (the monitors changed: each one's capture made again)
-      ps_wgc_restart();
+    case WM_DISPLAYCHANGE:  // (the monitors changed: each one's capture made again, once they have settled)
+      // (a mode change says so several times over; none kept where captures are GDI's alone)
+      if (!wgc_off) SetTimer(h, PS_WGC_TIMER, 250, NULL);
       return 0;
     // (the monitors woken, the computer resumed, the session unlocked or connected to again: each one's capture made
     // again a moment later, once DWM composes again; a session can stop across these with its last frame kept)
@@ -717,6 +723,10 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       if (wp == PS_WGC_TIMER) {
         KillTimer(h, PS_WGC_TIMER);
         if (!wgc_off) ps_wgc_restart();
+      }
+      if (wp == PS_TRIM_SOON_TIMER) {
+        KillTimer(h, PS_TRIM_SOON_TIMER);
+        PostMessageW(h, WM_PS_TRIM, 0, 0);
       }
       if (wp == PS_FREE_TIMER) {
         KillTimer(h, PS_FREE_TIMER);
@@ -818,8 +828,8 @@ int32_t ps_start(int32_t again) {
   const char *how = getenv("PINSHOT_CAPTURE");
   wgc_off = how && !strcmp(how, "gdi");
   if (!wgc_off) {
-    RegisterPowerSettingNotification(tray_hwnd, &display_state_guid, DEVICE_NOTIFY_WINDOW_HANDLE);
-    WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION);
+    power_note = RegisterPowerSettingNotification(tray_hwnd, &display_state_guid, DEVICE_NOTIFY_WINDOW_HANDLE);
+    wts_note = WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION) ? 1 : 0;
   }
   return 1;
 }
@@ -1000,12 +1010,18 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
     }
     case WM_ACTIVATE: {
       // (taken or let go as the window in front: a pin shows it)
+      int on = LOWORD(wp) != WA_INACTIVE;
       char json[64];
-      snprintf(json, sizeof json, "{\"do\":\"active\",\"wid\":%d,\"on\":%d}", (int)wid, LOWORD(wp) != WA_INACTIVE);
+      snprintf(json, sizeof json, "{\"do\":\"active\",\"wid\":%d,\"on\":%d}", (int)wid, on);
       ps_tell(json);
       // (and drawn on: the app hears it on its own window's frame, a pin draws only as something comes to it; its
-      // flash runs 360 ms, a frame asked of it every 16 ms till then)
-      SetPropW(h, L"PinShot.Frames", (HANDLE)(INT_PTR)30);
+      // flash, as it is taken, runs 360 ms, a frame asked of it every 16 ms till then. Let go, it is drawn twice, its
+      // look as it stands; the capture's overlay (window 0, the monitor's size, no flash of its own) once, never 30)
+      if (wid == 0) {
+        InvalidateRect(h, NULL, FALSE);
+        break;
+      }
+      SetPropW(h, L"PinShot.Frames", (HANDLE)(INT_PTR)(on ? 30 : 2));
       SetTimer(h, 0x5053, 16, NULL);
       break;
     }
@@ -1053,8 +1069,11 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
       break;
     }
     case WM_NCDESTROY:
+      KillTimer(h, 0x5053);
       RemovePropW(h, L"PinShot.Frames");
       RemovePropW(h, L"PinShot.Closing");
+      RemovePropW(h, L"PinShot.Clear");
+      RemovePropW(h, L"PinShot.Cloaked");
       RemoveWindowSubclass(h, own_proc, 1);
       break;
   }
@@ -1190,6 +1209,12 @@ void ps_cloak(int32_t wid, int32_t on) {
   if (wid == 0) mb_app_cancel_reveal(0);
   BOOL b = on ? TRUE : FALSE;
   DwmSetWindowAttribute(h, DWMWA_CLOAK, &b, sizeof b);
+  // (a window beside the overlay kept cloaked by the app (a test run's pin or panel): mbui, showing it once its first
+  // frame is drawn, leaves it so, patches/mbui-pinshot.patch)
+  if (wid != 0) {
+    if (on) SetPropW(h, L"PinShot.Cloaked", (HANDLE)1);
+    else RemovePropW(h, L"PinShot.Cloaked");
+  }
 }
 
 // Window `wid` over the others (1) or among them (0); `front`: brought before them all now.
@@ -1264,8 +1289,10 @@ static void gpu_trim_now(int force_trim) {
   if (force_trim && !wgc_off) ps_wgc_trim();
 }
 
+// What closed windows held given back 300 ms from now (their last frame and decodes done by then), on the tray
+// window's timer: it runs whether or not any window of the app draws.
 void ps_gpu_flush(void) {
-  if (tray_hwnd) PostMessageW(tray_hwnd, WM_PS_TRIM, 0, 0);
+  if (tray_hwnd) SetTimer(tray_hwnd, PS_TRIM_SOON_TIMER, 300, NULL);
 }
 
 
@@ -1287,15 +1314,18 @@ moonbit_bytes_t ps_memory(void) {
 
 // The folder PinShot keeps its settings in (%APPDATA%\PinShot), made where it is not.
 moonbit_bytes_t ps_data_dir(void) {
-  wchar_t *p = NULL;
-  wchar_t dir[MAX_PATH * 2] = {0};
-  if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &p))) {
-    // (a test run's settings its own: the person's left as they are)
-    if (test_run()) _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot-test%ls", p, test_id());
-    else _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
-    CoTaskMemFree(p);
+  // (found and made once: asked as each setting is read or written)
+  static wchar_t dir[MAX_PATH * 2];
+  if (!dir[0]) {
+    wchar_t *p = NULL;
+    if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &p))) {
+      // (a test run's settings its own: the person's left as they are)
+      if (test_run()) _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot-test%ls", p, test_id());
+      else _snwprintf(dir, MAX_PATH * 2 - 1, L"%ls\\PinShot", p);
+      CoTaskMemFree(p);
+    }
+    if (dir[0]) CreateDirectoryW(dir, NULL);
   }
-  CreateDirectoryW(dir, NULL);
   return ps_utf8_bytes(dir);
 }
 
@@ -1437,21 +1467,46 @@ void ps_log(moonbit_bytes_t line) {
     } else {
       wcscat_s(path, MAX_PATH * 2, L"\\pinshot.log");
     }
-    WIN32_FILE_ATTRIBUTE_DATA a;
-    if (GetFileAttributesExW(path, GetFileExInfoStandard, &a) && a.nFileSizeLow > 1024 * 1024) DeleteFileW(path);
   }
-  HANDLE f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, 0, NULL);
-  if (f == INVALID_HANDLE_VALUE) return;
+  // (kept open for the run, its size followed: begun anew whenever it passes 1 MB, not only as the run starts; one
+  // write a line)
+  static HANDLE f = INVALID_HANDLE_VALUE;
+  static LONGLONG size = -1;
+  if (f != INVALID_HANDLE_VALUE && size > 1024 * 1024) {
+    CloseHandle(f);
+    f = INVALID_HANDLE_VALUE;
+    DeleteFileW(path);
+  }
+  if (f == INVALID_HANDLE_VALUE) {
+    f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS, 0,
+                    NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    LARGE_INTEGER sz;
+    size = GetFileSizeEx(f, &sz) ? sz.QuadPart : 0;
+    if (size > 1024 * 1024) {
+      CloseHandle(f);
+      f = INVALID_HANDLE_VALUE;
+      DeleteFileW(path);
+      f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS,
+                      0, NULL);
+      if (f == INVALID_HANDLE_VALUE) return;
+      size = 0;
+    }
+  }
   SYSTEMTIME t;
   GetLocalTime(&t);
-  char head[48];
-  int n = snprintf(head, sizeof head, "%02d-%02d %02d:%02d:%02d.%03d ", t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond,
+  size_t ll = strlen((const char *)line);
+  char stack[512];
+  char *buf = ll + 64 <= sizeof stack ? stack : (char *)malloc(ll + 64);
+  if (!buf) return;
+  int n = snprintf(buf, 48, "%02d-%02d %02d:%02d:%02d.%03d ", t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond,
                    t.wMilliseconds);
-  DWORD put;
-  WriteFile(f, head, (DWORD)n, &put, NULL);
-  WriteFile(f, line, (DWORD)strlen((const char *)line), &put, NULL);
-  WriteFile(f, "\r\n", 2, &put, NULL);
-  CloseHandle(f);
+  memcpy(buf + n, line, ll);
+  memcpy(buf + n + ll, "\r\n", 2);
+  DWORD put = 0;
+  WriteFile(f, buf, (DWORD)(n + ll + 2), &put, NULL);
+  size += put;
+  if (buf != stack) free(buf);
 }
 
 // The time now as a file's name says it: "20261117-083015".
@@ -1641,6 +1696,10 @@ void ps_run_handover(void) {
     CloseHandle(one_run);
     one_run = NULL;
   }
+  if (power_note) UnregisterPowerSettingNotification(power_note);
+  power_note = NULL;
+  if (wts_note && tray_hwnd) WTSUnRegisterSessionNotification(tray_hwnd);
+  wts_note = 0;
   if (tray_hwnd) {
     DestroyWindow(tray_hwnd);
     tray_hwnd = NULL;

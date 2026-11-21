@@ -543,10 +543,10 @@ fn long_save() -> Unit {
   if long_h.untracked() == 0 {
     return
   }
-  guard long_png() is Some(png) else {
-    long_close()
-    return
-  }
+  // (the taking stopped and where it goes asked first, the picture encoded only once there is somewhere to put it:
+  // the dialog comes at once, and called off, nothing was encoded for nothing)
+  ps_long_stop()
+  long_stopped.set(true)
   let s = settings.untracked()
   let path = if s.ask_where {
     text_of(ps_save_dialog(long_wid.val, cstr(s.save_dir), cstr(file_name())))
@@ -554,6 +554,10 @@ fn long_save() -> Unit {
     file_in(s.save_dir, file_name())
   }
   if path == "" {
+    return
+  }
+  guard long_png() is Some(png) else {
+    long_close()
     return
   }
   write_picture_file(path, png)
@@ -609,17 +613,8 @@ fn long_gone() -> Unit {
   }
   long_clear_preview_images()
   long_root.val = None
-  // (free preview buffers after a brief grace window so any in-flight mbui texture upload thread finishes cleanly)
-  match overlay_root.val {
-    Some(r) =>
-      r.at_moment(now() + 300.0, fn() {
-        if long_wid.val == 0 {
-          ps_long_preview_free()
-        }
-      }, later=true)
-      |> ignore
-    None => ps_long_preview_free()
-  }
+  // (the previews let go now: one still being made a texture is freed as that is through, the native side counts)
+  ps_long_preview_free()
   trim_soon()
 }
 
