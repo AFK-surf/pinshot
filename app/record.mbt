@@ -71,8 +71,8 @@ let rec_content : Ref[@view.View?] = Ref(None)
 let rec_from_bar : Ref[(Double, Double, Double, Double)?] = Ref(None)
 
 ///|
-/// True while the recording bar stays anchored to the screenshot toolbar's right edge (cleared once dragged by hand).
-let rec_anchor_right : @signals.Signal[Bool] = @signals.signal(false)
+/// True while the screenshot overlay is kept visible for 1 frame until the recording window presents & uncloaks over it.
+let rec_closing_overlay : Ref[Bool] = Ref(false)
 
 ///|
 let rec_handoff_cancel : Ref[() -> Unit] = Ref(fn() {  })
@@ -403,8 +403,8 @@ fn rec_out() -> Unit {
   let rx = m.x + r.x
   let ry = m.y + r.y
   let from_bar = toolbar_main_rect()
-  close_capture()
   if ps_rec_prepare(rx, ry, r.w, r.h) == 0 {
+    close_capture()
     toast(tr("选区太小，不能录屏"))
     return
   }
@@ -414,15 +414,14 @@ fn rec_out() -> Unit {
   } else {
     { x: rx, y: ry, w: r.w, h: r.h }
   }
-  ps_capture_open(1)
   rec_part.val = part
   rec_mon.val = m
   rec_scale.val = k
   rec_from_bar.val = from_bar
+  rec_closing_overlay.val = true
   rec_placed_size.val = (0, 0)
   @signals.start_batch()
-  rec_anchor_right.set(from_bar is Some(_))
-  rec_phase.set(if from_bar is Some(_) { -1 } else { 0 })
+  rec_phase.set(0)
   rec_ms.set(0)
   rec_frames.set(0)
   rec_master_bytes.set(0.0)
@@ -440,6 +439,8 @@ fn rec_out() -> Unit {
   let wid = @ui.window_open_here("rec")
   if wid <= 0 {
     log("rec: no window")
+    rec_closing_overlay.val = false
+    close_capture()
     ps_rec_end()
     ps_capture_open(0)
     return
@@ -451,23 +452,25 @@ fn rec_out() -> Unit {
   if cloaked {
     ps_cloak(wid, 1)
   }
-  rec_place_initial(360.0 + rec_pad_l + rec_pad_r, bar_height + rec_pad_t + rec_pad_b, !cloaked)
-  if from_bar is None {
-    rec_schedule_fit(!cloaked)
-  }
+  let est_w = if english.untracked() { 362.0 } else { 344.0 }
+  // Place without stealing focus yet while the overlay stays visible underneath; once Frame 0 uncloaks cleanly on top,
+  // rec_window closes the overlay, marks capture_open=1, and focuses & fits the recording bar with zero empty-frame blink.
+  rec_place_initial(est_w + rec_pad_l + rec_pad_r, bar_height + rec_pad_t + rec_pad_b, false)
   log("rec: ready \{part.w}x\{part.h} at \{part.x},\{part.y}")
 }
 
 ///|
-/// Initial placement under (or over, or centered on) the selected region, accounting for the transparent shadow halo.
+/// Initial placement reusing the screenshot toolbar's exact right edge & Y (or under/over the region as fallback),
+/// accounting for the transparent shadow halo.
 fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
   let m = rec_mon.val
   let k = rec_scale.val
   let (x, y, w, h) = match rec_from_bar.val {
     Some((bx, by, bw, bh)) => {
-      let ww = ((bw + rec_pad_l + rec_pad_r) * k).ceil().to_int()
+      let inner_w = pt_w - rec_pad_l - rec_pad_r
+      let ww = (pt_w * k).ceil().to_int()
       let hh = ((bh + rec_pad_t + rec_pad_b) * k).ceil().to_int()
-      let xx = clampi(m.x + ((bx - rec_pad_l) * k).round().to_int(), m.x, m.right() - ww)
+      let xx = clampi(m.x + ((bx + bw - inner_w - rec_pad_l) * k).round().to_int(), m.x, m.right() - ww)
       let yy = clampi(m.y + ((by - rec_pad_t) * k).round().to_int(), m.y, m.bottom() - hh)
       (xx, yy, ww, hh)
     }
@@ -500,9 +503,9 @@ let rec_shrink_cancel : Ref[() -> Unit] = Ref(fn() {  })
 ///|
 /// Measure the inner content box (including its transparent shadow halo) and resize snugly.
 /// When shrinking (e.g. Ready bar -> Recording bar), defer HWND tightening until after the 185ms pill morph finishes
-/// and preserve the anchored edge so the morphing superellipse never clips or jumps.
+/// and preserve the left edge (`cur_x`) so DirectComposition never teleports the swapchain for 1 frame.
 fn rec_fit_window(focus : Bool, allow_shrink? : Bool = false) -> Unit {
-  if rec_wid.val == 0 || rec_phase.untracked() == -1 {
+  if rec_wid.val == 0 {
     return
   }
   guard rec_content.val is Some(content) else { return }
@@ -541,10 +544,7 @@ fn rec_fit_window(focus : Bool, allow_shrink? : Bool = false) -> Unit {
   let (x, y) = if r.length() >= 4 && r[2] > 0.0 && r[3] > 0.0 {
     let cur_x = r[0].round().to_int()
     let cur_y = r[1].round().to_int()
-    if rec_anchor_right.untracked() {
-      let cur_r = (r[0] + r[2]).round().to_int()
-      (clampi(cur_r - w, m.x, m.right() - w), clampi(cur_y, m.y, m.bottom() - h))
-    } else if shrinking {
+    if shrinking || (w - pw).abs() <= 24 {
       (clampi(cur_x, m.x, m.right() - w), clampi(cur_y, m.y, m.bottom() - h))
     } else {
       let cx = (r[0] + r[2] / 2.0).round().to_int()
@@ -570,12 +570,14 @@ fn rec_schedule_fit(focus : Bool) -> Unit {
 
 ///|
 fn rec_start_now() -> Unit {
-  let ph = rec_phase.untracked()
-  if rec_wid.val == 0 || (ph != 0 && ph != -1) {
+  if rec_wid.val == 0 || rec_phase.untracked() != 0 {
     return
   }
-  (rec_handoff_cancel.val)()
-  rec_handoff_cancel.val = fn() {  }
+  if rec_closing_overlay.val {
+    rec_closing_overlay.val = false
+    close_capture()
+    ps_capture_open(1)
+  }
   let fps = rec_fps.untracked()
   let cur = if rec_cursor.untracked() { 1 } else { 0 }
   let aud = if rec_audio.untracked() { 1 } else { 0 }
@@ -773,10 +775,13 @@ fn rec_gone() -> Unit {
   rec_shrink_cancel.val = fn() {  }
   (rec_handoff_cancel.val)()
   rec_handoff_cancel.val = fn() {  }
+  if rec_closing_overlay.val {
+    rec_closing_overlay.val = false
+    close_capture()
+  }
   rec_root.val = None
   rec_content.val = None
   rec_from_bar.val = None
-  rec_anchor_right.set(false)
   rec_placed_size.val = (0, 0)
   rec_clear_exports()
   rec_clear_preview()
@@ -1295,7 +1300,7 @@ fn rec_window(root : @view.View) -> Unit {
   |> ignore
   root.on_action("space", fn(_) {
     match rec_phase.untracked() {
-      -1 | 0 => rec_start_now()
+      0 => rec_start_now()
       1 | 2 => rec_toggle_pause()
       _ => ()
     }
@@ -1323,10 +1328,7 @@ fn rec_window(root : @view.View) -> Unit {
 
   // Transparent page over DirectComposition so the inner superellipse bar/panel + soft shadow float natively
   root.box(fn(page) {
-    page
-    .over(Is(true))
-    .lines_up(By(fn() { if rec_anchor_right.get() { Some(End) } else { Some(Start) } }))
-    |> ignore
+    page.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
 
     // Content wrapper including transparent shadow halo whose laid_size() drives exact window size
     page.box(fn(content) {
@@ -1337,7 +1339,7 @@ fn rec_window(root : @view.View) -> Unit {
       .lines_up(Is(Some(Start)))
       |> ignore
 
-      // Unified morphing superellipse shell: smoothly reshapes across Screenshot toolbar -> Ready bar -> Recording bar -> Finalizing pill -> Studio HUD card
+      // Unified morphing superellipse shell: smoothly reshapes across Ready bar -> Recording bar -> Finalizing pill -> Studio HUD card
       content.box(fn(shell) {
         let is_exp = fn() { rec_phase.get() >= 4 }
         let exp_p = @motion.eased_on(shell, is_exp, @motion.tween(185.0, ease=Out))
@@ -1351,6 +1353,12 @@ fn rec_window(root : @view.View) -> Unit {
         }
         if rec_from_bar.val is None {
           enter_reveal(shell, ms=145.0, dy=4.0, from_scale=0.975)
+        } else {
+          // Stay 100% opaque on Frame 0 so the dark pill seamlessly replaces the screenshot toolbar with zero blink;
+          // only apply a subtle scale settle while the recording controls crossfade in.
+          let settle = @motion.NodeWay::new(0.0)
+          settle.go_from(shell, 0.0, 1.0, @motion.tween(155.0, ease=Out))
+          shell.scale(By(fn() { 0.985 + 0.015 * settle.shown(shell) })) |> ignore
         }
         shell
         .shrink(Is(0.0))
@@ -1360,7 +1368,7 @@ fn rec_window(root : @view.View) -> Unit {
         .shadow(By(fn() { if is_exp() { (11.0, 4.0, 0x0000007AL) } else { (9.0, 3.0, 0x00000058L) } }))
         |> ignore
 
-        // ---- Phases -1..3: Concentric superellipse floating recording bar (matches toolbar.mbt) ----
+        // ---- Phases 0..3: Concentric superellipse floating recording bar (matches toolbar.mbt) ----
         shell.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
           bar
           .row(Is(true))
@@ -1370,15 +1378,6 @@ fn rec_window(root : @view.View) -> Unit {
           .padding(Is((10.0, bar_pad, bar_pad, bar_pad)))
           .lines_up(Is(Some(Middle)))
           |> ignore
-
-          // Phase -1: 1-frame handoff footprint matching the screenshot toolbar's exact width before morphing into Phase 0
-          bar.show(fn() { rec_phase.get() == -1 }, fn(ph) {
-            let w = match rec_from_bar.val {
-              Some((_, _, bw, _)) => dmax(0.0, bw - 10.0 - bar_pad)
-              None => 360.0
-            }
-            ph.width(Is(Some(w))).height(Is(Some(bar_height - bar_pad * 2.0))).shrink(Is(0.0)) |> ignore
-          }, at_once=true)
 
           // Phase 3: Finalizing master
           bar.show(fn() { rec_phase.get() == 3 }, fn(r) {
@@ -1427,7 +1426,6 @@ fn rec_window(root : @view.View) -> Unit {
               .presses(Is(true))
               .on_drag(fn(d) {
                 if d.kind == Down && rec_wid.val != 0 {
-                  rec_anchor_right.set(false)
                   ps_move_window(rec_wid.val)
                 }
               }, whole=true)
@@ -1630,7 +1628,6 @@ fn rec_window(root : @view.View) -> Unit {
           .presses(Is(true))
           .on_drag(fn(d) {
             if d.kind == Down && rec_wid.val != 0 {
-              rec_anchor_right.set(false)
               ps_move_window(rec_wid.val)
             }
           }, whole=true)
@@ -2349,17 +2346,21 @@ fn rec_window(root : @view.View) -> Unit {
             rec_moves.moves_with(p)
           }
         }
-        // Kick off the seamless morph from the screenshot toolbar's exact footprint (-1) into the Ready bar (0);
-        // root.reacts on rec_phase handles deferred right-anchored HWND tightening automatically after the 185ms morph.
-        if rec_phase.untracked() == -1 {
+        // Once Frame 0 has presented & uncloaked cleanly on top of the screenshot toolbar, cloak the overlay underneath,
+        // mark capture_open=1, and snugly fit/focus the recording bar (width delta <= ~4px, cur_x fixed -> zero DWM flash).
+        if rec_closing_overlay.val {
           (rec_handoff_cancel.val)()
+          let cloaked = @ui.env("PINSHOT_TEST_CLOAKED") != ""
           rec_handoff_cancel.val = root.at_moment(
             root.cause_at() + 1.0,
             fn() {
               rec_handoff_cancel.val = fn() {  }
-              if rec_phase.untracked() == -1 {
-                rec_phase.set(0)
+              if rec_closing_overlay.val {
+                rec_closing_overlay.val = false
+                close_capture()
+                ps_capture_open(1)
               }
+              rec_fit_window(!cloaked, allow_shrink=true)
             },
             later=true,
           )
