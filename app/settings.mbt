@@ -52,7 +52,7 @@ let pin_choices : Array[(String, Int, Int)] = [
 
 ///|
 let confirm_choices : Array[(String, Int, Int)] = if @hostapi.platform() == 0 {
-  [("不用快捷键", 0, 0), ("Space", 0, 0x20), ("Tab", 0, 0x09), ("⌘Return", 2, 0x0D)]
+  [("不用快捷键", 0, 0), ("Space", 0, 0x20), ("Tab", 0, 0x09), ("⌘Return", 8, 0x0D)]
 } else {
   [("不用快捷键", 0, 0), ("Space", 0, 0x20), ("Tab", 0, 0x09), ("Ctrl+Enter", 2, 0x0D)]
 }
@@ -83,14 +83,13 @@ fn hotkey_of(c : (String, Int, Int)) -> Hotkey {
 }
 
 ///|
-/// Whether shortcuts are set by pressing them (Windows: the user, 2026-11-20 「快捷键都支持一下自定义」); elsewhere they
-/// are picked from `key_choices` and `pin_choices`.
+/// Whether shortcuts are set by pressing them (Windows and macOS).
 fn keys_pressed_in() -> Bool {
-  @hostapi.platform() == 3
+  @hostapi.platform() == 3 || @hostapi.platform() == 0
 }
 
 ///|
-/// A shortcut as it is shown: one of `choices` by its name, else its modifiers and key ("Ctrl+Alt+A").
+/// A shortcut as it is shown: one of `choices` by its name, else its modifiers and key ("Ctrl+Alt+A" or "⌃⌥A").
 fn key_words(h : Hotkey, choices : Array[(String, Int, Int)]) -> String {
   if h.vk == 0 {
     return tr("未设置")
@@ -99,6 +98,23 @@ fn key_words(h : Hotkey, choices : Array[(String, Int, Int)]) -> String {
     if c.1 == h.mods && c.2 == h.vk {
       return tr(c.0)
     }
+  }
+  if @hostapi.platform() == 0 {
+    let sb = StringBuilder()
+    if (h.mods & 2) != 0 {
+      sb.write_string("⌃")
+    }
+    if (h.mods & 1) != 0 {
+      sb.write_string("⌥")
+    }
+    if (h.mods & 4) != 0 {
+      sb.write_string("⇧")
+    }
+    if (h.mods & 8) != 0 {
+      sb.write_string("⌘")
+    }
+    sb.write_string(text_of(ps_key_name(h.vk)))
+    return sb.to_string()
   }
   let parts : Array[String] = []
   if (h.mods & 2) != 0 {
@@ -509,7 +525,13 @@ fn key_pressed(how : String, mods : Int, vk : Int) -> Unit {
   }
   let alone = (vk >= 0x70 && vk <= 0x87) || vk == 0x2C || vk == 0x13 || vk == 0x91
   if (mods & 11) == 0 && !alone {
-    trouble(tr("要和 Ctrl、Alt 或 Win 一起按（F1–F24、PrtSc 可以单独用）"))
+    trouble(
+      if @hostapi.platform() == 0 {
+        tr("要和 Command、Control 或 Option 一起按（F1–F24 可以单独用）")
+      } else {
+        tr("要和 Ctrl、Alt 或 Win 一起按（F1–F24、PrtSc 可以单独用）")
+      },
+    )
     return
   }
   let other = if which == 1 { was.pin_key } else { was.capture_key }
@@ -792,7 +814,11 @@ fn key_note(which : Int) -> String {
   if row == which {
     why
   } else if which == 3 {
-    tr("Enter、Ctrl+C 与双击始终可用；这里可额外再绑一个单键（如 Space）或组合键")
+    if @hostapi.platform() == 0 {
+      tr("Return、⌘C 与双击始终可用；这里可额外再绑一个单键（如 Space）或组合键")
+    } else {
+      tr("Enter、Ctrl+C 与双击始终可用；这里可额外再绑一个单键（如 Space）或组合键")
+    }
   } else if !(if which == 1 { capture_key_ok.get() } else { pin_key_ok.get() }) {
     tr("已被其他程序占用，换一个")
   } else {

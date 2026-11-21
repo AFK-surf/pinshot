@@ -11,9 +11,9 @@ Fast, PixPin-style screenshot, annotation, pinning, and screen recording for Win
 - **Instant capture**: smart window detection, area drag & edge/corner resize, pixel nudging, magnifier, and color picker (`C`); HDR-aware on Windows (WGC FP16 tone-mapped back to SDR on the GPU).
 - **Markup & beautify**: shapes (rectangle, ellipse, focus spotlight), arrows & lines (`Shift` snaps to 0°/45°/90°), pen & eraser, redaction (pixel mosaic, brush mosaic, blur), numbered markers, text, and one-click **background beautify** (`B`, gradients / solid / desktop wallpaper with rounded corners & shadow).
 - **Screen pins**: pin any capture or clipboard image (`Ctrl+2` / `⌃2`) as a floating window with zoom, opacity, rotation, flip, always-on-top, and OCR.
-- **Offline OCR**: read text from any selection or pin (`Ctrl+O`) using Windows' built-in offline OCR engine.
-- **Scrolling screenshot** *(Windows)*: capture tall pages or chats (`Ctrl+L`) in either direction.
-- **Area screen recording** *(Windows)*: record any region (`Ctrl+R`) to hardware-accelerated **MP4 (H.265 / H.264 / AV1)** or **GIF**, with optional system audio, click/keycap overlay, and a compact post-recording Studio HUD for format, quality/FPS, and proportional scaling (`100% / 75% / 50%`).
+- **Offline OCR**: read text from any selection or pin (`Ctrl+O`) on the device: Windows' built-in OCR engine, Apple's Vision framework on macOS.
+- **Scrolling screenshot**: capture tall pages or chats (`Ctrl+L` / `⌘L`) in either direction.
+- **Area screen recording**: record any region (`Ctrl+R` / `⌘R`) to hardware-accelerated **MP4 (H.265 / H.264, plus AV1 on Windows)** or **GIF**, with optional system audio, click/keycap overlay, and a compact post-recording Studio HUD for format, quality/FPS, and proportional scaling (`100% / 75% / 50%`).
 - **Verified updates**: opt-in background updates on Windows signed with ECDSA P-256 and verified before download.
 
 ## Installation
@@ -56,9 +56,9 @@ Settings and logs live in `~/Library/Application Support/PinShot/`. macOS builds
 | Copy image | `Enter`, `Ctrl+C`, or double-click selection | `Enter`, `⌘C`, or double-click selection |
 | Save (PNG / JPEG) | `Ctrl+S` | `⌘S` |
 | Pin to screen | `Ctrl+T` | `⌘T` |
-| Extract text (OCR) | `Ctrl+O` | — |
-| Scrolling screenshot | `Ctrl+L` | — |
-| Screen recording | `Ctrl+R` | — |
+| Extract text (OCR) | `Ctrl+O` | `⌘O` |
+| Scrolling screenshot | `Ctrl+L` | `⌘L` |
+| Screen recording | `Ctrl+R` | `⌘R` |
 | Clear selection / Quit | Right-click (twice to quit) or `Esc` | Right-click (twice to quit) or `Esc` |
 
 ### Pins
@@ -75,7 +75,7 @@ Settings and logs live in `~/Library/Application Support/PinShot/`. macOS builds
   - `pinshot.exe --settings` — open Settings
   - `pinshot.exe --quit` — exit the running instance
   - `pinshot.exe --bench` — benchmark capture & window enumeration timings
-  - `pinshot.exe --ocr <image>` — print OCR text from an image file
+  - `pinshot.exe --ocr <image>` — print OCR text from an image file (on macOS: `PinShot.app/Contents/MacOS/PinShot --ocr <image>`)
 
 ### Updates (Windows)
 

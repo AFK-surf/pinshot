@@ -17,8 +17,8 @@ options(
   link: {
     "native": {
       "stub-cc-flags": "-fobjc-arc",
-      "cc-link-flags": "-framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit -framework Security -framework LocalAuthentication -framework AuthenticationServices -framework Carbon -framework ScreenCaptureKit -framework ServiceManagement",
+      "cc-link-flags": "-framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit -framework Security -framework LocalAuthentication -framework AuthenticationServices -framework Carbon -framework ScreenCaptureKit -framework ServiceManagement -framework Vision -framework VideoToolbox -framework UniformTypeIdentifiers",
     },
   },
-  "native-stub": [ "platform_mac.m", "capture_mac.m" ],
+  "native-stub": [ "platform_mac.m", "capture_mac.m", "ocr_mac.m", "record_mac.m", "longshot_mac.m", "picture_mac.m" ],
 )

@@ -277,6 +277,7 @@ let en_words : Map[String, String] = {
   "未设置": "None",
   "按下快捷键…": "Press the keys…",
   "要和 Ctrl、Alt 或 Win 一起按（F1–F24、PrtSc 可以单独用）": "Press it with Ctrl, Alt or Win (F1–F24 and PrtSc work alone)",
+  "要和 Command、Control 或 Option 一起按（F1–F24 可以单独用）": "Press it with Command, Control or Option (F1–F24 work alone)",
   "和「贴剪贴板图片」的快捷键相同": "Already the shortcut to pin the clipboard image",
   "和「截图」的快捷键相同": "Already the screenshot shortcut",
   " 已被其他程序占用，换一个": " is taken by another program: choose another",
@@ -304,5 +305,6 @@ let en_words : Map[String, String] = {
   "保存截图": "Save",
   "额外确认并复制": "Extra confirm & copy",
   "Enter、Ctrl+C 与双击始终可用；这里可额外再绑一个单键（如 Space）或组合键": "Enter, Ctrl+C & double-click always work; bind an extra single key (e.g. Space) or combo here",
+  "Return、⌘C 与双击始终可用；这里可额外再绑一个单键（如 Space）或组合键": "Return, ⌘C & double-click always work; bind an extra single key (e.g. Space) or combo here",
   "暂不支持这个按键，换 Enter、Space、字母、数字或 F1–F12": "Key not supported here; use Enter, Space, letters, digits, or F1–F12",
 }

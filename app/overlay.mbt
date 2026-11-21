@@ -943,7 +943,7 @@ fn hotkey_to_mbui(h : Hotkey) -> (Int, Int)? {
     mods = mods | @ui.mod_shift_key
   }
   if (h.mods & 2) != 0 {
-    mods = mods | shortcut_mod()
+    mods = mods | @ui.mod_ctrl
   }
   if (h.mods & 1) != 0 {
     mods = mods | @ui.mod_alt

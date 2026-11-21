@@ -45,7 +45,7 @@ extern "C" fn ps_long_preview_free() -> Unit = "ps_long_preview_free"
 ///|
 /// Whether a scrolling screenshot can be taken here: Windows' alone (its taking is longshot_win.c's).
 fn long_shot_here() -> Bool {
-  @hostapi.platform() == 3
+  @hostapi.platform() == 3 || @hostapi.platform() == 0
 }
 
 ///|
@@ -858,7 +858,7 @@ fn long_window(root : @view.View) -> Unit {
         ctrl,
         fn() { "reset" },
         fn() { if long_confirm_reset.get() { tr("确认重来") } else { tr("重来") } },
-        fn() { tr("重新开始 Ctrl+R") },
+        fn() { key_hint(tr("重新开始 Ctrl+R")) },
         fn() { false },
         fn() { long_h.get() == 0 },
         long_request_reset,
@@ -897,10 +897,10 @@ fn long_window(root : @view.View) -> Unit {
       wrap_tip(bar, fn() { tr("取消 Esc") }, fn(w) {
         tool_button(w, "close", "取消 Esc", fn() { false }, long_close, tip=false)
       })
-      wrap_tip(bar, fn() { tr("贴到屏幕") + " Ctrl+T" }, fn(w) {
+      wrap_tip(bar, fn() { tr("贴到屏幕") + " " + key_hint("Ctrl+T") }, fn(w) {
         tool_button(w, "pin", "贴到屏幕 Ctrl+T", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tip=false)
       })
-      wrap_tip(bar, fn() { tr("保存") + " Ctrl+S" }, fn(w) {
+      wrap_tip(bar, fn() { tr("保存") + " " + key_hint("Ctrl+S") }, fn(w) {
         tool_button(w, "save", "保存 Ctrl+S", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tip=false)
       })
       bar.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
