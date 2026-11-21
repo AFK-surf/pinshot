@@ -544,89 +544,155 @@ fn styling() -> Bool {
 }
 
 ///|
-/// A sub-tool variant strip overlaid inside `left_slot` with its own gliding active pill and smooth crossfade.
-fn sub_tool_group(
-  left_slot : @view.View,
-  variants : Array[Tool],
-  shown : () -> Bool,
-  pick : (Tool) -> Unit,
-) -> Unit {
-  let n = variants.length().to_double()
-  let grp_w = n * 28.0 + (n - 1.0) * bar_gap + bar_gap + bar_rule
-  left_slot.show(shown, leave=95.0, fn(grp) {
-    pop_presence(grp, enter_ms=130.0, leave_ms=95.0, dy=0.0, from_scale=0.95)
-    grp
-    .over_at(Is((Some(0.0), Some(0.0), None, None)))
-    .width(Is(Some(grp_w)))
-    .height(Is(Some(28.0)))
-    .row(Is(true))
-    .gap(Is(bar_gap))
-    .lines_up(Is(Some(Middle)))
-    .points(By(shown))
-    .presses(By(shown))
-    |> ignore
-    grp.box(fn(btns) {
-      btns.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
-      let views : Map[Int, @view.View] = Map([])
-      let active_idx = fn() {
-        let cur = tool.get()
-        for i, w in variants {
-          if w == cur {
-            return i
+/// Variant tool at slot `idx` (0..2) for sub-tool group `grp` (1=shape, 2=line, 3=pen, 4=mosaic).
+fn sub_tool_of(grp : Int, idx : Int) -> Tool? {
+  let arr = match grp {
+    1 => shape_variants
+    2 => line_variants
+    3 => pen_variants
+    4 => mosaic_variants
+    _ => []
+  }
+  if idx >= 0 && idx < arr.length() {
+    Some(arr[idx])
+  } else {
+    None
+  }
+}
+
+///|
+fn pick_sub_tool(grp : Int, which : Tool) -> Unit {
+  if grp == 1 {
+    shape_tool.set(which)
+    tool.set(which)
+  } else if grp == 2 {
+    line_tool.set(which)
+    tool.set(which)
+  } else if grp == 3 {
+    selected.set(None)
+    tool.set(which)
+  } else if grp == 4 {
+    mosaic_tool.set(which)
+    tool.set(which)
+  }
+}
+
+///|
+/// Single persistent 3-slot sub-tool strip: switching tool groups only swaps icons (no fade/scale transition on the
+/// active/hover shade); clicking within the same group still glides the active highlight smoothly.
+fn sub_tool_strip(left_slot : @view.View, shown_grp : @signals.Signal[Int]) -> Unit {
+  left_slot.box(fn(btns) {
+    btns.row(Is(true)).gap(Is(bar_gap)).height(Is(Some(28.0))).lines_up(Is(Some(Middle))) |> ignore
+    let views : Map[Int, @view.View] = Map([])
+    let active_idx = fn() {
+      let g = shown_grp.get()
+      let cur = tool.get()
+      for i in 0..<3 {
+        if sub_tool_of(g, i) == Some(cur) {
+          return i
+        }
+      }
+      -1
+    }
+    sliding_thumb(
+      btns,
+      active_idx,
+      views,
+      style_btn_corner,
+      fn() { 0xFFFFFF2EL },
+      snap_watch=fn() { shown_grp.get() },
+    )
+    for i in 0..<3 {
+      btns.box(fn(b) {
+        views[i] = b
+        let has = fn() { sub_tool_of(shown_grp.get(), i) is Some(_) }
+        let is_on = fn() {
+          match sub_tool_of(shown_grp.get(), i) {
+            Some(w) => tool.get() == w
+            None => false
           }
         }
-        -1
-      }
-      sliding_thumb(btns, active_idx, views, style_btn_corner, fn() { 0xFFFFFF2EL })
-      for i, which in variants {
-        btns.box(fn(b) {
-          views[i] = b
-          let hov = smooth_hover(b, live=shown, ms=100.0)
-          let act = @motion.eased_on(b, fn() { tool.get() == which }, @motion.tween(120.0, ease=Out))
-          tactile_press(b, live=shown, sink_px=1.0)
-          b
-          .width(Is(Some(28.0)))
-          .height(Is(Some(28.0)))
-          .radius(Is(style_btn_corner))
-          .lines_up(Is(Some(Middle)))
-          .lies_along(Is(Middle))
-          .presses(By(shown))
-          .points(By(shown))
-          .says(By(fn() { Some(@view.said(Button, label=tr(tool_label(which)))) }))
-          .on_press(fn() {
-            if !@signals.untracked(shown) {
-              return
+        let hov = smooth_hover(b, live=has, ms=100.0)
+        tactile_press(b, live=has, sink_px=1.0)
+        b
+        .laid_nowhere(By(fn() { !has() }))
+        .width(Is(Some(28.0)))
+        .height(Is(Some(28.0)))
+        .radius(Is(style_btn_corner))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .presses(By(has))
+        .points(By(has))
+        .says(By(fn() {
+          match sub_tool_of(shown_grp.get(), i) {
+            Some(w) => Some(@view.said(Button, label=tr(tool_label(w))))
+            None => None
+          }
+        }))
+        .on_press(fn() {
+          let g = shown_grp.untracked()
+          match sub_tool_of(g, i) {
+            Some(w) => {
+              tip_off()
+              pick_sub_tool(g, w)
             }
-            tip_off()
-            pick(which)
-          })
-          .ground(By(fn() {
-            if b.pressed() && shown() {
-              0xFFFFFF24L
-            } else if tool.get() == which {
-              0L
+            None => ()
+          }
+        })
+        .ground(By(fn() {
+          if b.pressed() && has() {
+            0xFFFFFF24L
+          } else if is_on() {
+            0L
+          } else {
+            mix_rgba(0L, 0xFFFFFF17L, hov())
+          }
+        }))
+        |> ignore
+        tip_follows(b, fn() {
+          match sub_tool_of(shown_grp.get(), i) {
+            Some(w) => tool_label(w)
+            None => ""
+          }
+        }, @view.Bottom)
+        b.box(fn(g) {
+          g
+          .width(Is(Some(17.0)))
+          .height(Is(Some(17.0)))
+          .picture(By(fn() {
+            match sub_tool_of(shown_grp.get(), i) {
+              Some(w) => Some(glyph(tool_glyph(w)))
+              None => None
+            }
+          }))
+          .tint(By(fn() {
+            if is_on() {
+              0xFFFFFFFFL
             } else {
-              mix_rgba(0L, 0xFFFFFF17L, hov())
+              mix_rgba(0xD9DBE0FFL, 0xFFFFFFFFL, hov() * 0.6)
             }
           }))
           |> ignore
-          tip_follows(b, fn() { tool_label(which) }, @view.Bottom)
-          b.box(fn(g) {
-            g
-            .width(Is(Some(17.0)))
-            .height(Is(Some(17.0)))
-            .picture(Is(Some(glyph(tool_glyph(which)))))
-            .tint(By(fn() { mix_rgba(0xD9DBE0FFL, 0xFFFFFFFFL, dmax(act.shown(g), hov() * 0.6)) }))
-            |> ignore
-          })
-          |> ignore
         })
         |> ignore
-      }
-    })
-    |> ignore
-    bar_rule_node(grp)
+      })
+      |> ignore
+    }
   })
+  |> ignore
+  // Persistent divider tucked cleanly against the right edge of `left_slot` so it rides lockstep with `left_w`.
+  left_slot.box(fn(d) {
+    d
+    .over_at(Is((None, Some(4.0), Some(bar_gap), None)))
+    .width(Is(Some(bar_rule)))
+    .height(Is(Some(20.0)))
+    .lies_along(Is(Middle))
+    .lines_up(Is(Some(Middle)))
+    .laid_nowhere(By(fn() { shown_grp.get() == 0 }))
+    |> ignore
+    d.box(fn(l) { l.width(Is(Some(1.0))).height(Is(Some(16.0))).ground(Is(0xFFFFFF24L)) |> ignore }) |> ignore
+  })
+  |> ignore
 }
 
 ///|
@@ -723,7 +789,7 @@ fn style_row(row : @view.View) -> Unit {
       .lines_up(Is(Some(Middle)))
       |> ignore
 
-      // 1. Left sub-tool variant slot (smoothly expands/shrinks 0 ↔ 72 ↔ 103pt while crossfading variant strips)
+      // 1. Left sub-tool variant slot (smoothly expands/shrinks 0 ↔ 72 ↔ 103pt; persistent buttons swap icons cleanly without fading the highlight box)
       clip.box(fn(left_slot) {
         left_ref.val = Some(left_slot)
         left_slot
@@ -732,22 +798,7 @@ fn style_row(row : @view.View) -> Unit {
         .shrink(Is(0.0))
         .clips(Is(true))
         |> ignore
-        sub_tool_group(left_slot, shape_variants, fn() { shown_grp.get() == 1 }, fn(w) {
-          shape_tool.set(w)
-          tool.set(w)
-        })
-        sub_tool_group(left_slot, line_variants, fn() { shown_grp.get() == 2 }, fn(w) {
-          line_tool.set(w)
-          tool.set(w)
-        })
-        sub_tool_group(left_slot, pen_variants, fn() { shown_grp.get() == 3 }, fn(w) {
-          selected.set(None)
-          tool.set(w)
-        })
-        sub_tool_group(left_slot, mosaic_variants, fn() { shown_grp.get() == 4 }, fn(w) {
-          mosaic_tool.set(w)
-          tool.set(w)
-        })
+        sub_tool_strip(left_slot, shown_grp)
       })
       |> ignore
 

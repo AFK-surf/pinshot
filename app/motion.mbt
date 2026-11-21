@@ -1,7 +1,7 @@
 // Shared GPU-composited motion primitives for PinShot (all fast 100-160ms curves, zero Flex relayout):
 // - mix_rgba: smooth per-channel RGBA interpolation for hovers, switches, and state transitions
 // - smooth_hover / tactile_press: 110ms ease-out hover alpha + subtle micro-sink press spring
-// - pop_presence / enter_reveal: crisp fade + micro-rise + 0.97 scale entrance/exit
+// - dropdown_unfold / enter_reveal: crisp downward drawer unfold + fade/micro-rise entrance
 // - sliding_thumb: zero-relayout underlay pill gliding cleanly beneath sibling labels in both directions
 // - rolling_label: odometer-style per-character rolling tabular readout (@motion.rolling_slots_node)
 
@@ -37,30 +37,6 @@ fn smooth_hover(v : @view.View, live? : () -> Bool = fn() { true }, ms? : Double
 /// Subtle tactile press micro-sink + spring-back on `v` (zero relayout via View::scale).
 fn tactile_press(v : @view.View, live? : () -> Bool = fn() { true }, sink_px? : Double = 1.2) -> Unit {
   @motion.press_feel(v, live~, sink_px~, sink_most=0.032, hovers=false) |> ignore
-}
-
-///|
-/// Enter + exit presence transition on `v` (pair with parent.show(..., leave=leave_ms)).
-fn pop_presence(
-  v : @view.View,
-  enter_ms? : Double = 140.0,
-  leave_ms? : Double = 100.0,
-  dy? : Double = 4.0,
-  from_scale? : Double = 0.97,
-) -> Unit {
-  let p = @motion.presence_in(
-    v,
-    @motion.tween(enter_ms, ease=Out),
-    exit=@motion.tween(leave_ms, ease=Leave),
-    carries=true,
-  )
-  v.alpha(By(p)) |> ignore
-  if from_scale != 1.0 {
-    v.scale(By(fn() { from_scale + (1.0 - from_scale) * p() })) |> ignore
-  }
-  if dy != 0.0 {
-    v.drawn_off(By(fn() { (0.0, dy * (1.0 - p())) })) |> ignore
-  }
 }
 
 ///|
@@ -128,6 +104,7 @@ fn sliding_thumb(
   edge? : () -> (Double, Int64) = fn() { (0.0, 0L) },
   spec? : @motion.Spec = pill_glide,
   extra_watch? : () -> Int = fn() { 0 },
+  snap_watch? : () -> Int = fn() { 0 },
 ) -> Unit {
   let wx = @motion.NodeWay::new(0.0)
   let wy = @motion.NodeWay::new(0.0)
@@ -135,6 +112,7 @@ fn sliding_thumb(
   let wh = @motion.NodeWay::new(0.0)
   let placed = Ref(false)
   let last_key = Ref(-999999)
+  let last_snap = Ref(@signals.untracked(snap_watch))
   let visible : @signals.Signal[Bool] = @signals.signal(false)
   let thumb_ref : Ref[@view.View?] = Ref(None)
   let pending_cancel : Ref[() -> Unit] = Ref(fn() {  })
@@ -163,9 +141,11 @@ fn sliding_thumb(
 
   container.owns(fn() { (pending_cancel.val)() }) |> ignore
 
-  container.reacts(fn() { (active_key(), extra_watch()) }, fn(st) {
-    let (key, _) = st
+  container.reacts(fn() { (active_key(), extra_watch(), snap_watch()) }, fn(st) {
+    let (key, _, snap) = st
     let at = container.cause_at()
+    let snapped = snap != last_snap.val
+    last_snap.val = snap
     let key_changed = placed.val && key != last_key.val
     last_key.val = key
     (pending_cancel.val)()
@@ -182,7 +162,7 @@ fn sliding_thumb(
           }
           let dx = ix - ox
           let dy = iy - oy
-          if !placed.val {
+          if !placed.val || snapped {
             wx.put(dx)
             wy.put(dy)
             ww.put(iw)
