@@ -1626,22 +1626,22 @@ fn rec_window(root : @view.View) -> Unit {
           }, at_once=true)
         }, at_once=true)
 
-        // ---- Phases 4..7: Landscape Studio HUD floating export card (456 x ~204pt) ----
+        // ---- Phases 4..7: Landscape Studio HUD floating export card (>= 520 x ~204pt) ----
         shell.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
           enter_reveal(exp, ms=165.0, dy=0.0, from_scale=0.985)
           exp
           .row(Is(true))
           .gap(Is(12.0))
-          .width(Is(Some(456.0)))
+          .min_width(Is(Some(520.0)))
           .shrink(Is(0.0))
           .padding(Is((10.0, 10.0, 10.0, 10.0)))
           .lines_up(Is(Some(Middle)))
           |> ignore
 
-        // 1. Left: Rounded full-bleed first-frame clip card (158 x 184pt, draggable)
+        // 1. Left: Rounded full-bleed first-frame clip card (176 x 184pt, draggable)
         exp.box(fn(left) {
           left
-          .width(Is(Some(158.0)))
+          .width(Is(Some(176.0)))
           .height(Is(Some(184.0)))
           .shrink(Is(0.0))
           .radius(Is(11.0))
@@ -1753,6 +1753,7 @@ fn rec_window(root : @view.View) -> Unit {
         exp.box(fn(right) {
           right
           .grow(Is(1.0))
+          .shrink(Is(0.0))
           .height(Is(Some(184.0)))
           .padding(Is((0.0, 2.0, 2.0, 1.0)))
           .gap(Is(8.0))
@@ -2036,7 +2037,7 @@ fn rec_window(root : @view.View) -> Unit {
 
             // Left: Size / progress / exported status
             foot.box(fn(st) {
-              st.grow(Is(1.0)).gap(Is(1.5)).lines_up(Is(Some(Start))) |> ignore
+              st.grow(Is(1.0)).shrink(Is(0.0)).min_width(Is(Some(148.0))).gap(Is(1.5)).lines_up(Is(Some(Start))) |> ignore
 
               // Phase 4 (Ready)
               st.show(fn() { rec_phase.get() == 4 }, fn(rdy) {
@@ -2064,7 +2065,7 @@ fn rec_window(root : @view.View) -> Unit {
                   fn() { 0xF2F4F8FFL },
                 )
                 rdy.box(fn(sub) {
-                  sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))) |> ignore
+                  sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
                   sub.box(fn(t1) {
                     t1
                     .shrink(Is(0.0))
@@ -2120,9 +2121,9 @@ fn rec_window(root : @view.View) -> Unit {
               st.show(fn() { rec_phase.get() == 5 }, fn(enc) {
                 enter_reveal(enc, ms=130.0, dy=3.0, from_scale=0.985)
                 enc.gap(Is(5.0)).lines_up(Is(Some(Start))) |> ignore
-                let prog_w = @motion.NodeWay::new(dmax(4.0, 104.0 * rec_exp_pct.untracked().to_double() / 100.0))
+                let prog_w = @motion.NodeWay::new(dmax(4.0, 132.0 * rec_exp_pct.untracked().to_double() / 100.0))
                 enc.reacts(fn() { rec_exp_pct.get() }, at_start=false, fn(p) {
-                  prog_w.go_ms(enc, dmax(4.0, 104.0 * p.to_double() / 100.0), 160.0)
+                  prog_w.go_ms(enc, dmax(4.0, 132.0 * p.to_double() / 100.0), 160.0)
                 })
                 enc.box(fn(t) {
                   t
@@ -2139,7 +2140,7 @@ fn rec_window(root : @view.View) -> Unit {
                 })
                 |> ignore
                 enc.box(fn(bar_bg) {
-                  bar_bg.width(Is(Some(104.0))).height(Is(Some(3.5))).radius(Is(1.75)).ground(Is(0xFFFFFF16L)).clips(Is(true))
+                  bar_bg.width(Is(Some(132.0))).height(Is(Some(3.5))).radius(Is(1.75)).ground(Is(0xFFFFFF16L)).clips(Is(true))
                   |> ignore
                   bar_bg.box(fn(bar_fg) {
                     bar_fg
@@ -2171,7 +2172,7 @@ fn rec_window(root : @view.View) -> Unit {
                   fn() { 0x4ADE80FFL },
                 )
                 done_v.box(fn(sub) {
-                  sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))) |> ignore
+                  sub.row(Is(true)).gap(Is(3.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
                   sub.box(fn(t) {
                     t
                     .shrink(Is(0.0))
