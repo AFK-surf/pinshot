@@ -149,6 +149,7 @@ let en_words : Map[String, String] = {
   "滚轮可浏览": "Scroll preview",
   "回到顶部 ↑": "Back to top ↑",
   "回到底部 ↓": "Back to bottom ↓",
+  "取消": "Cancel",
   "取消 Esc": "Cancel Esc",
   "细": "Thin",
   "中": "Medium",

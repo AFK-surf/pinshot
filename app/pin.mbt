@@ -49,6 +49,7 @@ struct Pin {
   ocr_from_capture : Ref[Bool]
   ocr_selecting : Ref[Bool]
   ocr_anchor : Ref[Int]
+  ocr_down_on_word : Ref[Bool]
   ocr_down_x : Ref[Double]
   ocr_down_y : Ref[Double]
   ocr_drag_moved : Ref[Bool]
@@ -121,6 +122,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom? : Double = 1.
     ocr_from_capture: Ref(start_ocr),
     ocr_selecting: Ref(false),
     ocr_anchor: Ref(-1),
+    ocr_down_on_word: Ref(false),
     ocr_down_x: Ref(0.0),
     ocr_down_y: Ref(0.0),
     ocr_drag_moved: Ref(false),
@@ -840,8 +842,11 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
       let e = p.edge.get()
       if e != 0 {
         Some(edge_cursor(e))
-      } else if p.ocr_on.get() && (p.ocr_selecting.val || p.ocr_hover.get() >= 0) {
-        Some(IBeam)
+      } else if p.ocr_on.get() {
+        match p.ocr.get() {
+          Ready(ws, _) if !ws.is_empty() => Some(IBeam)
+          _ => Some(Arrow)
+        }
       } else {
         Some(Arrow)
       }
@@ -904,7 +909,10 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
               p.ocr_selecting.val = false
               if !p.ocr_drag_moved.val {
                 let idx = p.ocr_anchor.val
-                if idx >= 0 && idx < ws.length() {
+                if !p.ocr_down_on_word.val {
+                  p.ocr_sel.set(None)
+                  p.ocr_clicks.val = 0
+                } else if idx >= 0 && idx < ws.length() {
                   let prev_i = p.ocr_click_word.val
                   let same = d.at - p.ocr_click_at.val <= 420.0 &&
                     (prev_i == idx || (prev_i >= 0 && prev_i < ws.length() && ws[prev_i].line == ws[idx].line))
@@ -962,9 +970,11 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
                 (pu, pv, ppw, pph)
               }
               let hit = ocr_hit_word(ws, u, v, pw, ph)
-              if hit >= 0 {
+              let anchor = if hit >= 0 { hit } else { ocr_nearest_word(ws, u, v) }
+              if anchor >= 0 {
                 p.ocr_selecting.val = true
-                p.ocr_anchor.val = hit
+                p.ocr_anchor.val = anchor
+                p.ocr_down_on_word.val = hit >= 0
                 p.ocr_down_x.val = d.x
                 p.ocr_down_y.val = d.y
                 p.ocr_drag_moved.val = false
@@ -974,7 +984,6 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
             }
             _ => ()
           }
-          // Clicked empty image area while Live Text is active: clear selection and move pin normally.
           p.ocr_sel.set(None)
           p.ocr_clicks.val = 0
         }

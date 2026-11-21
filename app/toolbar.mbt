@@ -1109,25 +1109,52 @@ let tip_out_ms : Double = 120.0
 let tip_out_scale : Double = 0.97
 
 ///|
-/// Overlay layer node that hosts all toolbar tooltips (painted on top of the bar and sub-rows).
-let tip_layer : Ref[@view.View?] = Ref(None)
+/// Per-window coordinator for Monoid-style fluid tooltips (shared across screenshot, recording, and longshot toolbars).
+struct TipScope {
+  layer : Ref[@view.View?]
+  owner : @signals.Signal[Int]
+  next_id : Ref[Int]
+  hands : @motion.Handoff
+  went_at : Ref[Double]
+  shut_now : Ref[() -> Unit]
+}
 
 ///|
-/// Active tooltip owner id (only one tooltip owns the window slot at any instant; 0 = none).
-let tip_owner : @signals.Signal[Int] = @signals.signal(0)
+fn TipScope::new() -> TipScope {
+  {
+    layer: Ref(None),
+    owner: @signals.signal(0),
+    next_id: Ref(0),
+    hands: @motion.Handoff::new(within=tip_linger),
+    went_at: Ref(-1.0e18),
+    shut_now: Ref(fn() {  }),
+  }
+}
 
 ///|
-let tip_next_id : Ref[Int] = Ref(0)
+fn TipScope::off(self : TipScope) -> Unit {
+  self.owner.set(0)
+  (self.shut_now.val)()
+  self.shut_now.val = fn() {  }
+  self.went_at.val = -1.0e18
+}
 
 ///|
-/// Shared upstream mbui handoff coordinator for toolbar tooltips (glides ground & carried text across buttons).
-let tip_hands : @motion.Handoff = @motion.Handoff::new(within=tip_linger)
+fn TipScope::mount(self : TipScope, parent : @view.View) -> Unit {
+  parent.box(fn(l) {
+    l.over(Is(true)).presses(Is(false)).points(Is(false)) |> ignore
+    self.layer.val = Some(l)
+    l.owns(fn() {
+      self.off()
+      self.layer.val = None
+    })
+    |> ignore
+  })
+  |> ignore
+}
 
 ///|
-let tip_went_at : Ref[Double] = Ref(-1.0e18)
-
-///|
-let tip_shut_now : Ref[() -> Unit] = Ref(fn() {  })
+let bar_tips : TipScope = TipScope::new()
 
 ///|
 /// Monoid TipFade: smooth continuous progress (0..1) with mid-flight reversal.
@@ -1207,10 +1234,7 @@ fn tip_side_tag(side : @view.Side) -> Int {
 
 ///|
 fn tip_off() -> Unit {
-  tip_owner.set(0)
-  (tip_shut_now.val)()
-  tip_shut_now.val = fn() {  }
-  tip_went_at.val = -1.0e18
+  bar_tips.off()
 }
 
 ///|
@@ -1255,17 +1279,24 @@ fn tip_key_caps(keys : String) -> Array[String] {
 
 ///|
 /// Button `b` tells what it does (`label`, said through `tr`) and optional shortcut (`keys`) via a Monoid-style
-/// fluid-transition tooltip on `side` (ground-first fade-in, 0.97 scale-out, critically-damped spring glide between
-/// buttons on the same side).
-fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : () -> String = fn() { "" }) -> Unit {
+/// fluid-transition tooltip on `side` (260ms initial hover delay, 300ms sibling glide, ground-first fade-in,
+/// 0.97 scale-out, separated rounded keycaps).
+fn TipScope::follow(
+  self : TipScope,
+  b : @view.View,
+  label : () -> String,
+  side : @view.Side,
+  keys? : () -> String = fn() { "" },
+  live? : () -> Bool = fn() { true },
+) -> Unit {
   let anchor_id = b.id()
-  tip_next_id.val = tip_next_id.val + 1
-  let id = tip_next_id.val
+  self.next_id.val = self.next_id.val + 1
+  let id = self.next_id.val
   let fade = TipFade::new()
   let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
-  let glide = tip_hands.part(
+  let glide = self.hands.part(
     fn(t) {
-      if @signals.untracked(fn() { tip_owner.get() == id }) {
+      if @signals.untracked(fn() { self.owner.get() == id }) {
         fade.at(t)
       } else {
         0.0
@@ -1289,7 +1320,7 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
     rest.val = None
   }
   let make = fn() -> Bool {
-    guard tip_layer.val is Some(l) else { return false }
+    guard self.layer.val is Some(l) else { return false }
     let holder = l.box(fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(b)
     holder_v.val = Some(holder)
     holder.show(fn() { open.get() }, leave=tip_out_ms, fn(t) {
@@ -1306,7 +1337,7 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
       .shadow(Is((8.0, 2.0, 0x00000048L)))
       // Ground fades in first half (0..60ms), words in second half (60..120ms); reversed on exit
       .alpha(By(fn() {
-        let a = if tip_owner.get() == id { fade.shown(t) } else { 0.0 }
+        let a = if self.owner.get() == id { fade.shown(t) } else { 0.0 }
         if a * 2.0 < 1.0 {
           a * 2.0
         } else {
@@ -1325,7 +1356,7 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
         }),
         about=@view.FromBeside,
       )
-      .hides(By(fn() { tip_owner.get() != id }))
+      .hides(By(fn() { self.owner.get() != id }))
       |> ignore
       let content = t.box(fn(content) {
         content
@@ -1389,14 +1420,14 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
     }
     let at = b.cause_at()
     if on {
-      // Take over from the previous tooltip BEFORE claiming tip_owner, so prev's seen(at) still sees it as active.
+      // Take over from the previous tooltip BEFORE claiming owner, so prev's seen(at) still sees it as active.
       let taken = glide.came(at, @motion.hand_spring)
       if !made.val {
         made.val = make()
       }
       if made.val {
-        tip_owner.set(id)
-        tip_shut_now.val = fn() {
+        self.owner.set(id)
+        self.shut_now.val = fn() {
           fade.put(0.0)
           glide.still()
           open.set(false)
@@ -1408,7 +1439,7 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
       }
     } else {
       fade.go(b, 0.0, at, tip_out_ms, Leave)
-      tip_went_at.val = at
+      self.went_at.val = at
       glide.left(at)
     }
     match holder_v.val {
@@ -1416,8 +1447,8 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
       _ => open.set(on)
     }
   }
-  b.reacts(fn() { (b.pointed(), b.pressed()) }, fn(st) {
-    let (pointed, pressed) = st
+  b.reacts(fn() { (b.pointed(), b.pressed(), live()) }, fn(st) {
+    let (pointed, pressed, ok) = st
     let at = b.cause_at()
     stop_rest()
     if pressed {
@@ -1425,16 +1456,16 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
     } else if !pointed {
       shut.val = false
     }
-    if shut.val || !pointed {
+    if !ok || shut.val || !pointed {
       set_open(false)
     } else if open.untracked() {
-      tip_owner.set(id)
-    } else if at < tip_went_at.val + tip_linger || glide.other_near(at) {
+      self.owner.set(id)
+    } else if at < self.went_at.val + tip_linger || glide.other_near(at) {
       set_open(true)
     } else {
       rest.val = Some(
         b.at_moment(at + tip_wait, fn() {
-          if b.pointed() && !b.pressed() && !shut.val {
+          if b.pointed() && !b.pressed() && !shut.val && @signals.untracked(live) {
             set_open(true)
           }
         }),
@@ -1450,11 +1481,12 @@ fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : 
 }
 
 ///|
+fn tip_follows(b : @view.View, label : () -> String, side : @view.Side, keys? : () -> String = fn() { "" }) -> Unit {
+  bar_tips.follow(b, label, side, keys~)
+}
+
+///|
 /// Mount the overlay layer that hosts all fluid Monoid-style tooltips above the toolbar.
 fn bar_tip_node(o : @view.View) -> Unit {
-  o.box(fn(l) {
-    l.over(Is(true)).presses(Is(false)).points(Is(false)) |> ignore
-    tip_layer.val = Some(l)
-  })
-  |> ignore
+  bar_tips.mount(o)
 }

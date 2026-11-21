@@ -133,8 +133,8 @@ let long_confirm_reset : @signals.Signal[Bool] = @signals.signal(false)
 let long_reset_cancel : Ref[() -> Unit] = Ref(fn() {  })
 
 ///|
-/// Local hover hint for icon-only buttons in the longshot panel.
-let long_tip : @signals.Signal[String] = @signals.signal("")
+/// Unified Monoid-style fluid tooltip coordinator for the scrolling screenshot panel (same rules as toolbar.mbt).
+let long_tips : TipScope = TipScope::new()
 
 ///|
 let long_preview_n : Ref[Int] = Ref(0)
@@ -659,7 +659,7 @@ fn long_gone() -> Unit {
     ps_capture_open(0)
   }
   long_disarm_reset()
-  long_tip.set("")
+  long_tips.off()
   long_clear_preview_images()
   long_root.val = None
   // (the previews let go now: one still being made a texture is freed as that is through, the native side counts)
@@ -878,29 +878,23 @@ fn long_window(root : @view.View) -> Unit {
     page.box(fn(g) { g.height(Is(Some(10.0))) |> ignore }) |> ignore
 
     // 5. Primary Action Bar: Cancel, Pin, Save | Copy (accent)
-    let wrap_tip = fn(bar : @view.View, label_fn : () -> String, build : (@view.View) -> Unit) {
+    let wrap_tip = fn(bar : @view.View, label : String, keys : String, build : (@view.View) -> Unit) {
       bar.box(fn(w) {
         w.shrink(Is(0.0)) |> ignore
-        w.reacts(fn() { w.pointed() }, at_start=false, fn(on) {
-          if on {
-            long_tip.set(label_fn())
-          } else if long_tip.untracked() == label_fn() {
-            long_tip.set("")
-          }
-        })
+        long_tips.follow(w, fn() { label }, Top, keys=fn() { keys })
         build(w)
       })
       |> ignore
     }
     page.box(fn(bar) {
       bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(long_box_w()))).lines_up(Is(Some(Middle))) |> ignore
-      wrap_tip(bar, fn() { tr("取消 Esc") }, fn(w) {
+      wrap_tip(bar, "取消", "Esc", fn(w) {
         tool_button(w, "close", "取消 Esc", fn() { false }, long_close, tip=false)
       })
-      wrap_tip(bar, fn() { tr("贴到屏幕") + " " + key_hint("Ctrl+T") }, fn(w) {
+      wrap_tip(bar, "贴到屏幕", "Ctrl+T", fn(w) {
         tool_button(w, "pin", "贴到屏幕 Ctrl+T", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tip=false)
       })
-      wrap_tip(bar, fn() { tr("保存") + " " + key_hint("Ctrl+S") }, fn(w) {
+      wrap_tip(bar, "保存截图", "Ctrl+S", fn(w) {
         tool_button(w, "save", "保存 Ctrl+S", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tip=false)
       })
       bar.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
@@ -908,30 +902,7 @@ fn long_window(root : @view.View) -> Unit {
     })
     |> ignore
 
-    // Floating hover tooltip pill above the bottom action bar for icon-only buttons
-    page.box(fn(tp) {
-      tp
-      .over_at(Is((Some(long_pad), None, None, Some(long_pad + bar_button + 8.0))))
-      .laid_nowhere(By(fn() { long_tip.get() == "" }))
-      .height(Is(Some(24.0)))
-      .padding(Is((9.0, 0.0, 9.0, 0.0)))
-      .radius(Is(7.0))
-      .ground(Is(0x141519F5L))
-      .edge(Is((1.0, 0xFFFFFF2AL)))
-      .shadow(Is((8.0, 2.0, 0x00000066L)))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      .presses(Is(false))
-      |> ignore
-      tp.box(fn(t) {
-        t
-        .words(By(fn() { long_tip.get() }), look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
-        .ink(Is(long_ink))
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
+    long_tips.mount(page)
   })
   |> ignore
 

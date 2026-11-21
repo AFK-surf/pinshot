@@ -199,7 +199,11 @@ let rec_confirm_discard : @signals.Signal[Bool] = @signals.signal(false)
 let rec_discard_cancel : Ref[() -> Unit] = Ref(fn() {  })
 
 ///|
-/// Local hover tooltip shown cleanly inside the bottom transparent halo (`rec_pad_b = 36pt`) with zero HWND resize.
+/// Unified Monoid-style fluid tooltip coordinator for the recording window (same delay, glide, anchor & keycap rules as toolbar.mbt).
+let rec_tips : TipScope = TipScope::new()
+
+///|
+/// Live resize dimensions readout shown inside the bottom transparent halo while dragging the recording frame.
 let rec_tip : @signals.Signal[String] = @signals.signal("")
 
 ///|
@@ -242,7 +246,7 @@ let rec_pad_t : Double = 26.0
 let rec_pad_r : Double = 30.0
 
 ///|
-let rec_pad_b : Double = 36.0
+let rec_pad_b : Double = 42.0
 
 ///|
 fn rec_combo_key(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> String {
@@ -911,6 +915,7 @@ fn rec_gone() -> Unit {
   (rec_dim_tip_cancel.val)()
   rec_dim_tip_cancel.val = fn() {  }
   rec_tip.set("")
+  rec_tips.off()
   if rec_closing_overlay.val {
     rec_closing_overlay.val = false
     close_capture()
@@ -1090,20 +1095,6 @@ fn rec_est_saved_pct() -> Int {
 }
 
 ///|
-fn rec_short_codec() -> String {
-  let c = rec_codec.get()
-  if c.has_prefix("HEVC") {
-    "H.265"
-  } else if c.has_prefix("H.264") {
-    "H.264"
-  } else if c.has_prefix("AV1") {
-    "AV1"
-  } else {
-    "MP4"
-  }
-}
-
-///|
 fn rec_keys() -> @view.Keymap {
   let k = fn(code : Int, action : String, mods : Int) -> @view.Binding {
     { keys: [{ code, mods }], action, when: Always }
@@ -1121,15 +1112,20 @@ fn rec_keys() -> @view.Keymap {
 }
 
 ///|
-fn rec_tip_follow(v : @view.View, label_fn : () -> String, live? : () -> Bool = fn() { true }) -> Unit {
-  v.reacts(fn() { (v.pointed(), live(), label_fn()) }, at_start=false, fn(st) {
-    let (on, ok, lbl) = st
-    if on && ok {
-      rec_tip.set(lbl)
-    } else if !on && rec_tip.untracked() == lbl {
-      rec_tip.set("")
-    }
-  })
+fn rec_tip_follow(
+  v : @view.View,
+  label_fn : () -> String,
+  keys? : () -> String = fn() { "" },
+  side? : @view.Side = Bottom,
+  live? : () -> Bool = fn() { true },
+) -> Unit {
+  rec_tips.follow(
+    v,
+    label_fn,
+    side,
+    keys~,
+    live=fn() { live() && !rec_fps_open.get() && !rec_confirm_discard.get() },
+  )
 }
 
 ///|
@@ -1140,6 +1136,7 @@ fn rec_icon_btn(
   label_fn : () -> String,
   lit : () -> Bool,
   press : () -> Unit,
+  keys? : () -> String = fn() { "" },
   size? : Double = bar_button,
   rad? : Double = bar_btn_corner,
   dim? : () -> Bool = fn() { false },
@@ -1150,7 +1147,7 @@ fn rec_icon_btn(
   row.box(fn(b) {
     let hov = smooth_hover(b, live=fn() { !dim() })
     tactile_press(b, live=fn() { !dim() })
-    rec_tip_follow(b, label_fn, live=fn() { !dim() })
+    rec_tip_follow(b, label_fn, keys~, live=fn() { !dim() })
     b
     .width(Is(Some(size)))
     .height(Is(Some(size)))
@@ -1160,7 +1157,7 @@ fn rec_icon_btn(
     .lies_along(Is(Middle))
     .presses(Is(true))
     .cursor(By(fn() { if dim() { None } else { Some(Hand) } }))
-    .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
+    .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
     .on_press(fn() { if !dim() { press() } })
     .ground(By(fn() {
       if dim() {
@@ -1228,7 +1225,7 @@ fn rec_action_btn(
     .lies_along(Is(Middle))
     .presses(Is(true))
     .cursor(By(fn() { if dim() { None } else { Some(Hand) } }))
-    .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
+    .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
     .on_press(fn() { if !dim() { press() } })
     .ground(By(fn() {
       if dim() {
@@ -1298,7 +1295,7 @@ fn rec_tab_item(
     .lies_along(Is(Middle))
     .presses(Is(true))
     .cursor(By(fn() { if rec_phase.get() == 5 { None } else { Some(Hand) } }))
-    .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
+    .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
     .on_press(fn() {
       if rec_phase.untracked() != 5 {
         rec_disarm_discard()
@@ -1368,7 +1365,7 @@ fn rec_inline_opt(
     .lies_along(Is(Middle))
     .presses(Is(true))
     .cursor(By(fn() { if rec_phase.get() == 5 { None } else { Some(Hand) } }))
-    .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
+    .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
     .on_press(fn() {
       if rec_phase.untracked() != 5 {
         rec_disarm_discard()
@@ -1503,18 +1500,18 @@ fn rec_window(root : @view.View) -> Unit {
 
   root.reacts(fn() { rec_phase.get() }, at_start=false, fn(_) {
     rec_tip.set("")
+    rec_tips.off()
     rec_fps_open.set(false)
     rec_fps_up.set(false)
     rec_disarm_discard()
   })
 
-  // Re-measure and adapt window dimensions cleanly whenever UI structure/labels change (never on timer ticks).
+  // Re-measure and adapt window dimensions cleanly whenever UI structure/labels change (never on timer ticks or late codec init).
   root.reacts(fn() {
     (
       rec_phase.get(),
       rec_morph_in.get(),
       rec_fps_open.get(),
-      rec_codec.get(),
       rec_fps.get(),
       rec_exp_fmt.get(),
       rec_exp_qual.get(),
@@ -1694,6 +1691,7 @@ fn rec_window(root : @view.View) -> Unit {
               fps_b
               .row(Is(true))
               .gap(Is(3.5))
+              .min_width(Is(Some(56.0)))
               .height(Is(Some(26.0)))
               .shrink(Is(0.0))
               .padding(Is((8.0, 0.0, 7.0, 0.0)))
@@ -1727,8 +1725,6 @@ fn rec_window(root : @view.View) -> Unit {
                   By(fn() {
                     if rec_phase.get() == 2 {
                       tr("已暂停")
-                    } else if rec_phase.get() == 1 {
-                      "\{rec_short_codec()}·\{rec_fps.get()}"
                     } else {
                       "\{rec_fps.get()}fps"
                     }
@@ -1807,9 +1803,10 @@ fn rec_window(root : @view.View) -> Unit {
               rec_icon_btn(
                 pb,
                 fn() { if rec_phase.get() == 2 { "play" } else { "pause" } },
-                fn() { if rec_phase.get() == 2 { tr("继续 Space") } else { tr("暂停 Space") } },
+                fn() { if rec_phase.get() == 2 { "继续" } else { "暂停" } },
                 fn() { rec_phase.get() == 2 },
                 rec_toggle_pause,
+                keys=fn() { "Space" },
                 tint_lit=0xF5A524FFL,
                 bg_lit=0xF5A52426L,
               )
@@ -1823,15 +1820,16 @@ fn rec_window(root : @view.View) -> Unit {
                 fn() { "close" },
                 fn() {
                   if rec_confirm_discard.get() {
-                    tr("再按一次丢弃")
+                    "再按一次丢弃"
                   } else if rec_phase.get() == 0 {
-                    tr("取消 Esc")
+                    "取消"
                   } else {
-                    tr("丢弃录制")
+                    "丢弃录制"
                   }
                 },
                 fn() { false },
                 rec_cancel,
+                keys=fn() { if rec_phase.get() == 0 && !rec_confirm_discard.get() { "Esc" } else { "" } },
                 danger=fn() { rec_confirm_discard.get() },
               )
               acts.show(fn() { rec_phase.get() == 0 }, fn(sb) {
@@ -2085,7 +2083,11 @@ fn rec_window(root : @view.View) -> Unit {
             top.box(fn(cb) {
               let hov = smooth_hover(cb)
               tactile_press(cb, sink_px=0.9)
-              rec_tip_follow(cb, fn() { if rec_confirm_discard.get() { tr("再按一次丢弃") } else { tr("关闭 Esc") } })
+              rec_tip_follow(
+                cb,
+                fn() { if rec_confirm_discard.get() { "再按一次丢弃" } else { "关闭" } },
+                keys=fn() { if rec_confirm_discard.get() { "" } else { "Esc" } },
+              )
               cb
               .width(Is(Some(24.0)))
               .height(Is(Some(24.0)))
@@ -2499,7 +2501,7 @@ fn rec_window(root : @view.View) -> Unit {
                 let live = fn() { rec_phase.get() != 5 }
                 let hov = smooth_hover(sa, live~)
                 tactile_press(sa, live~)
-                rec_tip_follow(sa, fn() { tr("另存为") + " " + key_hint("Ctrl+S") }, live~)
+                rec_tip_follow(sa, fn() { "另存为" }, keys=fn() { "Ctrl+S" }, live~)
                 sa
                 .width(Is(Some(32.0)))
                 .height(Is(Some(32.0)))
@@ -2704,6 +2706,7 @@ fn rec_window(root : @view.View) -> Unit {
       |> ignore
     })
     |> ignore
+    rec_tips.mount(page)
   })
   |> ignore
 }
