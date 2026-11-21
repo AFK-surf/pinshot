@@ -49,6 +49,8 @@ struct Pin {
   ocr_from_capture : Ref[Bool]
   ocr_selecting : Ref[Bool]
   ocr_anchor : Ref[Int]
+  ocr_down_x : Ref[Double]
+  ocr_down_y : Ref[Double]
   ocr_drag_moved : Ref[Bool]
   ocr_click_at : Ref[Double]
   ocr_click_word : Ref[Int]
@@ -119,6 +121,8 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom? : Double = 1.
     ocr_from_capture: Ref(start_ocr),
     ocr_selecting: Ref(false),
     ocr_anchor: Ref(-1),
+    ocr_down_x: Ref(0.0),
+    ocr_down_y: Ref(0.0),
     ocr_drag_moved: Ref(false),
     ocr_click_at: Ref(-10000.0),
     ocr_click_word: Ref(-1),
@@ -886,7 +890,8 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
               (clamp(pu, 0.0, 1.0), clamp(pv, 0.0, 1.0))
             }
             if d.kind == Moved {
-              if !p.ocr_drag_moved.val && (d.x - d.ox).abs() + (d.y - d.oy).abs() >= 3.0 {
+              if !p.ocr_drag_moved.val &&
+                (d.x - p.ocr_down_x.val).abs() + (d.y - p.ocr_down_y.val).abs() >= 3.0 {
                 p.ocr_drag_moved.val = true
               }
               if p.ocr_drag_moved.val {
@@ -950,10 +955,18 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
         if p.ocr_on.untracked() {
           match p.ocr.untracked() {
             Ready(ws, _) if !ws.is_empty() => {
-              let hit = ocr_hit_word(ws, u, v, pw, ph)
+              let (_, _, lw, lh) = root.laid_window_now()
+              let (du, dv, dw, dh) = if lw > 0.0 && lh > 0.0 {
+                (clamp(d.x / lw, 0.0, 1.0), clamp(d.y / lh, 0.0, 1.0), lw, lh)
+              } else {
+                (u, v, pw, ph)
+              }
+              let hit = ocr_hit_word(ws, du, dv, dw, dh)
               if hit >= 0 {
                 p.ocr_selecting.val = true
                 p.ocr_anchor.val = hit
+                p.ocr_down_x.val = d.x
+                p.ocr_down_y.val = d.y
                 p.ocr_drag_moved.val = false
                 p.ocr_hover.set(hit)
                 return

@@ -1,10 +1,59 @@
 #import "mac_platform.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
+#import <stdatomic.h>
+
+// ---- Refcounted raw BGRA pixel buffer (MBRAWPTR, matching platform_win.c's Held) ----
+
+struct PSHeld {
+  uint8_t *pixels;
+  atomic_int refs;
+};
+
+static void held_hook(void *ctx, int op) {
+  PSHeld *h = (PSHeld *)ctx;
+  if (!h)
+    return;
+  if (op)
+    atomic_fetch_add(&h->refs, 1);
+  else
+    ps_held_drop(h);
+}
+
+PSHeld *ps_held_new(uint8_t *pixels) {
+  PSHeld *h = (PSHeld *)calloc(1, sizeof *h);
+  if (!h)
+    return NULL;
+  h->pixels = pixels;
+  atomic_init(&h->refs, 1);
+  return h;
+}
+
+void ps_held_name(PSHeld *h, const uint8_t *at, int32_t w, int32_t hh, int32_t pitch, uint8_t out[44]) {
+  uint64_t a = (uint64_t)(uintptr_t)at, fn = (uint64_t)(uintptr_t)held_hook, ctx = (uint64_t)(uintptr_t)h;
+  memcpy(out, "MBRAWPTR", 8);
+  memcpy(out + 8, &a, 8);
+  memcpy(out + 16, &w, 4);
+  memcpy(out + 20, &hh, 4);
+  memcpy(out + 24, &pitch, 4);
+  memcpy(out + 28, &fn, 8);
+  memcpy(out + 36, &ctx, 8);
+}
+
+void ps_held_drop(PSHeld *h) {
+  if (!h)
+    return;
+  if (atomic_fetch_sub(&h->refs, 1) == 1) {
+    free(h->pixels);
+    free(h);
+  }
+}
+
+// ---- Screen capture (zero-PNG-encode: draws once to BGRA and hands MBRAWPTR straight to mbui) ----
 
 static BOOL pending, captureOpen;
-static NSData *png;
-static NSMutableData *rgba;
-static int width, height;
+static PSHeld *capHeld;
+static uint8_t *capBits;
+static int width, height, pitch;
 static double elapsed;
 static NSScreen *capturedScreen;
 static NSRect bounds;
@@ -42,10 +91,14 @@ NSScreen *ps_capture_screen(void) { return capturedScreen; }
 
 void ps_capture_release(void) {
   capturedScreen = nil;
-  png = nil;
-  rgba = nil;
+  if (capHeld) {
+    PSHeld *h = capHeld;
+    capHeld = NULL;
+    capBits = NULL;
+    ps_held_drop(h);
+  }
   windows = nil;
-  width = height = 0;
+  width = height = pitch = 0;
 }
 void ps_capture_open(int on) { captureOpen = on != 0; }
 
@@ -67,20 +120,36 @@ static NSString *windowList(SCDisplay *display, NSArray<SCWindow *> *items, CGFl
 static BOOL keepImage(CGImageRef image) {
   if (!image)
     return NO;
-  width = (int)CGImageGetWidth(image);
-  height = (int)CGImageGetHeight(image);
-  rgba = [NSMutableData dataWithLength:(size_t)width * height * 4];
-  CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-  CGContextRef ctx = CGBitmapContextCreate(rgba.mutableBytes, width, height, 8, (size_t)width * 4, space,
-                                           kCGImageAlphaNoneSkipLast | kCGBitmapByteOrder32Big);
-  CGColorSpaceRelease(space);
-  if (!ctx)
+  int w = (int)CGImageGetWidth(image);
+  int h = (int)CGImageGetHeight(image);
+  if (w <= 0 || h <= 0)
     return NO;
-  CGContextDrawImage(ctx, CGRectMake(0, 0, width, height), image);
+  int stride = w * 4;
+  uint8_t *buf = (uint8_t *)malloc((size_t)stride * h);
+  if (!buf)
+    return NO;
+  CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(buf, (size_t)w, (size_t)h, 8, (size_t)stride, space,
+                                           (CGBitmapInfo)kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(space);
+  if (!ctx) {
+    free(buf);
+    return NO;
+  }
+  CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+  CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), image);
   CGContextRelease(ctx);
-  NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithCGImage:image];
-  png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-  return png != nil;
+  PSHeld *held = ps_held_new(buf);
+  if (!held) {
+    free(buf);
+    return NO;
+  }
+  capHeld = held;
+  capBits = buf;
+  width = w;
+  height = h;
+  pitch = stride;
+  return YES;
 }
 
 static void permissionHelp(void) {
@@ -187,11 +256,19 @@ int ps_capture_now(void) {
   return success;
 }
 moonbit_bytes_t ps_capture_info(void) {
-  return ps_string(png ? [NSString stringWithFormat:@"%.0f,%.0f,%d,%d,%.0f,%.2f,sck", bounds.origin.x,
-                                                    bounds.origin.y, width, height, scale * 96, elapsed]
-                       : @"");
+  return ps_string(capHeld ? [NSString stringWithFormat:@"%.0f,%.0f,%d,%d,%.0f,%.2f,sck", bounds.origin.x,
+                                                        bounds.origin.y, width, height, scale * 96, elapsed]
+                           : @"");
 }
-moonbit_bytes_t ps_capture_take(void) { return ps_data(png); }
+moonbit_bytes_t ps_capture_take(void) {
+  if (!capHeld || !capBits || width <= 0 || height <= 0)
+    return moonbit_make_bytes(0, 0);
+  uint8_t d[44];
+  ps_held_name(capHeld, capBits, width, height, pitch, d);
+  moonbit_bytes_t b = moonbit_make_bytes(44, 0);
+  memcpy(b, d, 44);
+  return b;
+}
 moonbit_bytes_t ps_windows(void) { return ps_string(windows); }
 // (whether a window's part shows where the pointer is: Windows' question; the Mac lists windows alone, no parts, so a
 // window listed after another and inside it is behind it: never)
@@ -203,20 +280,29 @@ int ps_window_shows(int of, int i, int x, int y) {
   return 0;
 }
 int ps_pixel(int x, int y) {
-  if (!rgba || x < 0 || y < 0 || x >= width || y >= height)
+  if (!capBits || x < 0 || y < 0 || x >= width || y >= height)
     return -1;
-  const uint8_t *p = (const uint8_t *)rgba.bytes + ((size_t)y * width + x) * 4;
-  return p[0] << 16 | p[1] << 8 | p[2];
+  const uint8_t *p = capBits + (size_t)y * pitch + (size_t)x * 4;
+  return (p[2] << 16) | (p[1] << 8) | p[0];
 }
 int ps_mean(int x, int y, int cell) {
-  uint64_t r = 0, g = 0, b = 0, n = 0;
-  for (int j = MAX(y, 0); j < MIN(y + cell, height); j++)
-    for (int i = MAX(x, 0); i < MIN(x + cell, width); i++) {
-      int c = ps_pixel(i, j);
-      r += c >> 16;
-      g += (c >> 8) & 255;
-      b += c & 255;
+  if (!capBits)
+    return 0x808080;
+  int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+  int x1 = x + cell > width ? width : x + cell, y1 = y + cell > height ? height : y + cell;
+  if (x1 <= x0 || y1 <= y0)
+    return 0x808080;
+  int step = cell >= 24 ? 4 : (cell >= 8 ? 2 : 1);
+  unsigned r = 0, g = 0, b = 0, n = 0;
+  for (int yy = y0; yy < y1; yy += step) {
+    const uint8_t *p = capBits + (size_t)yy * pitch + (size_t)x0 * 4;
+    for (int xx = x0; xx < x1; xx += step, p += 4 * step) {
+      b += p[0];
+      g += p[1];
+      r += p[2];
       n++;
     }
-  return n ? (int)((r / n) << 16 | (g / n) << 8 | b / n) : 0x808080;
+  }
+  unsigned qr = r / n / 4 * 4 + 2, qg = g / n / 4 * 4 + 2, qb = b / n / 4 * 4 + 2;
+  return (int)((qr << 16) | (qg << 8) | qb);
 }

@@ -14,7 +14,6 @@
 extern void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
 NSWindow *ps_region_frame(NSWindow *w, NSScreen *s, NSRect pixels, int rgb, int dashed);
 void ps_region_frame_close(NSWindow *w);
-void ps_rec_exclude_number(NSInteger number, BOOL on);
 
 #define TICK_MS 16
 #define MOST_ROWS 30000  // how tall the picture may grow (the person told once it is)
@@ -645,6 +644,8 @@ static void let_go(void) {
   dump_log = NULL;
   if (L.base) munmap(L.base, L.base_len);
   work_let_go();
+  screen = nil;
+  [keptOut removeAllObjects];
   memset(&L, 0, sizeof L);
 }
 
@@ -729,15 +730,27 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
 }
 
 // Pause (1) or resume (0) capturing without discarding what has been stitched so far.
+// Truly stops the 16ms timer and SCStream while paused so idle CPU/capture overhead is zero.
 void ps_long_pause(int32_t on) {
   if (!L.on) return;
   int p = on ? 1 : 0;
   if (L.paused == p) return;
   L.paused = p;
+  if (L.paused) {
+    [timer invalidate];
+    timer = nil;
+    stream_stop();
+  } else if (!L.full) {
+    if (!stream) stream_start();
+    if (!timer) {
+      timer = [NSTimer scheduledTimerWithTimeInterval:TICK_MS / 1000.0 repeats:YES block:^(NSTimer *t) { tick(); }];
+      timer.tolerance = 0.004;
+    }
+  }
   tell();
 }
 
-// Discard stitched rows and restart fresh on the exact same part.
+// Discard stitched rows and restart fresh on the exact same capture frame.
 void ps_long_reset(void) {
   if (!L.base || !work_made()) return;
   // (the picture's pages given back: it begins again in the middle of the reserve)
@@ -751,6 +764,12 @@ void ps_long_reset(void) {
   if (!L.on) {
     L.on = 1;
     taking_begin();
+  } else {
+    if (!stream) stream_start();
+    if (!timer) {
+      timer = [NSTimer scheduledTimerWithTimeInterval:TICK_MS / 1000.0 repeats:YES block:^(NSTimer *t) { tick(); }];
+      timer.tolerance = 0.004;
+    }
   }
   L.begun = now_ms() - SETTLE_MS;
   tell();
@@ -763,10 +782,12 @@ void ps_long_stop(void) {
   work_let_go();
 }
 
-// Window `wid` of the app (the long screenshot's panel): kept out of what is taken, should it stand over the part.
+// Window `wid` of the app (the long screenshot's panel): rounded corners (matching Windows DWMWCP_ROUND),
+// kept out of what is taken, should it stand over the part.
 void ps_long_exclude(int32_t wid) {
   NSWindow *w = mb_app_window_of(wid);
   if (!w) return;
+  mb_app_window_round(wid, 10.0);
   if (!keptOut)
     keptOut = [NSMutableSet set];
   [keptOut addObject:@(w.windowNumber)];
@@ -786,11 +807,21 @@ moonbit_bytes_t ps_long_info(void) {
   return bytes_of(s, (size_t)n);
 }
 
-// (nothing held for the previews here: each is a BMP of its own the app hands mbui)
-void ps_long_preview_free(void) {}
+#define PREVIEW_SLOTS 12
+static PSHeld *kept[PREVIEW_SLOTS];  // the app's holds of the previews handed to mbui, in turn (ps_long_preview)
+static int turn;
+
+// The previews let go by the app: each freed now, or once the texture upload reading it is through.
+void ps_long_preview_free(void) {
+  for (int i = 0; i < PREVIEW_SLOTS; i++) {
+    ps_held_drop(kept[i]);
+    kept[i] = NULL;
+  }
+  turn = 0;
+}
 
 // A viewport slice of the picture starting at source row `from_row`, scaled to fit `box_w` pixels wide (never upscaled)
-// and clipped to at most `box_h` output pixels tall, as a top-down 32-bit BMP: only the visible slice is made.
+// and clipped to at most `box_h` output pixels tall, handed to mbui via zero-copy MBRAWPTR (matching longshot_win.c).
 moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) {
   if (!L.out_h || box_w <= 0 || box_h <= 0) return moonbit_make_bytes(0, 0);
   double k = (double)box_w / L.w;
@@ -805,21 +836,16 @@ moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) 
   if (pw < 1) pw = 1;
   if (ph < 1) ph = 1;
   if (ph > box_h) ph = box_h;
-  size_t len = 54 + (size_t)pw * ph * 4;
-  moonbit_bytes_t b = moonbit_make_bytes((int32_t)len, 0);
-  uint8_t *hdr = (uint8_t *)b;
-  uint32_t fsz = (uint32_t)len, off = 54, hsize = 40;
-  int32_t bw = pw, bh = -ph;
-  uint16_t planes = 1, bits = 32;
-  hdr[0] = 'B', hdr[1] = 'M';
-  memcpy(hdr + 2, &fsz, 4);
-  memcpy(hdr + 10, &off, 4);
-  memcpy(hdr + 14, &hsize, 4);
-  memcpy(hdr + 18, &bw, 4);
-  memcpy(hdr + 22, &bh, 4);
-  memcpy(hdr + 26, &planes, 2);
-  memcpy(hdr + 28, &bits, 2);
-  uint8_t *p = hdr + 54;
+  turn = (turn + 1) % PREVIEW_SLOTS;
+  ps_held_drop(kept[turn]);
+  kept[turn] = NULL;
+  uint8_t *p = (uint8_t *)malloc((size_t)pw * ph * 4);
+  if (!p) return moonbit_make_bytes(0, 0);
+  kept[turn] = ps_held_new(p);
+  if (!kept[turn]) {
+    free(p);
+    return moonbit_make_bytes(0, 0);
+  }
   for (int y = 0; y < ph; y++) {
     int y0 = from + (int)((double)y * src_h / ph), y1 = from + (int)((double)(y + 1) * src_h / ph);
     if (y1 <= y0) y1 = y0 + 1;
@@ -839,28 +865,32 @@ moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) 
       d[0] = (uint8_t)(bb / n), d[1] = (uint8_t)(g / n), d[2] = (uint8_t)(r / n), d[3] = 255;
     }
   }
-  return b;
+  uint8_t d[44];
+  ps_held_name(kept[turn], p, pw, ph, pw * 4, d);
+  return bytes_of(d, sizeof d);
 }
 
 // The picture as a PNG file's bytes (ImageIO's encoder); empty: none, or it could not be made.
 moonbit_bytes_t ps_long_png(void) {
   if (!L.out_h) return moonbit_make_bytes(0, 0);
-  CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-  CGDataProviderRef dp = CGDataProviderCreateWithData(NULL, L.out, (size_t)L.w * L.out_h * 4, NULL);
-  CGImageRef img = CGImageCreate(L.w, L.out_h, 8, 32, (size_t)L.w * 4, space,
-                                 kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaNoneSkipFirst, dp, NULL, NO,
-                                 kCGRenderingIntentDefault);
-  CGDataProviderRelease(dp);
-  CGColorSpaceRelease(space);
-  NSMutableData *png = [NSMutableData data];
-  CGImageDestinationRef dst =
-      CGImageDestinationCreateWithData((__bridge CFMutableDataRef)png, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
-  BOOL ok = NO;
-  if (dst && img) {
-    CGImageDestinationAddImage(dst, img, NULL);
-    ok = CGImageDestinationFinalize(dst);
+  @autoreleasepool {
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGDataProviderRef dp = CGDataProviderCreateWithData(NULL, L.out, (size_t)L.w * L.out_h * 4, NULL);
+    CGImageRef img = CGImageCreate(L.w, L.out_h, 8, 32, (size_t)L.w * 4, space,
+                                   kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaNoneSkipFirst, dp, NULL, NO,
+                                   kCGRenderingIntentDefault);
+    CGDataProviderRelease(dp);
+    CGColorSpaceRelease(space);
+    NSMutableData *png = [NSMutableData data];
+    CGImageDestinationRef dst = CGImageDestinationCreateWithData(
+        (__bridge CFMutableDataRef)png, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
+    BOOL ok = NO;
+    if (dst && img) {
+      CGImageDestinationAddImage(dst, img, NULL);
+      ok = CGImageDestinationFinalize(dst);
+    }
+    if (dst) CFRelease(dst);
+    if (img) CGImageRelease(img);
+    return ok ? ps_data(png) : moonbit_make_bytes(0, 0);
   }
-  if (dst) CFRelease(dst);
-  if (img) CGImageRelease(img);
-  return ok ? ps_data(png) : moonbit_make_bytes(0, 0);
 }

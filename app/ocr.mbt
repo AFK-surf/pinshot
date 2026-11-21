@@ -552,7 +552,6 @@ fn ocr_floating_bar(root : @view.View, p : Pin) -> Unit {
   root.box(fn(o) {
     o
     .over(Is(true))
-    .presses(Is(false))
     .lines_up(Is(Some(End)))
     .lies_along(Is(End))
     .padding(Is((6.0, 6.0, 6.0, 6.0)))

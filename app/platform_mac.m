@@ -155,6 +155,63 @@ void mb_app_reopen(void) { ps_capture_ask(); }
 void ps_quit(void) { [NSApp terminate:nil]; }
 int ps_ui_chinese(void) { return [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"]; }
 
+// Full Windows-VK <-> macOS virtual keycode table for global hotkeys and custom shortcut recording.
+typedef struct {
+  int vk;
+  UInt32 mac;
+  const char *name;
+} PSKeyMap;
+
+static const PSKeyMap psKeyMap[] = {
+    {'A', kVK_ANSI_A, "A"},         {'B', kVK_ANSI_B, "B"},         {'C', kVK_ANSI_C, "C"},
+    {'D', kVK_ANSI_D, "D"},         {'E', kVK_ANSI_E, "E"},         {'F', kVK_ANSI_F, "F"},
+    {'G', kVK_ANSI_G, "G"},         {'H', kVK_ANSI_H, "H"},         {'I', kVK_ANSI_I, "I"},
+    {'J', kVK_ANSI_J, "J"},         {'K', kVK_ANSI_K, "K"},         {'L', kVK_ANSI_L, "L"},
+    {'M', kVK_ANSI_M, "M"},         {'N', kVK_ANSI_N, "N"},         {'O', kVK_ANSI_O, "O"},
+    {'P', kVK_ANSI_P, "P"},         {'Q', kVK_ANSI_Q, "Q"},         {'R', kVK_ANSI_R, "R"},
+    {'S', kVK_ANSI_S, "S"},         {'T', kVK_ANSI_T, "T"},         {'U', kVK_ANSI_U, "U"},
+    {'V', kVK_ANSI_V, "V"},         {'W', kVK_ANSI_W, "W"},         {'X', kVK_ANSI_X, "X"},
+    {'Y', kVK_ANSI_Y, "Y"},         {'Z', kVK_ANSI_Z, "Z"},         {'0', kVK_ANSI_0, "0"},
+    {'1', kVK_ANSI_1, "1"},         {'2', kVK_ANSI_2, "2"},         {'3', kVK_ANSI_3, "3"},
+    {'4', kVK_ANSI_4, "4"},         {'5', kVK_ANSI_5, "5"},         {'6', kVK_ANSI_6, "6"},
+    {'7', kVK_ANSI_7, "7"},         {'8', kVK_ANSI_8, "8"},         {'9', kVK_ANSI_9, "9"},
+    {0x70, kVK_F1, "F1"},           {0x71, kVK_F2, "F2"},           {0x72, kVK_F3, "F3"},
+    {0x73, kVK_F4, "F4"},           {0x74, kVK_F5, "F5"},           {0x75, kVK_F6, "F6"},
+    {0x76, kVK_F7, "F7"},           {0x77, kVK_F8, "F8"},           {0x78, kVK_F9, "F9"},
+    {0x79, kVK_F10, "F10"},         {0x7A, kVK_F11, "F11"},         {0x7B, kVK_F12, "F12"},
+    {0x7C, kVK_F13, "F13"},         {0x7D, kVK_F14, "F14"},         {0x7E, kVK_F15, "F15"},
+    {0x7F, kVK_F16, "F16"},         {0x80, kVK_F17, "F17"},         {0x81, kVK_F18, "F18"},
+    {0x82, kVK_F19, "F19"},         {0x83, kVK_F20, "F20"},         {0x20, kVK_Space, "Space"},
+    {0x0D, kVK_Return, "Return"},   {0x09, kVK_Tab, "Tab"},         {0x21, kVK_PageUp, "PgUp"},
+    {0x22, kVK_PageDown, "PgDn"},   {0x23, kVK_End, "End"},         {0x24, kVK_Home, "Home"},
+    {0x25, kVK_LeftArrow, "←"},     {0x26, kVK_UpArrow, "↑"},       {0x27, kVK_RightArrow, "→"},
+    {0x28, kVK_DownArrow, "↓"},     {0xBA, kVK_ANSI_Semicolon, ";"},{0xBB, kVK_ANSI_Equal, "="},
+    {0xBC, kVK_ANSI_Comma, ","},    {0xBD, kVK_ANSI_Minus, "-"},    {0xBE, kVK_ANSI_Period, "."},
+    {0xBF, kVK_ANSI_Slash, "/"},    {0xC0, kVK_ANSI_Grave, "`"},    {0xDB, kVK_ANSI_LeftBracket, "["},
+    {0xDC, kVK_ANSI_Backslash, "\\"},{0xDD, kVK_ANSI_RightBracket, "]"},{0xDE, kVK_ANSI_Quote, "'"},
+};
+
+static BOOL macCodeForVk(int vk, UInt32 *out) {
+  for (size_t i = 0; i < sizeof(psKeyMap) / sizeof(psKeyMap[0]); i++) {
+    if (psKeyMap[i].vk == vk) {
+      *out = psKeyMap[i].mac;
+      return YES;
+    }
+  }
+  return NO;
+}
+
+static int vkForMacCode(unsigned short code) {
+  if (code == kVK_Escape) return 0x1B;
+  if (code == kVK_Delete) return 0x08;
+  if (code == kVK_ForwardDelete) return 0x2E;
+  if (code == kVK_ANSI_KeypadEnter) return 0x0D;
+  for (size_t i = 0; i < sizeof(psKeyMap) / sizeof(psKeyMap[0]); i++) {
+    if (psKeyMap[i].mac == code) return psKeyMap[i].vk;
+  }
+  return 0;
+}
+
 static OSStatus hitKey(EventHandlerCallRef next, EventRef event, void *user) {
   EventHotKeyID key;
   if (GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, NULL, sizeof(key), NULL, &key) !=
@@ -186,43 +243,82 @@ int ps_hotkey(int which, int mods, int vk) {
     if (InstallApplicationEventHandler(hitKey, 1, &spec, NULL, &handler) != noErr)
       return 0;
   }
-  UInt32 code;
-  switch (vk) {
-  case 'A':
-    code = kVK_ANSI_A;
-    break;
-  case '1':
-    code = kVK_ANSI_1;
-    break;
-  case '2':
-    code = kVK_ANSI_2;
-    break;
-  case 0x70:
-    code = kVK_F1;
-    break;
-  case 0x71:
-    code = kVK_F2;
-    break;
-  case 0x72:
-    code = kVK_F3;
-    break;
-  default:
+  UInt32 code = 0;
+  if (!macCodeForVk(vk, &code))
     return 0;
-  }
   UInt32 flags = (mods & 1 ? optionKey : 0) | (mods & 2 ? controlKey : 0) | (mods & 4 ? shiftKey : 0) |
                  (mods & 8 ? cmdKey : 0);
   EventHotKeyID id = {'PnSh', (UInt32)which};
   return RegisterEventHotKey(code, flags, id, GetApplicationEventTarget(), 0, &keys[which]) == noErr;
 }
 
-// Shortcuts are picked from settings.mbt's key_choices here, not set by pressing them (Windows' ps_key_record).
-int ps_key_record(int on) {
-  (void)on;
-  return 0;
+// Local key monitor while settings asks for a custom shortcut (matches Windows' ps_key_record, zero Accessibility needed).
+static id keyRecMonitor;
+static id keyRecResignObs;
+
+static void keyRecordStop(void) {
+  if (keyRecMonitor) {
+    [NSEvent removeMonitor:keyRecMonitor];
+    keyRecMonitor = nil;
+  }
+  if (keyRecResignObs) {
+    [NSNotificationCenter.defaultCenter removeObserver:keyRecResignObs];
+    keyRecResignObs = nil;
+  }
 }
+
+static void keyRecordEnd(NSString *how, int mods, int vk) {
+  keyRecordStop();
+  ps_post(@{@"do" : @"key-pressed", @"how" : how, @"mods" : @(mods), @"vk" : @(vk)});
+}
+
+int ps_key_record(int on) {
+  if (!on) {
+    keyRecordStop();
+    return 1;
+  }
+  if (keyRecMonitor)
+    return 1;
+  keyRecMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                        handler:^NSEvent *(NSEvent *e) {
+                                                          int vk = vkForMacCode(e.keyCode);
+                                                          NSEventModifierFlags f = e.modifierFlags;
+                                                          int mods = ((f & NSEventModifierFlagOption) ? 1 : 0) |
+                                                                     ((f & NSEventModifierFlagControl) ? 2 : 0) |
+                                                                     ((f & NSEventModifierFlagShift) ? 4 : 0) |
+                                                                     ((f & NSEventModifierFlagCommand) ? 8 : 0);
+                                                          if (vk == 0x1B && mods == 0) {
+                                                            keyRecordEnd(@"cancel", 0, 0);
+                                                            return nil;
+                                                          }
+                                                          if ((vk == 0x08 || vk == 0x2E) && mods == 0) {
+                                                            keyRecordEnd(@"clear", 0, 0);
+                                                            return nil;
+                                                          }
+                                                          if (vk != 0) {
+                                                            keyRecordEnd(@"key", mods, vk);
+                                                            return nil;
+                                                          }
+                                                          return nil;
+                                                        }];
+  keyRecResignObs = [NSNotificationCenter.defaultCenter
+      addObserverForName:NSApplicationDidResignActiveNotification
+                  object:nil
+                   queue:nil
+              usingBlock:^(NSNotification *n) {
+                (void)n;
+                if (keyRecMonitor)
+                  keyRecordEnd(@"cancel", 0, 0);
+              }];
+  return keyRecMonitor != nil ? 1 : 0;
+}
+
 moonbit_bytes_t ps_key_name(int vk) {
-  (void)vk;
-  return moonbit_make_bytes(0, 0);
+  for (size_t i = 0; i < sizeof(psKeyMap) / sizeof(psKeyMap[0]); i++) {
+    if (psKeyMap[i].vk == vk)
+      return ps_string(@(psKeyMap[i].name));
+  }
+  return ps_string([NSString stringWithFormat:@"Key %d", vk]);
 }
 
 extern void mb_app_manage_window(int wid);
@@ -281,6 +377,8 @@ void ps_place(int wid, int x, int y, int width, int height, int show, int focus)
   if (show && focus) {
     if (!wid && !NSApp.active)
       previousApp = NSWorkspace.sharedWorkspace.frontmostApplication;
+    else if (wid)
+      previousApp = nil;
     [NSApp activateIgnoringOtherApps:YES];
     [w makeKeyAndOrderFront:nil];
   } else if (show)
@@ -324,6 +422,7 @@ void ps_toast_place(int wid, int width, int height) {
   NSWindow *w = mb_app_window_of(wid);
   NSPoint p = NSEvent.mouseLocation;
   NSRect f = ps_mouse_screen().visibleFrame;
+  mb_app_window_round(wid, 10.0);
   [w setFrame:NSMakeRect(MIN(MAX(NSMinX(f), p.x - width / 2), NSMaxX(f) - width),
                          MIN(MAX(NSMinY(f), p.y - height - 12), NSMaxY(f) - height), width, height)
       display:YES];

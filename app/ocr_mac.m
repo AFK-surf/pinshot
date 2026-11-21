@@ -1,10 +1,15 @@
 // The words in a picture read by the Mac's own OCR (Vision's VNRecognizeTextRequest: on the machine, offline, Chinese
-// and English), the Mac side of ocr_win.cpp with the same calls and the same answers. The picture (a PNG: a part
-// taken, a pin) is read on a queue of its own, the UI going on meanwhile; what it says comes back on the channel "ps"
-// as {"do":"ocr","id":N,"why":"","lang":"zh-Hans","lines":3,"ms":120}, its words as UTF-8 bytes beside the JSON.
+// and English), the Mac side of ocr_win.cpp with the same calls and the same Live Text boxes protocol.
 //
-// What it gives: Vision's lines, put in reading order (top to bottom; those side by side on one line joined left to
-// right, with a space between them but between two of Chinese or Japanese).
+// The picture (a PNG: a part taken, a pin) is read on a background queue, the UI going on meanwhile; what it says comes
+// back on the channel "ps" as {"do":"ocr","id":N,"why":"","lang":"zh-Hans","lines":3,"ms":120,"fmt":"boxes"} with
+// UTF-8 TSV per-word normalized [0, 1] top-left boxes beside the JSON:
+//   line_idx\tspace_before\tx\ty\tw\th\ttext\n
+// CJK characters are split per character (matching Windows IOcrWord) and Latin/digit words per whitespace-delimited
+// token using VNRecognizedText's boundingBoxForRange:error:, flipping Vision's bottom-left Y to top-left.
+//
+// Zero idle overhead: no persistent thread, VNRecognizeTextRequest, VNImageRequestHandler, or image cache is kept
+// between readings (everything released inside @autoreleasepool as each reading ends).
 #import "mac_platform.h"
 #import <ImageIO/ImageIO.h>
 #import <Vision/Vision.h>
@@ -16,20 +21,28 @@ typedef struct {
   const char *why;
   NSString *lang;
   NSString *text;
+  NSString *boxes;
   int lines;
   double ms;
 } OcrOut;
 
 static BOOL unspaced(unichar c) {
-  return (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFF00 && c <= 0xFFEF) ||
-         (c >= 0x3000 && c <= 0x303F);
+  return (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFE30 && c <= 0xFE4F) ||
+         (c >= 0xFF00 && c <= 0xFFEF) || (c >= 0x3000 && c <= 0x303F);
 }
 
-static void ocrRun(NSData *png, OcrOut *o) {
+static BOOL isWs(unichar c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == 0x00A0 || c == 0x3000;
+}
+
+static double clamp01(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
+
+static void ocrRun(NSData *png, OcrOut *o, BOOL wantBoxes) {
   double t0 = ps_now_ms();
   o->why = "bad-picture";
   o->lang = @"";
   o->text = @"";
+  o->boxes = @"";
   o->lines = 0;
   o->ms = 0;
   CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)png, NULL);
@@ -63,6 +76,7 @@ static void ocrRun(NSData *png, OcrOut *o) {
     return ay > by ? NSOrderedAscending : ay < by ? NSOrderedDescending : NSOrderedSame;
   }];
   NSMutableString *all = [NSMutableString string];
+  NSMutableString *boxes = wantBoxes ? [NSMutableString string] : nil;
   NSUInteger i = 0;
   BOOL cjk = NO;
   while (i < obs.count) {
@@ -81,14 +95,74 @@ static void ocrRun(NSData *png, OcrOut *o) {
       return ax < bx ? NSOrderedAscending : ax > bx ? NSOrderedDescending : NSOrderedSame;
     }];
     NSMutableString *line = [NSMutableString string];
+    int lineIdx = o->lines;
     for (VNRecognizedTextObservation *r in row) {
-      NSString *s = [[r topCandidates:1].firstObject.string
-          stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-      if (!s.length)
+      VNRecognizedText *cand = [r topCandidates:1].firstObject;
+      NSString *raw = cand.string;
+      NSUInteger len = raw.length;
+      if (!len)
         continue;
-      if (line.length && !(unspaced([line characterAtIndex:line.length - 1]) && unspaced([s characterAtIndex:0])))
-        [line appendString:@" "];
-      [line appendString:s];
+      if (!wantBoxes) {
+        NSString *s = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!s.length)
+          continue;
+        if (line.length && !(unspaced([line characterAtIndex:line.length - 1]) && unspaced([s characterAtIndex:0])))
+          [line appendString:@" "];
+        [line appendString:s];
+        continue;
+      }
+      // Split candidate into per-character CJK tokens and whitespace-delimited non-CJK words,
+      // matching Windows IOcrWord granularity for smooth PixPin / Apple Live Text selection.
+      NSUInteger pos = 0;
+      BOOL firstInObs = YES;
+      while (pos < len) {
+        NSUInteger wsStart = pos;
+        while (pos < len && isWs([raw characterAtIndex:pos]))
+          pos++;
+        BOOL hadWs = (pos > wsStart);
+        if (pos >= len)
+          break;
+        NSRange tokRange;
+        if (unspaced([raw characterAtIndex:pos])) {
+          tokRange = [raw rangeOfComposedCharacterSequenceAtIndex:pos];
+        } else {
+          NSUInteger start = pos;
+          while (pos < len) {
+            unichar ch = [raw characterAtIndex:pos];
+            if (isWs(ch) || unspaced(ch))
+              break;
+            NSRange seq = [raw rangeOfComposedCharacterSequenceAtIndex:pos];
+            pos = NSMaxRange(seq);
+          }
+          tokRange = NSMakeRange(start, pos - start);
+        }
+        pos = NSMaxRange(tokRange);
+        NSString *tok = [raw substringWithRange:tokRange];
+        if (!tok.length)
+          continue;
+        BOOL bothUnspaced =
+            line.length > 0 && unspaced([line characterAtIndex:line.length - 1]) && unspaced([tok characterAtIndex:0]);
+        int space = (line.length > 0 && (hadWs || (firstInObs && !bothUnspaced))) ? 1 : 0;
+        firstInObs = NO;
+        if (space)
+          [line appendString:@" "];
+        [line appendString:tok];
+
+        VNRectangleObservation *boxObs = [cand boundingBoxForRange:tokRange error:nil];
+        CGRect bb = boxObs ? boxObs.boundingBox : r.boundingBox;
+        double nx = clamp01(bb.origin.x);
+        double ny = clamp01(1.0 - (bb.origin.y + bb.size.height));
+        double bw = clamp01(bb.size.width);
+        double bh = clamp01(bb.size.height);
+        if (nx + bw > 1.0)
+          bw = 1.0 - nx;
+        if (ny + bh > 1.0)
+          bh = 1.0 - ny;
+        NSString *clean = [[[tok stringByReplacingOccurrencesOfString:@"\t" withString:@" "]
+            stringByReplacingOccurrencesOfString:@"\r"
+                                      withString:@" "] stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+        [boxes appendFormat:@"%d\t%d\t%.5f\t%.5f\t%.5f\t%.5f\t%@\n", lineIdx, space, nx, ny, bw, bh, clean];
+      }
     }
     for (NSUInteger k = 0; !cjk && k < line.length; k++)
       cjk = unspaced([line characterAtIndex:k]);
@@ -101,12 +175,13 @@ static void ocrRun(NSData *png, OcrOut *o) {
     i = j;
   }
   o->text = all;
+  o->boxes = boxes ?: @"";
   o->lang = o->lines ? (cjk ? @"zh-Hans" : @"en-US") : @"";
   o->ms = ps_now_ms() - t0;
 }
 
 // One reading at a time, as on Windows: asked for while one goes, the new one waits (one at most: a newer one takes its
-// place, the app wants only the last it asked for). No readings pile up.
+// place, the app wants only the last it asked for). No readings pile up, no idle thread kept.
 static NSData *nextPng;
 static int nextId;
 static BOOL running;
@@ -127,24 +202,25 @@ static void ocrLoop(void) {
       }
       @autoreleasepool {
         OcrOut o;
-        ocrRun(png, &o);
+        ocrRun(png, &o, YES);
         NSDictionary *head = @{
           @"do" : @"ocr",
           @"id" : @(id),
           @"why" : @(o.why),
           @"lang" : o.lang,
           @"lines" : @(o.lines),
-          @"ms" : @(round(o.ms))
+          @"ms" : @(round(o.ms)),
+          @"fmt" : @"boxes"
         };
         NSData *json = [NSJSONSerialization dataWithJSONObject:head options:0 error:nil];
-        NSData *words = [o.text dataUsingEncoding:NSUTF8StringEncoding];
-        mb_post("ps", json.bytes, json.length, words.bytes, words.length);
+        NSData *payload = [o.boxes dataUsingEncoding:NSUTF8StringEncoding];
+        mb_post("ps", json.bytes, json.length, payload.bytes, payload.length);
       }
     }
   });
 }
 
-// The words in `png` read on a queue of their own, told back as {"do":"ocr","id":id,...} with them: 1 it is begun.
+// The words in `png` read on a queue of their own, told back as {"do":"ocr","id":id,...,"fmt":"boxes"} with TSV boxes.
 int32_t ps_ocr(int32_t id, moonbit_bytes_t png) {
   int len = (int)Moonbit_array_length(png);
   if (len <= 0)
@@ -162,13 +238,13 @@ int32_t ps_ocr(int32_t id, moonbit_bytes_t png) {
   return 1;
 }
 
-// The words in `png` read now (the command line's --ocr): "why\tlang\tms\n" then them.
+// The words in `png` read now (the command line's --ocr): "why\tlang\tms\n" then plain text.
 moonbit_bytes_t ps_ocr_now(moonbit_bytes_t png) {
   int len = (int)Moonbit_array_length(png);
-  OcrOut o = {"bad-picture", @"", @"", 0, 0};
+  OcrOut o = {"bad-picture", @"", @"", @"", 0, 0};
   if (len > 0) {
     @autoreleasepool {
-      ocrRun([NSData dataWithBytesNoCopy:png length:len freeWhenDone:NO], &o);
+      ocrRun([NSData dataWithBytesNoCopy:png length:len freeWhenDone:NO], &o, NO);
     }
   }
   return ps_string([NSString stringWithFormat:@"%s\t%@\t%.0f\n%@", o.why, o.lang, o.ms, o.text]);

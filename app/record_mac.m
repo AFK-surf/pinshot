@@ -108,15 +108,29 @@ static void scaledDims(int sw, int sh, int param, int *ow, int *oh) {
   }
 }
 
-// The panel's preview (record_win.cpp's build_preview_bmp): the last frame cover-cropped into a 316×368 BMP with a
-// dark scrim at its bottom, under the words the panel puts there.
+// The panel's preview (record_win.cpp's build_preview_bmp): the last frame (NV12 420v or 32BGRA) cover-cropped
+// into a 316×368 BMP with a dark scrim at its bottom, under the words the panel puts there.
 static NSData *previewBmp(CVPixelBufferRef pb) {
-  if (!pb || CVPixelBufferGetPixelFormatType(pb) != kCVPixelFormatType_32BGRA)
+  if (!pb)
     return nil;
+  OSType fmt = CVPixelBufferGetPixelFormatType(pb);
+  BOOL isNv12 = fmt == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+                fmt == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+  if (!isNv12 && fmt != kCVPixelFormatType_32BGRA)
+    return nil;
+  BOOL fullRange = fmt == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
   CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
-  const uint8_t *px = CVPixelBufferGetBaseAddress(pb);
   int w = (int)CVPixelBufferGetWidth(pb), h = (int)CVPixelBufferGetHeight(pb);
-  size_t pitch = CVPixelBufferGetBytesPerRow(pb);
+  const uint8_t *bgra = isNv12 ? NULL : (const uint8_t *)CVPixelBufferGetBaseAddress(pb);
+  size_t pitch = isNv12 ? 0 : CVPixelBufferGetBytesPerRow(pb);
+  const uint8_t *yPlane = isNv12 ? (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, 0) : NULL;
+  const uint8_t *uvPlane = isNv12 ? (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, 1) : NULL;
+  size_t yPitch = isNv12 ? CVPixelBufferGetBytesPerRowOfPlane(pb, 0) : 0;
+  size_t uvPitch = isNv12 ? CVPixelBufferGetBytesPerRowOfPlane(pb, 1) : 0;
+  if (w <= 0 || h <= 0 || (isNv12 && (!yPlane || !uvPlane)) || (!isNv12 && !bgra)) {
+    CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+    return nil;
+  }
   const int pw = 316, ph = 368;
   double srcAsp = (double)w / h, dstAsp = (double)pw / ph;
   int cx0 = 0, cy0 = 0, cw = w, ch = h;
@@ -164,12 +178,38 @@ static NSData *previewBmp(CVPixelBufferRef pb) {
       if (x1 > w)
         x1 = w;
       uint32_t sb = 0, sg = 0, sr = 0, cnt = 0;
-      for (int yy = y0; yy < y1; yy++) {
-        const uint8_t *s = px + (size_t)yy * pitch;
-        for (int xx = x0; xx < x1; xx++, cnt++) {
-          sb += s[xx * 4];
-          sg += s[xx * 4 + 1];
-          sr += s[xx * 4 + 2];
+      if (isNv12) {
+        for (int yy = y0; yy < y1; yy++) {
+          const uint8_t *yr = yPlane + (size_t)yy * yPitch;
+          const uint8_t *uvr = uvPlane + (size_t)(yy >> 1) * uvPitch;
+          for (int xx = x0; xx < x1; xx++, cnt++) {
+            int Y = (int)yr[xx];
+            int U = (int)uvr[(xx & ~1)] - 128;
+            int V = (int)uvr[(xx & ~1) + 1] - 128;
+            int r, g, b;
+            if (fullRange) {
+              r = Y + ((403 * V + 128) >> 8);
+              g = Y - ((48 * U + 120 * V + 128) >> 8);
+              b = Y + ((475 * U + 128) >> 8);
+            } else {
+              int c = 298 * (Y - 16);
+              r = (c + 459 * V + 128) >> 8;
+              g = (c - 55 * U - 136 * V + 128) >> 8;
+              b = (c + 541 * U + 128) >> 8;
+            }
+            sr += (uint32_t)(r < 0 ? 0 : (r > 255 ? 255 : r));
+            sg += (uint32_t)(g < 0 ? 0 : (g > 255 ? 255 : g));
+            sb += (uint32_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
+          }
+        }
+      } else {
+        for (int yy = y0; yy < y1; yy++) {
+          const uint8_t *s = bgra + (size_t)yy * pitch;
+          for (int xx = x0; xx < x1; xx++, cnt++) {
+            sb += s[xx * 4];
+            sg += s[xx * 4 + 1];
+            sr += s[xx * 4 + 2];
+          }
         }
       }
       d[x * 4] = (uint8_t)((double)sb / cnt * keep + 17.0 * scrim + 0.5);
@@ -478,6 +518,9 @@ static PSRecFrameWindow *frameWindowMade(void) {
 }
 
 static void frameShow(NSColor *color, BOOL dashed, BOOL handles) {
+  const char *cl = getenv("PINSHOT_TEST_CLOAKED");
+  if (cl && cl[0])
+    return;
   if (!frameWin) {
     frameWin = frameWindowMade();
     if (!getenv("PINSHOT_REC_SHOW"))
@@ -615,7 +658,13 @@ static BOOL drawBusy(double now) {
 }
 @end
 
+static BOOL drawShown;
+
+static void drawSchedule(double now);
+
 static void drawTick(void) {
+  [drawTimer invalidate];
+  drawTimer = nil;
   double now = ps_now_ms();
   int n = 0;
   for (int i = 0; i < rippleCount; i++)
@@ -624,19 +673,52 @@ static void drawTick(void) {
   rippleCount = n;
   if (caps && now >= capsStart + keyHoldMs + keyFadeMs)
     caps = nil;
-  drawView.needsDisplay = YES;
   if (!drawBusy(now)) {
-    [drawTimer invalidate];
-    drawTimer = nil;
+    if (drawShown) {
+      [drawWin orderOut:nil];
+      drawShown = NO;
+    }
+    return;
+  }
+  if (!drawShown && drawWin) {
+    [drawWin orderFrontRegardless];
+    drawShown = YES;
+  }
+  drawView.needsDisplay = YES;
+  drawSchedule(now);
+}
+
+// Schedule next tick matching Windows record_draw_win.cpp: 60fps only while ripples animate or keycaps fade;
+// a single one-shot timer sleeps across the 1.1s static keycap hold (zero idle redraws).
+static void drawSchedule(double now) {
+  [drawTimer invalidate];
+  drawTimer = nil;
+  double delaySec = 0;
+  if (rippleCount > 0) {
+    delaySec = 1.0 / 60.0;
+  } else if (caps) {
+    double fadeAt = capsStart + keyHoldMs;
+    delaySec = now >= fadeAt ? (1.0 / 60.0) : MAX(0.004, (fadeAt - now) / 1000.0);
+  }
+  if (delaySec > 0) {
+    drawTimer = [NSTimer scheduledTimerWithTimeInterval:delaySec
+                                                repeats:NO
+                                                  block:^(NSTimer *t) {
+                                                    (void)t;
+                                                    drawTick();
+                                                  }];
   }
 }
 
 static void drawWake(void) {
+  if (!drawWin)
+    return;
+  if (!drawShown) {
+    [drawWin orderFrontRegardless];
+    drawShown = YES;
+  }
   drawView.needsDisplay = YES;
-  if (!drawTimer)
-    drawTimer = [NSTimer scheduledTimerWithTimeInterval:1 / 60.0
-                                                repeats:YES
-                                                  block:^(NSTimer *t) { drawTick(); }];
+  drawSchedule(ps_now_ms());
 }
 
 static NSString *keyLabel(NSEvent *e) {
@@ -697,6 +779,7 @@ static void drawSync(void) {
     [drawWin close];
     drawWin = nil;
     drawView = nil;
+    drawShown = NO;
     return;
   }
   if (!drawWin) {
@@ -716,8 +799,10 @@ static void drawSync(void) {
     drawView = [[PSRecDrawView alloc] initWithFrame:NSMakeRect(0, 0, 1, 1)];
     drawWin.contentView = drawView;
   }
+  // Kept hidden until a click or key actually triggers drawWake() (zero compositor cost while idle).
   [drawWin setFrame:regionPoints() display:NO];
-  [drawWin orderFrontRegardless];
+  if (drawShown)
+    [drawWin orderFrontRegardless];
   if (!mouseMonitor)
     mouseMonitor = [NSEvent
         addGlobalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown |
@@ -902,8 +987,10 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
   c.scalesToFit = NO;
   c.minimumFrameInterval = CMTimeMake(1, fps);
   c.queueDepth = 6;
-  c.pixelFormat = kCVPixelFormatType_32BGRA;
-  c.colorSpaceName = kCGColorSpaceSRGB;
+  // Hardware NV12 (420v) BT.709 straight from ScreenCaptureKit to VideoToolbox (zero BGRA->NV12 conversion, 62.5% less RAM).
+  c.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+  c.colorSpaceName = kCGColorSpaceITUR_709;
+  c.colorMatrix = kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
   c.showsCursor = cursor;
   c.capturesAudio = wantAudio;
   c.sampleRate = 48000;
@@ -932,7 +1019,12 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
     self->failed = YES;
     self->stopping = YES;
     [self->stream stopCaptureWithCompletionHandler:nil];
+    self->stream = nil;
     [self->writer cancelWriting];
+    self->writer = nil;
+    self->vin = nil;
+    self->ain = nil;
+    self->adaptor = nil;
     [NSFileManager.defaultManager removeItemAtPath:self->path error:nil];
     if (self->lastFrame)
       CVPixelBufferRelease(self->lastFrame);
@@ -1055,7 +1147,12 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
 
 - (void)written:(BOOL)cancel ms:(int64_t)ms {
   if (cancel || self->frames == 0) {
+    self->stream = nil;
     [writer cancelWriting];
+    self->writer = nil;
+    self->vin = nil;
+    self->ain = nil;
+    self->adaptor = nil;
     [NSFileManager.defaultManager removeItemAtPath:path error:nil];
     if (lastFrame)
       CVPixelBufferRelease(lastFrame);
@@ -1082,9 +1179,14 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
   if (lastFrame)
     CVPixelBufferRelease(lastFrame);
   lastFrame = NULL;
+  self->stream = nil;
   [writer finishWritingWithCompletionHandler:^{
     BOOL ok = self->writer.status == AVAssetWriterStatusCompleted;
     uint64_t bytes = ok ? fileSize(self->path) : 0;
+    self->writer = nil;
+    self->vin = nil;
+    self->ain = nil;
+    self->adaptor = nil;
     dispatch_async(dispatch_get_main_queue(), ^{
       atomic_store(&recRunning, 0);
       if (recorder == self)
@@ -1116,9 +1218,13 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
 }
 @end
 
+static atomic_int expGen;       // each export's number: one called off (or the panel ended) takes the next
+static atomic_int expRunning;
+static dispatch_group_t expGroup;
+
 int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   static BOOL swept;
-  if (atomic_load(&recRunning) || recorder)
+  if (atomic_load(&recRunning) || atomic_load(&expRunning) || recorder)
     return 0;
   if (!excluded)
     excluded = [NSMutableSet set];
@@ -1273,9 +1379,6 @@ void ps_rec_stop(int32_t cancel) {
 
 // ---- export ----
 
-static atomic_int expGen;       // each export's number: one called off (or the panel ended) takes the next
-static atomic_int expRunning;
-
 static BOOL expLive(int gen) { return atomic_load(&expGen) == gen; }
 
 // An MP4 encoded again from the recording (fmt 0 HEVC, 1 H.264) at `qual` and the size asked.
@@ -1327,7 +1430,7 @@ static void exportMp4(int gen, NSString *src, NSString *dst, int fmt, int qual, 
     AVVideoCompressionPropertiesKey : @{
       AVVideoAverageBitRateKey : @(targetBps(fmt == 0 ? 0 : 1, qual, ow, oh, fps)),
       AVVideoExpectedSourceFrameRateKey : @(fps),
-      AVVideoMaxKeyFrameIntervalKey : @(fps * 2),
+      AVVideoMaxKeyFrameIntervalKey : @(fps * 5),
       AVVideoProfileLevelKey : fmt == 0 ? (id)kVTProfileLevel_HEVC_Main_AutoLevel
                                         : AVVideoProfileLevelH264HighAutoLevel,
     }
@@ -1464,8 +1567,527 @@ static void exportMp4(int gen, NSString *src, NSString *dst, int fmt, int qual, 
   recPost(@"exported", totalMs, 0, bytes, orig, 100, ain != nil, cname, dst, nil);
 }
 
-// An animated GIF of the recording, `gfps` pictures a second at ow × oh (a picture the same as the last one made into
-// a longer showing of it).
+// ---- Streaming GIF89a encoder (15-bit Median-Cut + dirty-rect + static-frame merge + LZW, matching record_win.cpp) ----
+
+typedef struct {
+  uint16_t key;
+  uint32_t cnt;
+} PSGifHistEntry;
+
+typedef struct {
+  size_t lo, hi;
+  uint8_t r0, r1, g0, g1, b0, b1;
+  uint64_t pop;
+} PSGifBox;
+
+typedef struct {
+  FILE *fp;
+  int w, h;
+  BOOL headerWritten;
+  uint8_t globalPal[256 * 3];
+  uint8_t globalLut[32768];
+  int globalNcols;
+
+  uint8_t *prevRgb;
+  uint8_t *prevIdx;
+  BOOL hasPending;
+  int pendX, pendY, pendW, pendH;
+  int pendDelayCs;
+  BOOL pendLocalPal;
+  uint8_t pendPal[256 * 3];
+  uint8_t *pendIdx;
+  size_t pendIdxLen, pendIdxCap;
+  int framesWritten;
+
+  int32_t htKey[8192];
+  uint16_t htVal[8192];
+  uint8_t *crop, *mask;
+  size_t cropCap, maskCap;
+} PSGifWriter;
+
+static uint8_t gifLutOf(uint8_t lut[32768], const uint8_t pal[256 * 3], int ncols, uint32_t k) {
+  uint8_t v = lut[k];
+  if (v != 0xFF)
+    return v;
+  int r = (int)((k >> 10) & 31) * 255 / 31;
+  int g = (int)((k >> 5) & 31) * 255 / 31;
+  int b = (int)(k & 31) * 255 / 31;
+  int bestI = 0, bestD = 1 << 30;
+  for (int i = 0; i < ncols; i++) {
+    int dr = r - (int)pal[i * 3 + 0];
+    int dg = g - (int)pal[i * 3 + 1];
+    int db = b - (int)pal[i * 3 + 2];
+    int d = dr * dr * 2 + dg * dg * 4 + db * db;
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+    }
+  }
+  lut[k] = (uint8_t)bestI;
+  return (uint8_t)bestI;
+}
+
+static void gifFitBox(PSGifBox *bx, const PSGifHistEntry *entries) {
+  bx->r0 = bx->g0 = bx->b0 = 31;
+  bx->r1 = bx->g1 = bx->b1 = 0;
+  bx->pop = 0;
+  for (size_t i = bx->lo; i < bx->hi; i++) {
+    uint16_t k = entries[i].key;
+    uint8_t r = (uint8_t)((k >> 10) & 31);
+    uint8_t g = (uint8_t)((k >> 5) & 31);
+    uint8_t b = (uint8_t)(k & 31);
+    if (r < bx->r0) bx->r0 = r;
+    if (r > bx->r1) bx->r1 = r;
+    if (g < bx->g0) bx->g0 = g;
+    if (g > bx->g1) bx->g1 = g;
+    if (b < bx->b0) bx->b0 = b;
+    if (b > bx->b1) bx->b1 = b;
+    bx->pop += entries[i].cnt;
+  }
+}
+
+static int gifBuildPalette(const uint8_t *rgb, int nPixels, const uint8_t *mask, uint8_t pal[256 * 3],
+                           uint8_t lut[32768]) {
+  static const int MAX_COLORS = 255;
+  uint32_t *hist = (uint32_t *)calloc(32768, sizeof(uint32_t));
+  if (!hist) {
+    memset(pal, 0, 256 * 3);
+    memset(lut, 0, 32768);
+    return 1;
+  }
+  for (int i = 0; i < nPixels; i++) {
+    if (mask && !mask[i])
+      continue;
+    uint32_t r = rgb[i * 3 + 0] >> 3;
+    uint32_t g = rgb[i * 3 + 1] >> 3;
+    uint32_t b = rgb[i * 3 + 2] >> 3;
+    hist[(r << 10) | (g << 5) | b]++;
+  }
+  size_t nEntries = 0;
+  for (uint32_t k = 0; k < 32768; k++)
+    if (hist[k])
+      nEntries++;
+  memset(pal, 0, 256 * 3);
+  if (nEntries == 0) {
+    free(hist);
+    memset(lut, 0, 32768);
+    return 1;
+  }
+  PSGifHistEntry *entries = (PSGifHistEntry *)malloc(nEntries * sizeof(PSGifHistEntry));
+  size_t ei = 0;
+  for (uint32_t k = 0; k < 32768; k++)
+    if (hist[k])
+      entries[ei++] = (PSGifHistEntry){(uint16_t)k, hist[k]};
+  free(hist);
+
+  PSGifBox boxes[255];
+  int nBoxes = 1;
+  boxes[0] = (PSGifBox){0, nEntries, 0, 31, 0, 31, 0, 31, 0};
+  gifFitBox(&boxes[0], entries);
+
+  while (nBoxes < MAX_COLORS) {
+    int best = -1;
+    uint64_t bestScore = 0;
+    for (int i = 0; i < nBoxes; i++) {
+      if (boxes[i].hi - boxes[i].lo < 2)
+        continue;
+      int dr = boxes[i].r1 - boxes[i].r0;
+      int dg = boxes[i].g1 - boxes[i].g0;
+      int db = boxes[i].b1 - boxes[i].b0;
+      int span = dr > dg ? (dr > db ? dr : db) : (dg > db ? dg : db);
+      if (span == 0)
+        continue;
+      uint64_t score = (uint64_t)span * boxes[i].pop;
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    if (best < 0)
+      break;
+    PSGifBox bx = boxes[best];
+    int dr = bx.r1 - bx.r0, dg = bx.g1 - bx.g0, db = bx.b1 - bx.b0;
+    int shift = (dg >= dr && dg >= db) ? 5 : (dr >= db ? 10 : 0);
+    qsort_b(entries + bx.lo, bx.hi - bx.lo, sizeof(PSGifHistEntry), ^int(const void *pa, const void *pb) {
+      int va = (((const PSGifHistEntry *)pa)->key >> shift) & 31;
+      int vb = (((const PSGifHistEntry *)pb)->key >> shift) & 31;
+      return va - vb;
+    });
+    uint64_t half = bx.pop / 2, acc = 0;
+    size_t mid = bx.lo + 1;
+    for (size_t i = bx.lo; i + 1 < bx.hi; i++) {
+      acc += entries[i].cnt;
+      mid = i + 1;
+      if (acc >= half)
+        break;
+    }
+    PSGifBox b1 = {bx.lo, mid, 0, 0, 0, 0, 0, 0, 0};
+    PSGifBox b2 = {mid, bx.hi, 0, 0, 0, 0, 0, 0, 0};
+    gifFitBox(&b1, entries);
+    gifFitBox(&b2, entries);
+    boxes[best] = b1;
+    boxes[nBoxes++] = b2;
+  }
+
+  for (int i = 0; i < nBoxes; i++) {
+    uint64_t sr = 0, sg = 0, sb = 0, cnt = 0;
+    for (size_t j = boxes[i].lo; j < boxes[i].hi; j++) {
+      uint16_t k = entries[j].key;
+      uint64_t c = entries[j].cnt;
+      sr += (((k >> 10) & 31) * 255 / 31) * c;
+      sg += (((k >> 5) & 31) * 255 / 31) * c;
+      sb += ((k & 31) * 255 / 31) * c;
+      cnt += c;
+    }
+    pal[i * 3 + 0] = (uint8_t)(cnt ? sr / cnt : 0);
+    pal[i * 3 + 1] = (uint8_t)(cnt ? sg / cnt : 0);
+    pal[i * 3 + 2] = (uint8_t)(cnt ? sb / cnt : 0);
+  }
+  memset(lut, 0xFF, 32768);
+  for (int i = 0; i < nBoxes; i++)
+    for (size_t j = boxes[i].lo; j < boxes[i].hi; j++)
+      lut[entries[j].key] = (uint8_t)i;
+  free(entries);
+  return nBoxes;
+}
+
+static BOOL gifOpen(PSGifWriter *g, NSString *path, int w, int h) {
+  memset(g, 0, sizeof *g);
+  g->fp = fopen(path.fileSystemRepresentation, "wb");
+  if (!g->fp)
+    return NO;
+  g->w = w;
+  g->h = h;
+  size_t n = (size_t)w * h;
+  g->prevRgb = (uint8_t *)calloc(n * 3, 1);
+  g->prevIdx = (uint8_t *)malloc(n);
+  if (!g->prevRgb || !g->prevIdx) {
+    fclose(g->fp);
+    g->fp = NULL;
+    free(g->prevRgb);
+    free(g->prevIdx);
+    g->prevRgb = g->prevIdx = NULL;
+    return NO;
+  }
+  memset(g->prevIdx, 255, n);
+  return YES;
+}
+
+static void gifFree(PSGifWriter *g) {
+  if (g->fp) {
+    fclose(g->fp);
+    g->fp = NULL;
+  }
+  free(g->prevRgb);
+  free(g->prevIdx);
+  free(g->pendIdx);
+  free(g->crop);
+  free(g->mask);
+  g->prevRgb = g->prevIdx = g->pendIdx = g->crop = g->mask = NULL;
+}
+
+static void gifWriteU16(FILE *fp, uint16_t v) {
+  uint8_t b[2] = {(uint8_t)(v & 0xFF), (uint8_t)((v >> 8) & 0xFF)};
+  fwrite(b, 1, 2, fp);
+}
+
+static void gifWriteHeader(PSGifWriter *g) {
+  fwrite("GIF89a", 1, 6, g->fp);
+  gifWriteU16(g->fp, (uint16_t)g->w);
+  gifWriteU16(g->fp, (uint16_t)g->h);
+  fputc(0xF7, g->fp);
+  fputc(0, g->fp);
+  fputc(0, g->fp);
+  fwrite(g->globalPal, 1, 256 * 3, g->fp);
+  static const uint8_t netscape[] = {0x21, 0xFF, 0x0B, 'N', 'E', 'T', 'S', 'C', 'A', 'P', 'E', '2', '.', '0',
+                                     0x03, 0x01, 0x00, 0x00, 0x00};
+  fwrite(netscape, 1, sizeof netscape, g->fp);
+  g->headerWritten = YES;
+}
+
+typedef struct {
+  FILE *fp;
+  uint8_t sub[256];
+  int subLen;
+  uint32_t bitBuf;
+  int bitCnt;
+} PSGifBits;
+
+static inline void gifFlushSub(PSGifBits *b) {
+  if (b->subLen > 0) {
+    fputc(b->subLen, b->fp);
+    fwrite(b->sub, 1, (size_t)b->subLen, b->fp);
+    b->subLen = 0;
+  }
+}
+
+static inline void gifEmitCode(PSGifBits *b, int code, int bits) {
+  b->bitBuf |= ((uint32_t)code << b->bitCnt);
+  b->bitCnt += bits;
+  while (b->bitCnt >= 8) {
+    b->sub[b->subLen++] = (uint8_t)(b->bitBuf & 0xFF);
+    b->bitBuf >>= 8;
+    b->bitCnt -= 8;
+    if (b->subLen == 255)
+      gifFlushSub(b);
+  }
+}
+
+static void gifWriteLzw(PSGifWriter *g, const uint8_t *indices, size_t count) {
+  const int minCodeSize = 8, clearCode = 256, eoiCode = 257;
+  fputc(minCodeSize, g->fp);
+  for (int i = 0; i < 8192; i++)
+    g->htKey[i] = -1;
+  PSGifBits bits = {g->fp, {0}, 0, 0, 0};
+  int nextCode = eoiCode + 1, codeBits = minCodeSize + 1;
+  gifEmitCode(&bits, clearCode, codeBits);
+  if (count > 0) {
+    int prefix = indices[0];
+    for (size_t i = 1; i < count; i++) {
+      int ch = indices[i];
+      int32_t key = (prefix << 8) | ch;
+      int slot = (int)(((uint32_t)key * 2654435761u) >> 19) & 8191;
+      int found = -1;
+      while (g->htKey[slot] != -1) {
+        if (g->htKey[slot] == key) {
+          found = g->htVal[slot];
+          break;
+        }
+        slot = (slot + 1) & 8191;
+      }
+      if (found >= 0) {
+        prefix = found;
+      } else {
+        gifEmitCode(&bits, prefix, codeBits);
+        if (nextCode < 4096) {
+          g->htKey[slot] = key;
+          g->htVal[slot] = (uint16_t)nextCode++;
+          if (nextCode > (1 << codeBits) && codeBits < 12)
+            codeBits++;
+        } else {
+          gifEmitCode(&bits, clearCode, codeBits);
+          for (int j = 0; j < 8192; j++)
+            g->htKey[j] = -1;
+          nextCode = eoiCode + 1;
+          codeBits = minCodeSize + 1;
+        }
+        prefix = ch;
+      }
+    }
+    gifEmitCode(&bits, prefix, codeBits);
+  }
+  gifEmitCode(&bits, eoiCode, codeBits);
+  if (bits.bitCnt > 0) {
+    bits.sub[bits.subLen++] = (uint8_t)(bits.bitBuf & 0xFF);
+    if (bits.subLen == 255)
+      gifFlushSub(&bits);
+  }
+  gifFlushSub(&bits);
+  fputc(0, g->fp);
+}
+
+static void gifFlushPending(PSGifWriter *g) {
+  if (!g->hasPending || !g->fp)
+    return;
+  if (!g->headerWritten)
+    gifWriteHeader(g);
+  uint16_t delay = (uint16_t)(g->pendDelayCs < 2 ? 2 : (g->pendDelayCs > 65535 ? 65535 : g->pendDelayCs));
+  uint8_t gce[8] = {0x21, 0xF9, 0x04, 0x05, (uint8_t)(delay & 0xFF), (uint8_t)((delay >> 8) & 0xFF), 255, 0x00};
+  fwrite(gce, 1, sizeof gce, g->fp);
+  fputc(0x2C, g->fp);
+  gifWriteU16(g->fp, (uint16_t)g->pendX);
+  gifWriteU16(g->fp, (uint16_t)g->pendY);
+  gifWriteU16(g->fp, (uint16_t)g->pendW);
+  gifWriteU16(g->fp, (uint16_t)g->pendH);
+  fputc(g->pendLocalPal ? 0x87 : 0x00, g->fp);
+  if (g->pendLocalPal)
+    fwrite(g->pendPal, 1, 256 * 3, g->fp);
+  gifWriteLzw(g, g->pendIdx, g->pendIdxLen);
+  g->hasPending = NO;
+  g->framesWritten++;
+}
+
+static void gifExtendPendingDelay(PSGifWriter *g, int extraCs) {
+  if (g->hasPending && extraCs > 0) {
+    int total = g->pendDelayCs + extraCs;
+    g->pendDelayCs = total > 65535 ? 65535 : total;
+  }
+}
+
+static BOOL gifReservePend(PSGifWriter *g, size_t n) {
+  if (n > g->pendIdxCap) {
+    uint8_t *p = (uint8_t *)realloc(g->pendIdx, n);
+    if (!p)
+      return NO;
+    g->pendIdx = p;
+    g->pendIdxCap = n;
+  }
+  g->pendIdxLen = n;
+  return YES;
+}
+
+static void gifAddFrame(PSGifWriter *g, const uint8_t *rgb, int delayCs) {
+  if (!g->fp)
+    return;
+  static const int DIFF_THRESH = 18;
+  int w = g->w, h = g->h, n = w * h;
+  if (!g->headerWritten && !g->hasPending) {
+    g->globalNcols = gifBuildPalette(rgb, n, NULL, g->globalPal, g->globalLut);
+    g->pendX = 0;
+    g->pendY = 0;
+    g->pendW = w;
+    g->pendH = h;
+    g->pendDelayCs = delayCs;
+    g->pendLocalPal = NO;
+    if (!gifReservePend(g, (size_t)n))
+      return;
+    memcpy(g->prevRgb, rgb, (size_t)n * 3);
+    for (int i = 0; i < n; i++) {
+      uint32_t k = (((uint32_t)rgb[i * 3 + 0] >> 3) << 10) | (((uint32_t)rgb[i * 3 + 1] >> 3) << 5) |
+                   ((uint32_t)rgb[i * 3 + 2] >> 3);
+      uint8_t idx = gifLutOf(g->globalLut, g->globalPal, g->globalNcols, k);
+      g->pendIdx[i] = idx;
+      g->prevIdx[i] = idx;
+    }
+    g->hasPending = YES;
+    return;
+  }
+  int x0 = w, y0 = h, x1 = -1, y1 = -1, changed = 0;
+  uint64_t errSum = 0;
+  for (int y = 0; y < h; y++) {
+    const uint8_t *cur = rgb + (size_t)y * w * 3;
+    const uint8_t *prv = g->prevRgb + (size_t)y * w * 3;
+    const uint8_t *pidx = g->prevIdx + (size_t)y * w;
+    for (int x = 0; x < w; x++) {
+      int dr = abs((int)cur[x * 3 + 0] - (int)prv[x * 3 + 0]);
+      int dg = abs((int)cur[x * 3 + 1] - (int)prv[x * 3 + 1]);
+      int db = abs((int)cur[x * 3 + 2] - (int)prv[x * 3 + 2]);
+      if (dr + dg + db <= DIFF_THRESH)
+        continue;
+      uint32_t k = (((uint32_t)cur[x * 3 + 0] >> 3) << 10) | (((uint32_t)cur[x * 3 + 1] >> 3) << 5) |
+                   ((uint32_t)cur[x * 3 + 2] >> 3);
+      uint8_t gidx = gifLutOf(g->globalLut, g->globalPal, g->globalNcols, k);
+      int gerr = abs((int)cur[x * 3 + 0] - (int)g->globalPal[gidx * 3 + 0]) +
+                 abs((int)cur[x * 3 + 1] - (int)g->globalPal[gidx * 3 + 1]) +
+                 abs((int)cur[x * 3 + 2] - (int)g->globalPal[gidx * 3 + 2]);
+      if (pidx[x] == gidx && gerr <= 24)
+        continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      changed++;
+      errSum += (uint64_t)gerr;
+    }
+  }
+  if (changed == 0 && g->hasPending && g->pendDelayCs + delayCs <= 500) {
+    g->pendDelayCs += delayCs;
+    return;
+  }
+  gifFlushPending(g);
+  if (changed == 0) {
+    g->pendX = 0;
+    g->pendY = 0;
+    g->pendW = 1;
+    g->pendH = 1;
+    g->pendDelayCs = delayCs;
+    g->pendLocalPal = NO;
+    if (!gifReservePend(g, 1))
+      return;
+    g->pendIdx[0] = 255;
+    g->hasPending = YES;
+    return;
+  }
+  int dw = x1 - x0 + 1, dh = y1 - y0 + 1;
+  BOOL useLocal = (changed > 256 && (errSum / (uint64_t)changed) > 26);
+  uint8_t localLut[32768];
+  uint8_t *lut = g->globalLut;
+  const uint8_t *lutPal = g->globalPal;
+  int lutN = g->globalNcols;
+  if (useLocal) {
+    size_t cropNeed = (size_t)dw * dh * 3, maskNeed = (size_t)dw * dh;
+    if (cropNeed > g->cropCap) {
+      g->crop = (uint8_t *)realloc(g->crop, cropNeed);
+      g->cropCap = cropNeed;
+    }
+    if (maskNeed > g->maskCap) {
+      g->mask = (uint8_t *)realloc(g->mask, maskNeed);
+      g->maskCap = maskNeed;
+    }
+    if (g->crop && g->mask) {
+      for (int y = 0; y < dh; y++) {
+        const uint8_t *cur = rgb + ((size_t)(y0 + y) * w + x0) * 3;
+        const uint8_t *prv = g->prevRgb + ((size_t)(y0 + y) * w + x0) * 3;
+        memcpy(g->crop + (size_t)y * dw * 3, cur, (size_t)dw * 3);
+        for (int x = 0; x < dw; x++) {
+          int d = abs((int)cur[x * 3 + 0] - (int)prv[x * 3 + 0]) + abs((int)cur[x * 3 + 1] - (int)prv[x * 3 + 1]) +
+                  abs((int)cur[x * 3 + 2] - (int)prv[x * 3 + 2]);
+          g->mask[(size_t)y * dw + x] = d > DIFF_THRESH ? 1 : 0;
+        }
+      }
+      lutN = gifBuildPalette(g->crop, dw * dh, g->mask, g->pendPal, localLut);
+      lut = localLut;
+      lutPal = g->pendPal;
+    } else {
+      useLocal = NO;
+    }
+  }
+  g->pendX = x0;
+  g->pendY = y0;
+  g->pendW = dw;
+  g->pendH = dh;
+  g->pendDelayCs = delayCs;
+  g->pendLocalPal = useLocal;
+  if (!gifReservePend(g, (size_t)dw * dh))
+    return;
+  for (int y = 0; y < dh; y++) {
+    const uint8_t *cur = rgb + ((size_t)(y0 + y) * w + x0) * 3;
+    uint8_t *prv = g->prevRgb + ((size_t)(y0 + y) * w + x0) * 3;
+    uint8_t *pidx = g->prevIdx + ((size_t)(y0 + y) * w + x0);
+    for (int x = 0; x < dw; x++) {
+      int d = abs((int)cur[x * 3 + 0] - (int)prv[x * 3 + 0]) + abs((int)cur[x * 3 + 1] - (int)prv[x * 3 + 1]) +
+              abs((int)cur[x * 3 + 2] - (int)prv[x * 3 + 2]);
+      if (d <= DIFF_THRESH) {
+        g->pendIdx[(size_t)y * dw + x] = 255;
+      } else {
+        uint32_t k = (((uint32_t)cur[x * 3 + 0] >> 3) << 10) | (((uint32_t)cur[x * 3 + 1] >> 3) << 5) |
+                     ((uint32_t)cur[x * 3 + 2] >> 3);
+        uint8_t idx = gifLutOf(lut, lutPal, lutN, k);
+        if (!useLocal && pidx[x] == idx) {
+          int gerr = abs((int)cur[x * 3 + 0] - (int)g->globalPal[idx * 3 + 0]) +
+                     abs((int)cur[x * 3 + 1] - (int)g->globalPal[idx * 3 + 1]) +
+                     abs((int)cur[x * 3 + 2] - (int)g->globalPal[idx * 3 + 2]);
+          if (gerr <= 24) {
+            g->pendIdx[(size_t)y * dw + x] = 255;
+            continue;
+          }
+        }
+        g->pendIdx[(size_t)y * dw + x] = idx;
+        prv[x * 3 + 0] = cur[x * 3 + 0];
+        prv[x * 3 + 1] = cur[x * 3 + 1];
+        prv[x * 3 + 2] = cur[x * 3 + 2];
+        pidx[x] = useLocal ? 255 : idx;
+      }
+    }
+  }
+  g->hasPending = YES;
+}
+
+static uint64_t gifFinish(PSGifWriter *g) {
+  if (!g->fp)
+    return 0;
+  gifFlushPending(g);
+  if (g->headerWritten)
+    fputc(0x3B, g->fp);
+  fflush(g->fp);
+  off_t sz = ftello(g->fp);
+  fclose(g->fp);
+  g->fp = NULL;
+  return sz > 0 ? (uint64_t)sz : 0;
+}
+
+// An animated GIF of the recording, `gfps` pictures a second at ow × oh, streaming directly with Median-Cut + dirty-rect
+// delta + static-frame merge (1:1 aligned with Windows record_win.cpp).
 static void exportGif(int gen, NSString *src, NSString *dst, int ow, int oh, int gfps, int64_t totalMs, uint64_t orig) {
   AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:src] options:nil];
   NSError *err = nil;
@@ -1489,101 +2111,118 @@ static void exportGif(int gen, NSString *src, NSString *dst, int ow, int oh, int
                           withIntermediateDirectories:YES
                                            attributes:nil
                                                 error:nil];
-  size_t expect = (size_t)MAX(1, totalMs / 1000.0 * gfps + 2);
-  CGImageDestinationRef out = CGImageDestinationCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:dst],
-                                                              (__bridge CFStringRef)UTTypeGIF.identifier, expect, NULL);
-  if (!out) {
+  PSGifWriter gif;
+  if (!gifOpen(&gif, dst, ow, oh)) {
     [reader cancelReading];
     recPost(@"export-error", totalMs, 0, 0, orig, 0, 0, @"GIF", dst, @"无法创建 GIF 文件");
     return;
   }
-  CGImageDestinationSetProperties(out, (__bridge CFDictionaryRef) @{
-    (id)kCGImagePropertyGIFDictionary : @{(id)kCGImagePropertyGIFLoopCount : @0}
-  });
-  CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-  size_t stride = (size_t)ow * 4;
-  NSMutableData *cur = [NSMutableData dataWithLength:stride * oh];
-  NSData *pending = nil;  // the picture waiting to be put in: its time grows while the next are the same
-  long pendingAt = 0;  // (its time, in hundredths of a second: each picture's showing rounded from its exact times)
-  double step = 1.0 / gfps, next = 0, total = MAX(0.001, totalMs / 1000.0);
-  int lastPct = -1, steps = 0;
+  uint8_t *rgbFrame = (uint8_t *)malloc((size_t)ow * oh * 3);
+  if (!rgbFrame) {
+    gifFree(&gif);
+    [reader cancelReading];
+    [NSFileManager.defaultManager removeItemAtPath:dst error:nil];
+    recPost(@"export-error", totalMs, 0, 0, orig, 0, 0, @"GIF", dst, @"生成 GIF 失败");
+    return;
+  }
+  double step = 1.0 / gfps;
+  int stepCs = MAX(2, (100 + gfps / 2) / gfps);
+  double nextWant = 0.0, prevTs = -1.0, total = MAX(0.001, totalMs / 1000.0);
+  int lastPct = -1;
   BOOL cancelled = NO;
-  void (^put)(NSData *, int) = ^(NSData *px, int delayCs) {
-    CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)px);
-    CGImageRef img = CGImageCreate(ow, oh, 8, 32, stride, space,
-                                   kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaNoneSkipFirst, dp, NULL,
-                                   NO, kCGRenderingIntentDefault);
-    CGDataProviderRelease(dp);
-    double d = MAX(2, delayCs) / 100.0;
-    CGImageDestinationAddImage(out, img, (__bridge CFDictionaryRef) @{
-      (id)kCGImagePropertyGIFDictionary :
-          @{(id)kCGImagePropertyGIFDelayTime : @(d), (id)kCGImagePropertyGIFUnclampedDelayTime : @(d)}
-    });
-    CGImageRelease(img);
-  };
   CMSampleBufferRef sb;
   while ((sb = [vout copyNextSampleBuffer])) {
-    @autoreleasepool {
-      if (!expLive(gen)) {
-        CFRelease(sb);
-        cancelled = YES;
-        break;
-      }
-      double t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sb));
-      CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sb);
-      // (the frame shown at each of the GIF's times: the last one at or before it)
-      while (pb && t + 1e-6 >= next && next < total) {
-        CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
-        CGContextRef c = CGBitmapContextCreate(cur.mutableBytes, ow, oh, 8, stride, space,
-                                               kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaNoneSkipFirst);
-        CGDataProviderRef dp =
-            CGDataProviderCreateWithData(NULL, CVPixelBufferGetBaseAddress(pb),
-                                         CVPixelBufferGetBytesPerRow(pb) * CVPixelBufferGetHeight(pb), NULL);
-        CGImageRef img = CGImageCreate(CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb), 8, 32,
-                                       CVPixelBufferGetBytesPerRow(pb), space,
-                                       kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaNoneSkipFirst, dp,
-                                       NULL, NO, kCGRenderingIntentDefault);
-        CGContextSetInterpolationQuality(c, kCGInterpolationHigh);
-        CGContextDrawImage(c, CGRectMake(0, 0, ow, oh), img);
-        CGImageRelease(img);
-        CGDataProviderRelease(dp);
-        CGContextRelease(c);
-        CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
-        if (!pending || ![pending isEqualToData:cur]) {
-          long at = lround(next * 100);
-          if (pending)
-            put(pending, (int)(at - pendingAt));
-          pending = [cur copy];
-          pendingAt = at;
-        }
-        steps++;
-        next = steps * step;
-      }
+    if (!expLive(gen)) {
       CFRelease(sb);
-      int pct = (int)MIN(99, t / total * 100);
-      if (pct != lastPct) {
-        lastPct = pct;
-        recPost(@"exporting", totalMs, 0, 0, orig, pct, 0, @"GIF", dst, nil);
+      cancelled = YES;
+      break;
+    }
+    double t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sb));
+    if (t + 1e-6 < nextWant) {
+      CFRelease(sb);
+      continue;
+    }
+    while (nextWant <= t + 1e-6)
+      nextWant += step;
+    CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sb);
+    if (pb) {
+      CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+      const uint8_t *scan0 = (const uint8_t *)CVPixelBufferGetBaseAddress(pb);
+      int sw = (int)CVPixelBufferGetWidth(pb), sh = (int)CVPixelBufferGetHeight(pb);
+      size_t pitch = CVPixelBufferGetBytesPerRow(pb);
+      if (ow == sw && oh == sh) {
+        for (int y = 0; y < oh; y++) {
+          const uint8_t *s = scan0 + (size_t)y * pitch;
+          uint8_t *d = rgbFrame + (size_t)y * ow * 3;
+          for (int x = 0; x < ow; x++) {
+            d[x * 3 + 0] = s[x * 4 + 2];
+            d[x * 3 + 1] = s[x * 4 + 1];
+            d[x * 3 + 2] = s[x * 4 + 0];
+          }
+        }
+      } else {
+        for (int y = 0; y < oh; y++) {
+          int y0 = y * sh / oh, y1 = MAX(y0 + 1, (y + 1) * sh / oh);
+          if (y1 > sh)
+            y1 = sh;
+          uint8_t *d = rgbFrame + (size_t)y * ow * 3;
+          for (int x = 0; x < ow; x++) {
+            int x0 = x * sw / ow, x1 = MAX(x0 + 1, (x + 1) * sw / ow);
+            if (x1 > sw)
+              x1 = sw;
+            uint32_t sr = 0, sg = 0, sbv = 0, cnt = 0;
+            for (int yy = y0; yy < y1; yy++) {
+              const uint8_t *s = scan0 + (size_t)yy * pitch;
+              for (int xx = x0; xx < x1; xx++, cnt++) {
+                sr += s[xx * 4 + 2];
+                sg += s[xx * 4 + 1];
+                sbv += s[xx * 4 + 0];
+              }
+            }
+            d[x * 3 + 0] = (uint8_t)(sr / cnt);
+            d[x * 3 + 1] = (uint8_t)(sg / cnt);
+            d[x * 3 + 2] = (uint8_t)(sbv / cnt);
+          }
+        }
       }
+      CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+      if (prevTs >= 0.0 && t > prevTs) {
+        int realCs = (int)lround((t - prevTs) * 100.0);
+        if (realCs > stepCs)
+          gifExtendPendingDelay(&gif, MIN(realCs - stepCs, 500));
+      }
+      prevTs = t;
+      gifAddFrame(&gif, rgbFrame, stepCs);
+    }
+    CFRelease(sb);
+    int pct = (int)MIN(98, t / total * 98.0);
+    if (pct - lastPct >= 5) {
+      lastPct = pct;
+      recPost(@"exporting", totalMs, 0, 0, orig, pct, 0, @"GIF", dst, nil);
     }
   }
   if (!cancelled && !expLive(gen))
     cancelled = YES;
-  BOOL ok = NO;
-  if (!cancelled) {
-    if (pending)
-      put(pending, (int)MAX(2, lround(total * 100) - pendingAt));
-    ok = reader.status != AVAssetReaderStatusFailed && pending && CGImageDestinationFinalize(out);
-  } else
-    [reader cancelReading];
-  CFRelease(out);
-  CGColorSpaceRelease(space);
+  uint64_t bytes = 0;
   if (cancelled) {
+    [reader cancelReading];
+    gifFree(&gif);
     [NSFileManager.defaultManager removeItemAtPath:dst error:nil];
+  } else {
+    if (prevTs >= 0.0 && total > prevTs) {
+      int tailCs = (int)lround((total - prevTs) * 100.0);
+      if (tailCs > stepCs)
+        gifExtendPendingDelay(&gif, MIN(tailCs - stepCs, 300));
+    }
+    if (reader.status != AVAssetReaderStatusFailed)
+      bytes = gifFinish(&gif);
+    gifFree(&gif);
+  }
+  free(rgbFrame);
+  if (cancelled) {
     recPost(@"export-cancelled", totalMs, 0, 0, orig, 0, 0, @"GIF", dst, nil);
     return;
   }
-  uint64_t bytes = ok ? fileSize(dst) : 0;
   if (!bytes) {
     [NSFileManager.defaultManager removeItemAtPath:dst error:nil];
     recPost(@"export-error", totalMs, 0, 0, orig, 0, 0, @"GIF", dst, @"生成 GIF 失败");
@@ -1594,7 +2233,14 @@ static void exportGif(int gen, NSString *src, NSString *dst, int ow, int oh, int
 }
 
 int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, int32_t max_side, int32_t gif_fps) {
-  if (atomic_load(&expRunning) || !masterPath)
+  if (!expGroup)
+    expGroup = dispatch_group_create();
+  if (atomic_load(&expRunning)) {
+    if (dispatch_group_wait(expGroup, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)) != 0 ||
+        atomic_load(&expRunning))
+      return 0;
+  }
+  if (!masterPath)
     return 0;
   NSString *dst = utf8(dest_path);
   if (!dst.length)
@@ -1610,6 +2256,7 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, i
   scaledDims(sw, sh, max_side, &ow, &oh);
   int gen = atomic_fetch_add(&expGen, 1) + 1;
   atomic_store(&expRunning, 1);
+  dispatch_group_enter(expGroup);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     @autoreleasepool {
       BOOL sameCodec = (fmt == 0) == [mcodec hasPrefix:@"HEVC"];
@@ -1631,6 +2278,7 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, i
         exportMp4(gen, src, dst, fmt, quality, ow, oh, fps, totalMs, orig);
     }
     atomic_store(&expRunning, 0);
+    dispatch_group_leave(expGroup);
   });
   return 1;
 }
@@ -1673,15 +2321,19 @@ void ps_rec_end(void) {
     [recorder finish:YES];
   NSString *p = masterPath;
   masterPath = nil;
+  masterCodec = nil;
   masterBytes = 0;
   masterPreview = nil;
+  recScreen = nil;
+  [excluded removeAllObjects];
   if (p) {
-    // (an export of it still reading lets go first: deleted once nothing exports)
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-      while (atomic_load(&expRunning))
-        usleep(20000);
+    if (expGroup && atomic_load(&expRunning)) {
+      dispatch_group_notify(expGroup, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [NSFileManager.defaultManager removeItemAtPath:p error:nil];
+      });
+    } else {
       [NSFileManager.defaultManager removeItemAtPath:p error:nil];
-    });
+    }
   }
 }
 
