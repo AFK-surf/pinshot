@@ -156,13 +156,13 @@ fn bar_place(n : @view.View) -> (Double, Double) {
       let h = bar_height +
         (if styling() { style_height + 4.0 } else { 0.0 }) +
         (if beauty_on.get() { style_height + 4.0 } else { 0.0 })
-      let x = clamp(rx1 - w, 4.0, sw - w - 4.0)
+      let x = clamp(rx1 - w, 8.0, sw - w - 8.0)
       let y = if ry1 + 8.0 + h <= sh - 4.0 {
         ry1 + 8.0
       } else if ry0 - 8.0 - h >= 4.0 {
         ry0 - 8.0 - h
       } else {
-        ry1 - h - 8.0
+        clamp(ry1 - h - 8.0, 8.0, sh - h - 8.0)
       }
       (x, y)
     }

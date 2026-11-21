@@ -494,9 +494,11 @@ fn size_label(stage : @view.View) -> Unit {
         let k = mon_scale.get()
         match shown_whole(l) {
           Some(r) => {
-            let x = r.x.to_double() / k
-            let y = r.y.to_double() / k
-            (x, if y >= 34.0 { y - 32.0 } else { y + 8.0 })
+            let (sw, sh) = mon_pt()
+            let x = clamp(r.x.to_double() / k, 8.0, dmax(8.0, sw - 160.0))
+            let ry = r.y.to_double() / k
+            let y = if ry >= 34.0 { ry - 32.0 } else { clamp(ry + 8.0, 8.0, dmax(8.0, sh - 32.0)) }
+            (x, y)
           }
           None => (0.0, 0.0)
         }
