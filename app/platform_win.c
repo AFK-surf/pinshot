@@ -116,13 +116,23 @@ void ps_wgc_trim(void);
 static HMONITOR cap_mon;
 
 static Shot cap;               // the picture being taken or taken
-static Shot cap_old[4];        // pictures let go, freed at the timer
+
+// A picture handed to mbui by its address (ps_capture_take) is freed once nothing needs it: the app has let it go and
+// no texture is being made of it. mbui tells as each of its decodes begins to read it and is through (the hook named
+// in MBRAWPTR, patches/mbui-pinshot.patch); `refs` counts those and the app's own hold, the last let go frees it
+// (on the tray window's thread: a decode ends on a pool thread). Shared with longshot_win.c's previews.
+typedef struct Held {
+  Shot s;
+  uint8_t *pixels;  // or pixels of malloc's (a long screenshot's preview)
+  volatile LONG refs;
+} Held;
+#define WM_PS_HELD_FREE (WM_APP + 47)
+static Held *cap_held;          // the picture taken's, once handed over
 static volatile LONG cap_busy;  // a taking under way (its thread fills cap)
 static int cap_ok;              // the last taking's outcome
 static int cap_x, cap_y, cap_w, cap_h, cap_dpi;
 static double cap_t0, cap_ms, cap_key_lag;  // when it was asked, how long the taking took, how long WM_HOTKEY waited
 static int keep_gpu_warm = 1;               // 1: keep driver pools warm between captures (Instant mode)
-static HWND tray_hwnd;
 static char *win_list;  // the windows on the monitor as it was taken (ps_windows)
 static size_t win_list_len;
 static void windows_listed(void);
@@ -155,6 +165,59 @@ static void shot_free(Shot *s) {
   if (s->dib) DeleteObject(s->dib);
   if (s->staging) ps_wgc_release(s->staging);
   memset(s, 0, sizeof *s);
+}
+
+static void held_free(Held *h) {
+  shot_free(&h->s);
+  free(h->pixels);
+  free(h);
+}
+
+static HWND tray_hwnd;
+// One hold of `h` let go: the last frees it, here on the tray window's thread, posted there from another.
+void ps_held_drop(Held *h, int on_ui_thread) {
+  if (!h || InterlockedDecrement(&h->refs) != 0) return;
+  if (on_ui_thread || !tray_hwnd || !PostMessageW(tray_hwnd, WM_PS_HELD_FREE, 0, (LPARAM)h)) held_free(h);
+}
+
+// mbui's hook (op 1: a decode begins to read the pixels, on the thread that asks; 0: it is through, on its own)
+static void held_hook(void *ctx, int op) {
+  Held *h = (Held *)ctx;
+  if (op) InterlockedIncrement(&h->refs);
+  else ps_held_drop(h, 0);
+}
+
+// A hold of the app's of new pixels of malloc's (longshot_win.c), and MBRAWPTR naming them with the hook: 44 bytes.
+Held *ps_held_new(uint8_t *pixels) {
+  Held *h = (Held *)calloc(1, sizeof *h);
+  if (!h) return NULL;
+  h->pixels = pixels;
+  h->refs = 1;
+  return h;
+}
+
+void ps_held_name(Held *h, const uint8_t *at, int32_t w, int32_t hh, int32_t pitch, uint8_t out[44]) {
+  uint64_t a = (uint64_t)(uintptr_t)at, fn = (uint64_t)(uintptr_t)held_hook, ctx = (uint64_t)(uintptr_t)h;
+  memcpy(out, "MBRAWPTR", 8);
+  memcpy(out + 8, &a, 8);
+  memcpy(out + 16, &w, 4);
+  memcpy(out + 20, &hh, 4);
+  memcpy(out + 24, &pitch, 4);
+  memcpy(out + 28, &fn, 8);
+  memcpy(out + 36, &ctx, 8);
+}
+
+// The picture taken let go by the app (or replaced): freed now, or as the last decode reading it is through.
+static void cap_drop(void) {
+  if (cap_held) {
+    cap_held->s = cap;
+    memset(&cap, 0, sizeof cap);
+    Held *h = cap_held;
+    cap_held = NULL;
+    ps_held_drop(h, 1);
+  } else {
+    shot_free(&cap);
+  }
 }
 
 static int monitor_under_pointer(void) {
@@ -203,7 +266,7 @@ static int cap_begin(void) {
   cap_t0 = ps_ms();
   if (!monitor_under_pointer()) return 0;
   // (one not taken by the app, or kept: gone)
-  shot_free(&cap);
+  cap_drop();
   windows_listed();
   cap_ok = 0;
   // (the system's capture kept on: the monitor's last frame, there already; GDI's where it has had none yet)
@@ -295,35 +358,23 @@ moonbit_bytes_t ps_capture_info(void) {
 }
 
 // Where the picture taken is, as mbui is handed pixels kept elsewhere ("MBRAWPTR", their address, width, height, row
-// pitch): empty where there is none, or it is still being taken. Kept here till ps_capture_release.
+// pitch, and the hook told as a decode begins and ends to read them): empty where there is none, or it is still being
+// taken. Kept here till ps_capture_release and the last decode of it.
 moonbit_bytes_t ps_capture_take(void) {
   if (!cap.bits || cap_busy || !cap_ok) return moonbit_make_bytes(0, 0);
-  uint8_t d[28];
-  uint64_t at = (uint64_t)(uintptr_t)cap.bits;
-  int32_t w = cap.w, h = cap.h, pitch = cap.pitch;
-  memcpy(d, "MBRAWPTR", 8);
-  memcpy(d + 8, &at, 8);
-  memcpy(d + 16, &w, 4);
-  memcpy(d + 20, &h, 4);
-  memcpy(d + 24, &pitch, 4);
+  if (!cap_held) cap_held = ps_held_new(NULL);
+  if (!cap_held) return moonbit_make_bytes(0, 0);
+  uint8_t d[44];
+  ps_held_name(cap_held, cap.bits, cap.w, cap.h, cap.pitch, d);
   return ps_bytes(d, sizeof d);
 }
 
-// The picture taken let go: freed a moment later (what decoded it is done by then).
+// The picture taken let go: freed now, or as the last decode reading it is through.
 void ps_capture_release(void) {
   if ((!cap.dib && !cap.staging) || cap_busy) return;
-  for (int i = 0; i < 4; i++)
-    if (!cap_old[i].dib && !cap_old[i].staging) {
-      cap_old[i] = cap;
-      memset(&cap, 0, sizeof cap);
-      if (tray_hwnd) SetTimer(tray_hwnd, PS_FREE_TIMER, 1500, NULL);
-      return;
-    }
-  shot_free(&cap);
-}
-
-static void cap_old_free(void) {
-  for (int i = 0; i < 4; i++) shot_free(&cap_old[i]);
+  cap_drop();
+  // (the idle trim's clock begun a moment later, as before)
+  if (tray_hwnd) SetTimer(tray_hwnd, PS_FREE_TIMER, 1500, NULL);
 }
 
 // The colour of the pixel at (x, y) of the picture taken: 0xRRGGBB, -1 where there is none.
@@ -669,13 +720,15 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       }
       if (wp == PS_FREE_TIMER) {
         KillTimer(h, PS_FREE_TIMER);
-        cap_old_free();
         if (keep_gpu_warm && !capture_open && !cap_busy) SetTimer(h, PS_IDLE_TRIM_TIMER, idle_trim_ms(), NULL);
       }
       if (wp == PS_IDLE_TRIM_TIMER) {
         KillTimer(h, PS_IDLE_TRIM_TIMER);
         if (!capture_open && !cap_busy) gpu_trim_now(1);
       }
+      return 0;
+    case WM_PS_HELD_FREE:
+      held_free((Held *)lp);
       return 0;
     case WM_PS_TAKEN: {
       char json[128];
@@ -1552,13 +1605,20 @@ moonbit_bytes_t ps_clipboard_image(void) {
     BITMAPINFOHEADER *bi = (BITMAPINFOHEADER *)GlobalLock(h);
     if (bi) {
       size_t n = GlobalSize(h);
-      size_t colors = bi->biClrUsed ? bi->biClrUsed : (bi->biBitCount <= 8 ? (size_t)1 << bi->biBitCount : 0);
-      size_t masks = (bi->biCompression == BI_BITFIELDS && bi->biSize == sizeof(BITMAPINFOHEADER)) ? 12 : 0;
-      size_t off = sizeof(BmpFileHead) + bi->biSize + masks + colors * 4;
-      out = moonbit_make_bytes((int32_t)(sizeof(BmpFileHead) + n), 0);
-      BmpFileHead fh = {0x4D42, (uint32_t)(sizeof(BmpFileHead) + n), 0, (uint32_t)off};
-      memcpy(out, &fh, sizeof fh);
-      memcpy(out + sizeof fh, bi, n);
+      // (what another program put there read only as far as it is: a header that is one, a colour table that fits,
+      // a size a file can say)
+      if (n >= sizeof(BITMAPINFOHEADER) && bi->biSize >= sizeof(BITMAPINFOHEADER) && bi->biSize <= n &&
+          n <= 0x7FFFFFFFu - sizeof(BmpFileHead) && bi->biClrUsed <= 256 && bi->biBitCount <= 64) {
+        size_t colors = bi->biClrUsed ? bi->biClrUsed : (bi->biBitCount <= 8 ? (size_t)1 << bi->biBitCount : 0);
+        size_t masks = (bi->biCompression == BI_BITFIELDS && bi->biSize == sizeof(BITMAPINFOHEADER)) ? 12 : 0;
+        size_t off = sizeof(BmpFileHead) + bi->biSize + masks + colors * 4;
+        if (off <= sizeof(BmpFileHead) + n) {
+          out = moonbit_make_bytes((int32_t)(sizeof(BmpFileHead) + n), 0);
+          BmpFileHead fh = {0x4D42, (uint32_t)(sizeof(BmpFileHead) + n), 0, (uint32_t)off};
+          memcpy(out, &fh, sizeof fh);
+          memcpy(out + sizeof fh, bi, n);
+        }
+      }
       GlobalUnlock(h);
     }
   }

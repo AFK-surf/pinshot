@@ -53,8 +53,11 @@ static struct {
   int x, y, w, h;          // the part, in the screen's pixels
   HMONITOR mon;
   int mx, my, mw, mh;      // its monitor
-  uint8_t *out;            // the picture: rows of w * 4 bytes, MOST_ROWS reserved, committed as it grows
-  size_t committed;
+  uint8_t *base;           // MOST_ROWS * 2 rows of w * 4 bytes reserved, committed as the picture grows either way
+  int first;               // the base's row the picture's first is at: MOST_ROWS as it begins, less as rows come in
+                           // at its top (scrolled up: only the head's rows moved, never the whole picture)
+  int lo, hi;              // the base's rows committed: [lo, hi)
+  uint8_t *out;            // the picture: base + first rows
   int out_h;
   int foot_h;              // its last rows: the foot's still rows of the last picture laid in
   int head_h;              // its first rows: the head's still rows (as the first scroll finds them), kept at its top
@@ -68,7 +71,12 @@ static struct {
   uint8_t *now;            // the picture taken now
   uint64_t *now_hash;
   uint8_t *now_flat;
-  uint8_t *ref_prof, *now_prof;  // each row's grey, PROF_W columns of it averaged (loose_shift)
+  uint8_t *ref_prof, *now_prof;  // each row's grey, PROF_W columns of it averaged (loose_shift), made only when asked
+  int ref_prof_ok, now_prof_ok;  // (made for the pictures they are of now)
+  HDC gdi_dc;              // GDI's taking (the system's capture has no frame): its DC and section, kept while it runs
+  HBITMAP gdi_bmp;
+  HGDIOBJ gdi_old;
+  void *gdi_bits;
   int pictures;            // how many were laid in
   int lost;                // the last taken matched none (scrolled too far at once)
   int full;                // MOST_ROWS reached
@@ -121,17 +129,27 @@ static moonbit_bytes_t bytes_of(const void *p, size_t n) {
 
 // ---- the picture ----
 
+// The base's rows [lo, hi) committed (a thousand rows more each way as it grows, never past the reserve).
+static int out_room_at(int lo, int hi) {
+  if (lo < 0 || hi > MOST_ROWS * 2 || hi - lo > MOST_ROWS) return 0;
+  if (L.hi > L.lo && lo >= L.lo && hi <= L.hi) return 1;
+  int nlo = L.hi > L.lo && L.lo < lo ? L.lo : lo - 1024, nhi = L.hi > L.lo && L.hi > hi ? L.hi : hi + 1024;
+  if (nlo < 0) nlo = 0;
+  if (nhi > MOST_ROWS * 2) nhi = MOST_ROWS * 2;
+  size_t row = (size_t)L.w * 4;
+  if (!VirtualAlloc(L.base + (size_t)nlo * row, (size_t)(nhi - nlo) * row, MEM_COMMIT, PAGE_READWRITE)) return 0;
+  L.lo = nlo, L.hi = nhi;
+  return 1;
+}
+
 static int out_room(int rows) {
   if (rows > MOST_ROWS) return 0;
-  size_t need = (size_t)rows * L.w * 4;
-  if (need <= L.committed) return 1;
-  size_t step = (size_t)L.w * 4 * 1024;
-  size_t to = need + step;
-  size_t most = (size_t)MOST_ROWS * L.w * 4;
-  if (to > most) to = most;
-  if (!VirtualAlloc(L.out, to, MEM_COMMIT, PAGE_READWRITE)) return 0;
-  L.committed = to;
-  return 1;
+  return out_room_at(L.first, L.first + rows);
+}
+
+static void out_at(int first) {
+  L.first = first;
+  L.out = L.base + (size_t)first * L.w * 4;
 }
 
 // Rows [from, to) of the picture taken now added to the picture's end.
@@ -159,12 +177,16 @@ static void out_put_at(int at, int from, int to) {
     n = MOST_ROWS - L.out_h;
     L.full = 1;
   }
-  if (n <= 0 || !out_room(L.out_h + n)) {
+  if (n <= 0 || !out_room_at(L.first - n, L.first + L.out_h)) {
     L.full = 1;
     return;
   }
+  // (the picture begun n rows higher in the base: its first `at` rows (the head) moved up into them and the new rows
+  // put under them; the rest stays where it is, however tall)
   size_t row = (size_t)L.w * 4;
-  memmove(L.out + (size_t)(at + n) * row, L.out + (size_t)at * row, (size_t)(L.out_h - at) * row);
+  uint8_t *old = L.out;
+  out_at(L.first - n);
+  memmove(L.out, old, (size_t)at * row);
   memcpy(L.out + (size_t)at * row, L.now + (size_t)(to - n) * row, (size_t)n * row);
   L.out_h += n;
 }
@@ -208,6 +230,12 @@ static void profile_of(const uint8_t *img, uint8_t *prof) {
   }
 }
 
+// The profiles asked for made, of the pictures they are of now.
+static void profiles_made(void) {
+  if (!L.now_prof_ok) profile_of(L.now, L.now_prof), L.now_prof_ok = 1;
+  if (!L.ref_prof_ok) profile_of(L.ref, L.ref_prof), L.ref_prof_ok = 1;
+}
+
 static int prof_row_diff(const uint8_t *a, int ya, const uint8_t *b, int yb) {
   const uint8_t *p = a + (size_t)ya * PROF_W, *q = b + (size_t)yb * PROF_W;
   int d = 0;
@@ -246,12 +274,21 @@ static double prof_band(int d, int top, int band, int step, int up) {
 // profiles, the shift where they are least apart kept where they are near alike there and far more alike than not
 // moved at all (the user, 2026-11-20: 「长截图滚动时候……现在似乎静止在第一帧了」). Its foot's still rows in `bot`;
 // 0 none found.
-static int loose_shift(int up, int *bot, int *head) {
-  int most = L.h / FIXED_MOST, top = 0, foot = 0;
+// The rows at the part's top and foot that did not move, by the greys (a header, a bar held there).
+static void still_rows(int *head, int *foot) {
+  profiles_made();
+  int most = L.h / FIXED_MOST, top = 0, bot = 0;
   int still_most = (int)(PROF_W * 3);
   while (top < most && prof_row_diff(L.now_prof, top, L.ref_prof, top) <= still_most) top++;
-  while (foot < most && prof_row_diff(L.now_prof, L.h - 1 - foot, L.ref_prof, L.h - 1 - foot) <= still_most) foot++;
-  // (the still rows at its top and foot told whatever is found: a shift found exactly needs them too)
+  while (bot < most && prof_row_diff(L.now_prof, L.h - 1 - bot, L.ref_prof, L.h - 1 - bot) <= still_most) bot++;
+  *head = top;
+  *foot = bot;
+}
+
+static int loose_shift(int up, int *bot, int *head) {
+  int top = 0, foot = 0;
+  still_rows(&top, &foot);
+  // (the still rows at its top and foot told whatever is found)
   *bot = foot;
   *head = top;
   int band = L.h - top - foot;
@@ -287,31 +324,36 @@ static int take_now(void) {
     ps_wgc_release(t);
     return 1;
   }
-  // (GDI's: the system's capture has had no frame of this monitor yet, or is off)
+  // (GDI's: the system's capture has had no frame of this monitor yet, or is off; its DC and section made once)
   HDC screen = GetDC(NULL);
-  HDC mem = CreateCompatibleDC(screen);
-  BITMAPINFO bi;
-  memset(&bi, 0, sizeof bi);
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = L.w;
-  bi.bmiHeader.biHeight = -L.h;
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  void *dib_bits = NULL;
-  HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &dib_bits, NULL, 0);
-  int ok = 0;
-  if (dib && dib_bits) {
-    HGDIOBJ old = SelectObject(mem, dib);
-    ok = BitBlt(mem, 0, 0, L.w, L.h, screen, L.x, L.y, SRCCOPY) != 0;
-    SelectObject(mem, old);
-    GdiFlush();
-    if (ok) memcpy(L.now, dib_bits, (size_t)L.w * L.h * 4);
+  if (!L.gdi_dc) {
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = L.w;
+    bi.bmiHeader.biHeight = -L.h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    L.gdi_dc = CreateCompatibleDC(screen);
+    L.gdi_bmp = L.gdi_dc ? CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &L.gdi_bits, NULL, 0) : NULL;
+    if (L.gdi_bmp && L.gdi_bits) L.gdi_old = SelectObject(L.gdi_dc, L.gdi_bmp);
   }
-  if (dib) DeleteObject(dib);
-  DeleteDC(mem);
+  int ok = 0;
+  if (L.gdi_old) {
+    ok = BitBlt(L.gdi_dc, 0, 0, L.w, L.h, screen, L.x, L.y, SRCCOPY) != 0;
+    GdiFlush();
+    if (ok) memcpy(L.now, L.gdi_bits, (size_t)L.w * L.h * 4);
+  }
   ReleaseDC(NULL, screen);
   return ok;
+}
+
+static void gdi_let_go(void) {
+  if (L.gdi_dc && L.gdi_old) SelectObject(L.gdi_dc, L.gdi_old);
+  if (L.gdi_bmp) DeleteObject(L.gdi_bmp);
+  if (L.gdi_dc) DeleteDC(L.gdi_dc);
+  L.gdi_dc = NULL, L.gdi_bmp = NULL, L.gdi_old = NULL, L.gdi_bits = NULL;
 }
 
 // What strip s did from the last picture laid in to the one taken now.
@@ -420,7 +462,7 @@ static void tick(void) {
   if (GetTickCount64() - L.begun < SETTLE_MS) return;
   if (!take_now()) return;
   hash_rows(L.now, L.now_hash, L.now_flat);
-  profile_of(L.now, L.now_prof);
+  L.now_prof_ok = 0;
   if (!L.pictures) {
     dump("first", 0, 0, 0, 0);
     out_add(0, L.h);
@@ -460,13 +502,14 @@ static void tick(void) {
       tell();
       return;
     }
-    // (the still rows at its top and its foot, as the greys find them, where an exact shift found it)
-    if (!head) {
-      int b2 = 0;
-      loose_shift(up, &b2, &head);
-      if (!bot) bot = b2;
-    }
     if (L.pictures == 1) {
+      // (the still rows at its top and its foot, as the greys find them, where an exact shift found it: wanted only
+      // here, of the first scroll; each scroll after goes by what is kept of them)
+      if (!head) {
+        int b2 = 0;
+        still_rows(&head, &b2);
+        if (!bot) bot = b2;
+      }
       // (the first scroll: the head's and the foot's still rows of the first picture as it finds them, kept)
       L.head_h = head;
       L.foot_h = bot;
@@ -515,6 +558,8 @@ static void tick(void) {
   L.ref_flat = L.now_flat, L.now_flat = fp;
   uint8_t *pp = L.ref_prof;
   L.ref_prof = L.now_prof, L.now_prof = pp;
+  int pok = L.ref_prof_ok;
+  L.ref_prof_ok = L.now_prof_ok, L.now_prof_ok = pok;
   tell();
 }
 
@@ -582,10 +627,32 @@ static void let_go(void) {
   dump_log = NULL, dumped = 0, dumped_hash = 0;
   if (L.timer) KillTimer(NULL, L.timer);
   if (L.frame) DestroyWindow(L.frame);
-  if (L.out) VirtualFree(L.out, 0, MEM_RELEASE);
+  if (L.base) VirtualFree(L.base, 0, MEM_RELEASE);
   free(L.ref), free(L.now), free(L.ref_hash), free(L.now_hash), free(L.ref_flat), free(L.now_flat);
   free(L.ref_prof), free(L.now_prof);
+  gdi_let_go();
   memset(&L, 0, sizeof L);
+}
+
+// What matching the pictures takes (the last laid in, the one taken now, their rows' hashes and greys): made as the
+// taking begins (again), let go as it stops. 1 there.
+static int work_made(void) {
+  if (L.ref) return 1;
+  size_t frame = (size_t)L.w * L.h * 4, rows = (size_t)L.strips * L.h;
+  L.ref = (uint8_t *)malloc(frame), L.now = (uint8_t *)malloc(frame);
+  L.ref_hash = (uint64_t *)malloc(rows * sizeof(uint64_t)), L.now_hash = (uint64_t *)malloc(rows * sizeof(uint64_t));
+  L.ref_flat = (uint8_t *)malloc(rows), L.now_flat = (uint8_t *)malloc(rows);
+  L.ref_prof = (uint8_t *)malloc((size_t)L.h * PROF_W), L.now_prof = (uint8_t *)malloc((size_t)L.h * PROF_W);
+  L.ref_prof_ok = L.now_prof_ok = 0;
+  return L.ref && L.now && L.ref_hash && L.now_hash && L.ref_flat && L.now_flat && L.ref_prof && L.now_prof;
+}
+
+static void work_let_go(void) {
+  free(L.ref), free(L.now), free(L.ref_hash), free(L.now_hash), free(L.ref_flat), free(L.now_flat);
+  free(L.ref_prof), free(L.now_prof);
+  L.ref = L.now = L.ref_flat = L.now_flat = L.ref_prof = L.now_prof = NULL;
+  L.ref_hash = L.now_hash = NULL;
+  gdi_let_go();
 }
 
 // A long screenshot begun of the part x, y, w by h (the screen's pixels): its frame shown, the part taken every
@@ -607,19 +674,13 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
   L.mon = mon;
   L.mx = mi.rcMonitor.left, L.my = mi.rcMonitor.top;
   L.mw = mi.rcMonitor.right - mi.rcMonitor.left, L.mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-  size_t frame = (size_t)w * h * 4;
-  L.out = (uint8_t *)VirtualAlloc(NULL, (size_t)MOST_ROWS * w * 4, MEM_RESERVE, PAGE_READWRITE);
-  L.ref = (uint8_t *)malloc(frame), L.now = (uint8_t *)malloc(frame);
+  L.base = (uint8_t *)VirtualAlloc(NULL, (size_t)MOST_ROWS * 2 * w * 4, MEM_RESERVE, PAGE_READWRITE);
   L.strips = w / STRIP_LEAST < 2 ? 1 : (w / STRIP_LEAST > STRIPS_MOST ? STRIPS_MOST : w / STRIP_LEAST);
-  size_t rows = (size_t)L.strips * h;
-  L.ref_hash = (uint64_t *)malloc(rows * sizeof(uint64_t)), L.now_hash = (uint64_t *)malloc(rows * sizeof(uint64_t));
-  L.ref_flat = (uint8_t *)malloc(rows), L.now_flat = (uint8_t *)malloc(rows);
-  L.ref_prof = (uint8_t *)malloc((size_t)h * PROF_W), L.now_prof = (uint8_t *)malloc((size_t)h * PROF_W);
-  if (!L.out || !L.ref || !L.now || !L.ref_hash || !L.now_hash || !L.ref_flat || !L.now_flat || !L.ref_prof ||
-      !L.now_prof) {
+  if (!L.base || !work_made()) {
     let_go();
     return 0;
   }
+  out_at(MOST_ROWS);
   L.on = 1;
   L.told_h = -1;
   L.frame_color = RGB(0x2F, 0x9B, 0xFF);
@@ -647,7 +708,11 @@ void ps_long_pause(int32_t on) {
 
 // Discard stitched rows and restart fresh on the exact same capture frame.
 void ps_long_reset(void) {
-  if (!L.out) return;
+  if (!L.base || !work_made()) return;
+  // (what was committed for the picture given back: it begins again in the middle of the reserve)
+  if (L.hi > L.lo) VirtualFree(L.base + (size_t)L.lo * L.w * 4, (size_t)(L.hi - L.lo) * L.w * 4, MEM_DECOMMIT);
+  L.lo = L.hi = 0;
+  out_at(MOST_ROWS);
   L.out_h = 0, L.foot_h = 0, L.head_h = 0, L.at = 0;
   L.pictures = 0, L.lost = 0, L.full = 0, L.paused = 0, L.last_dir = 0, L.pending_top = 0;
   L.told_h = -1;
@@ -670,6 +735,8 @@ void ps_long_stop(void) {
   L.timer = 0;
   if (L.frame) DestroyWindow(L.frame);
   L.frame = NULL;
+  // (nothing more is matched: the last pictures, their hashes and greys let go; the picture itself kept)
+  work_let_go();
 }
 
 // Window `wid` of the app (the long screenshot's panel): its corners round, kept out of what is taken, should it stand
@@ -694,13 +761,19 @@ moonbit_bytes_t ps_long_info(void) {
   return bytes_of(s, (size_t)n);
 }
 
+// (platform_win.c: pixels handed to mbui by their address, freed as the last that reads them is through)
+typedef struct Held Held;
+Held *ps_held_new(uint8_t *pixels);
+void ps_held_name(Held *h, const uint8_t *at, int32_t w, int32_t hh, int32_t pitch, uint8_t out[44]);
+void ps_held_drop(Held *h, int on_ui_thread);
+
 #define PREVIEW_SLOTS 12
-static uint8_t *kept[PREVIEW_SLOTS];  // the previews handed to mbui, in turn (ps_long_preview)
+static Held *kept[PREVIEW_SLOTS];  // the app's holds of the previews handed to mbui, in turn (ps_long_preview)
 static int turn;
 
-// The previews' pixels let go (once mbui has forgotten each: it reads them by their address till then).
+// The previews let go by the app: each freed now, or once the decode reading it is through.
 void ps_long_preview_free(void) {
-  for (int i = 0; i < PREVIEW_SLOTS; i++) free(kept[i]), kept[i] = NULL;
+  for (int i = 0; i < PREVIEW_SLOTS; i++) ps_held_drop(kept[i], 1), kept[i] = NULL;
   turn = 0;
 }
 
@@ -722,10 +795,15 @@ moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) 
   if (ph < 1) ph = 1;
   if (ph > box_h) ph = box_h;
   turn = (turn + 1) % PREVIEW_SLOTS;
-  free(kept[turn]);
-  kept[turn] = (uint8_t *)malloc((size_t)pw * ph * 4);
-  uint8_t *p = kept[turn];
+  ps_held_drop(kept[turn], 1);
+  kept[turn] = NULL;
+  uint8_t *p = (uint8_t *)malloc((size_t)pw * ph * 4);
   if (!p) return moonbit_make_bytes(0, 0);
+  kept[turn] = ps_held_new(p);
+  if (!kept[turn]) {
+    free(p);
+    return moonbit_make_bytes(0, 0);
+  }
   for (int y = 0; y < ph; y++) {
     int y0 = from + (int)((double)y * src_h / ph), y1 = from + (int)((double)(y + 1) * src_h / ph);
     if (y1 <= y0) y1 = y0 + 1;
@@ -746,14 +824,8 @@ moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) 
       d[0] = (uint8_t)(b / n), d[1] = (uint8_t)(g / n), d[2] = (uint8_t)(r / n), d[3] = 255;
     }
   }
-  uint8_t out[28];
-  uint64_t at = (uint64_t)(uintptr_t)p;
-  int32_t pitch = pw * 4;
-  memcpy(out, "MBRAWPTR", 8);
-  memcpy(out + 8, &at, 8);
-  memcpy(out + 16, &pw, 4);
-  memcpy(out + 20, &ph, 4);
-  memcpy(out + 24, &pitch, 4);
+  uint8_t out[44];
+  ps_held_name(kept[turn], p, pw, ph, pw * 4, out);
   return bytes_of(out, sizeof out);
 }
 

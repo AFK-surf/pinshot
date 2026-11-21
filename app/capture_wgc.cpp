@@ -66,6 +66,8 @@ struct Mon {
   int frames;  // how many came
   int hdr;      // its frames 16-bit floats (the monitor in HDR as its session was made)
   LONGLONG last_at;  // when the last one came (QueryPerformanceCounter, under frame_lock)
+  unsigned gen;      // its session's number (under frame_lock): a frame of a session stopped since is closed, not kept
+  int live;          // a session is on (under frame_lock)
 };
 // Set as any frame comes (a session made again waited on for its first: ps_wgc_take_now).
 static HANDLE frame_came;
@@ -82,6 +84,16 @@ static int take_fresh;  // its session was made again as it was taken (its last 
 // close it right after (saving ~245 MB of idle video memory on 4K HDR while still capturing 16-bit HDR frames).
 static int keep_sessions = 1;
 static int long_holds;  // a long screenshot under way: a session made as needed kept till it ends (ps_wgc_long_hold)
+// While a long screenshot takes a part every tick: the textures it goes through kept for the next tick (the staging
+// copy given back by ps_wgc_release, the HDR conversion's target and view), let go as it ends.
+static ComPtr<ID3D11Texture2D> kept_staging;
+static ComPtr<ID3D11Texture2D> kept_out;
+static ComPtr<ID3D11UnorderedAccessView> kept_uav;
+static void kept_let_go(void) {
+  kept_staging.Reset();
+  kept_out.Reset();
+  kept_uav.Reset();
+}
 
 extern "C" void ps_wgc_timing(double *out) {
   out[0] = take_ms, out[1] = take_white, out[2] = said_half, out[3] = take_age, out[4] = take_fresh;
@@ -98,8 +110,13 @@ extern "C" int ps_wgc_ready(void) {
     frame_came = CreateEventW(NULL, FALSE, FALSE, NULL);
     lock_made = 1;
   }
-  // (the window's thread has COM already, OLE's: then this says so and changes nothing; a bench's has none)
-  RoInitialize(RO_INIT_SINGLETHREADED);
+  // (the window's thread has COM already, OLE's: then this says so and changes nothing; a bench's has none. Once for
+  // the run: a device made again after it was lost does not ask again)
+  static int ro_asked;
+  if (!ro_asked) {
+    ro_asked = 1;
+    RoInitialize(RO_INIT_SINGLETHREADED);
+  }
   D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
   if (FAILED(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2,
                                D3D11_SDK_VERSION, &dev, NULL, &ctx)))
@@ -137,20 +154,76 @@ extern "C" int ps_wgc_ready(void) {
   return 1;
 }
 
+// What each monitor said of its SDR white last while awake (by its device name), and what is kept on disk of it.
+#define WHITES_MOST 8
+static struct {
+  wchar_t name[CCHDEVICENAME];
+  float white;
+} whites[WHITES_MOST];
+static float disk_white = -1;  // %APPDATA%\PinShot\sdr-white.txt: the last any monitor said (a run started while its
+                               // monitors sleep has it)
+
+static float *white_of(const wchar_t *name) {
+  for (int i = 0; i < WHITES_MOST; i++)
+    if (whites[i].name[0] && !wcscmp(whites[i].name, name)) return &whites[i].white;
+  for (int i = 0; i < WHITES_MOST; i++)
+    if (!whites[i].name[0]) {
+      wcscpy_s(whites[i].name, CCHDEVICENAME, name);
+      whites[i].white = 0;
+      return &whites[i].white;
+    }
+  return NULL;
+}
+
+// What mon_hdr found of each monitor a moment ago: asked again only after HDR_ASKED_MS or once the monitors change
+// (a long screenshot takes a part every tick: QueryDisplayConfig is a few hundred microseconds each time).
+#define HDR_ASKED_MS 1000
+static struct {
+  HMONITOR mon;
+  ULONGLONG at;
+  int hdr;
+  float white;
+} hdr_asked[WHITES_MOST];
+static void hdr_forget(void) { memset(hdr_asked, 0, sizeof hdr_asked); }
+
+static int mon_hdr_asked(HMONITOR mon, float *white);
+
 // Whether monitor `mon` is in HDR now, and its SDR white (1.0: 80 nits) in `white`.
 static int mon_hdr(HMONITOR mon, float *white) {
+  ULONGLONG now = GetTickCount64();
+  for (int i = 0; i < WHITES_MOST; i++)
+    if (hdr_asked[i].mon == mon && now - hdr_asked[i].at < HDR_ASKED_MS) {
+      *white = hdr_asked[i].white;
+      return hdr_asked[i].hdr;
+    }
+  int hdr = mon_hdr_asked(mon, white);
+  int slot = 0;
+  for (int i = 0; i < WHITES_MOST; i++) {
+    if (hdr_asked[i].mon == mon) {
+      slot = i;
+      break;
+    }
+    if (hdr_asked[i].at < hdr_asked[slot].at) slot = i;
+  }
+  hdr_asked[slot].mon = mon, hdr_asked[slot].at = now, hdr_asked[slot].hdr = hdr, hdr_asked[slot].white = *white;
+  return hdr;
+}
+
+static int mon_hdr_asked(HMONITOR mon, float *white) {
   *white = 1.0f;
   MONITORINFOEXW mi;
   mi.cbSize = sizeof mi;
   if (!GetMonitorInfoW(mon, &mi)) return 0;
   UINT32 np = 0, nm = 0;
   if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS || !np) return 0;
-  DISPLAYCONFIG_PATH_INFO paths[16];
-  DISPLAYCONFIG_MODE_INFO modes[32];
-  if (np > 16) np = 16;
-  if (nm > 32) nm = 32;
-  if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths, &nm, modes, NULL) != ERROR_SUCCESS) return 0;
-  for (UINT32 i = 0; i < np; i++) {
+  // (as many as there are: a fixed few cut short makes QueryDisplayConfig fail, and HDR be missed)
+  DISPLAYCONFIG_PATH_INFO *paths = (DISPLAYCONFIG_PATH_INFO *)calloc(np, sizeof *paths);
+  DISPLAYCONFIG_MODE_INFO *modes = (DISPLAYCONFIG_MODE_INFO *)calloc(nm ? nm : 1, sizeof *modes);
+  int hdr = 0;
+  if (paths && modes && QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths, &nm, modes, NULL) == ERROR_SUCCESS) {
+    hdr = -1;
+  }
+  for (UINT32 i = 0; hdr == -1 && i < np; i++) {
     DISPLAYCONFIG_SOURCE_DEVICE_NAME sn = {};
     sn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
     sn.header.size = sizeof sn;
@@ -162,7 +235,10 @@ static int mon_hdr(HMONITOR mon, float *white) {
     ai.header.size = sizeof ai;
     ai.header.adapterId = paths[i].targetInfo.adapterId;
     ai.header.id = paths[i].targetInfo.id;
-    if (DisplayConfigGetDeviceInfo(&ai.header) != ERROR_SUCCESS || !ai.advancedColorEnabled) return 0;
+    if (DisplayConfigGetDeviceInfo(&ai.header) != ERROR_SUCCESS || !ai.advancedColorEnabled) {
+      hdr = 0;
+      break;
+    }
     DISPLAYCONFIG_SDR_WHITE_LEVEL wl = {};
     wl.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
     wl.header.size = sizeof wl;
@@ -170,50 +246,63 @@ static int mon_hdr(HMONITOR mon, float *white) {
     wl.header.id = paths[i].targetInfo.id;
     if (DisplayConfigGetDeviceInfo(&wl.header) == ERROR_SUCCESS && wl.SDRWhiteLevel >= 1000)
       *white = (float)wl.SDRWhiteLevel / 1000.0f;
-    // (a monitor asleep or turned off at its button says 80 nits, its white unknown: the last it said awake kept;
-    // ScreenReplay found the same, 2026-11-15)
-    // Kept on disk too (%APPDATA%\PinShot\sdr-white.txt): a run started while the monitor sleeps has it.
-    static float last_white = -1;
+    // (a monitor asleep or turned off at its button says 80 nits, its white unknown: the last it said awake kept,
+    // each monitor's its own; ScreenReplay found the same, 2026-11-15)
+    // Kept on disk too (%APPDATA%\PinShot\sdr-white.txt): a run started while the monitor sleeps has it. Written only
+    // as a monitor's own white changes, never as captures go from one monitor to another.
     wchar_t path[MAX_PATH];
     DWORD n = GetEnvironmentVariableW(L"APPDATA", path, MAX_PATH);
     int have_path = n > 0 && n < MAX_PATH - 40;
     if (have_path) wcscat_s(path, MAX_PATH, L"\\PinShot\\sdr-white.txt");
-    if (last_white < 0) {
-      last_white = 0;
+    if (disk_white < 0) {
+      disk_white = 0;
       FILE *f = NULL;
       if (have_path && _wfopen_s(&f, path, L"r") == 0 && f) {
-        if (fscanf_s(f, "%f", &last_white) != 1) last_white = 0;
+        if (fscanf_s(f, "%f", &disk_white) != 1) disk_white = 0;
         fclose(f);
       }
     }
+    float *last = white_of(mi.szDevice);
     if (*white > 1.001f) {
-      if (*white != last_white && have_path) {
+      if (last && *last != *white && *white != disk_white && have_path) {
         FILE *f = NULL;
         if (_wfopen_s(&f, path, L"w") == 0 && f) {
           fprintf(f, "%.3f\n", *white);
           fclose(f);
+          disk_white = *white;
         }
       }
-      last_white = *white;
-    } else if (last_white > 1.001f) {
-      *white = last_white;
+      if (last) *last = *white;
+    } else if (last && *last > 1.001f) {
+      *white = *last;
+    } else if (disk_white > 1.001f) {
+      *white = disk_white;
     }
-    return 1;
+    hdr = 1;
   }
-  return 0;
+  free(paths);
+  free(modes);
+  return hdr == 1;
 }
 
+// (asked by a recording's worker: not from the UI thread's cache, asked anew)
 extern "C" int ps_wgc_mon_hdr(HMONITOR mon, float *white) {
-  return mon_hdr(mon, white);
+  return mon_hdr_asked(mon, white);
 }
 
 static void mon_stop(Mon *m) {
   if (m->pool) m->pool->remove_FrameArrived(m->token);
   ComPtr<ABI::Windows::Foundation::IClosable> c;
+  // (told it is over under the lock, so a frame arriving late on the pool's thread is closed there, not kept; the
+  // last one closed outside it)
+  ComPtr<WGC::IDirect3D11CaptureFrame> last;
   EnterCriticalSection(&frame_lock);
-  if (m->last && SUCCEEDED(m->last.As(&c))) c->Close();
-  m->last.Reset();
+  m->live = 0;
+  m->gen++;
+  last.Swap(m->last);
   LeaveCriticalSection(&frame_lock);
+  if (last && SUCCEEDED(last.As(&c))) c->Close();
+  last.Reset();
   if (m->session && SUCCEEDED(m->session.As(&c))) c->Close();
   if (m->pool && SUCCEEDED(m->pool.As(&c))) c->Close();
   m->session.Reset();
@@ -223,10 +312,14 @@ static void mon_stop(Mon *m) {
   m->hdr = 0;
 }
 
-static int mon_start(Mon *m, HMONITOR mon, int w, int h) {
+static int mon_start(Mon *m, HMONITOR mon, int w, int h, int hdr = -1) {
   float white;
   m->mon = mon, m->w = w, m->h = h, m->frames = 0;
-  m->hdr = to_srgb && to_srgb_k && mon_hdr(mon, &white);
+  m->hdr = hdr >= 0 ? hdr : (to_srgb && to_srgb_k && mon_hdr(mon, &white));
+  EnterCriticalSection(&frame_lock);
+  unsigned gen = ++m->gen;
+  m->live = 1;
+  LeaveCriticalSection(&frame_lock);
   ComPtr<WGC::IGraphicsCaptureItem> item;
   if (FAILED(last_hr = item_interop->CreateForMonitor(mon, IID_PPV_ARGS(&item)))) return 0;
   ABI::Windows::Graphics::SizeInt32 size = {w, h};
@@ -240,17 +333,22 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h) {
   auto arrived = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
                                                      ITypedEventHandler<WGC::Direct3D11CaptureFramePool *, IInspectable *>,
                                                      Microsoft::WRL::FtmBase>>(
-      [m](WGC::IDirect3D11CaptureFramePool *sender, IInspectable *) -> HRESULT {
+      [m, gen](WGC::IDirect3D11CaptureFramePool *sender, IInspectable *) -> HRESULT {
         ComPtr<WGC::IDirect3D11CaptureFrame> f;
         if (SUCCEEDED(sender->TryGetNextFrame(&f)) && f) {
           ComPtr<WGC::IDirect3D11CaptureFrame> old;
           EnterCriticalSection(&frame_lock);
-          old = m->last;
-          m->last = f;
-          m->frames++;
-          LARGE_INTEGER now;
-          QueryPerformanceCounter(&now);
-          m->last_at = now.QuadPart;
+          if (!m->live || m->gen != gen) {
+            // (its session was stopped (or another made) as this came: closed, the slot left as it is)
+            old = f;
+          } else {
+            old = m->last;
+            m->last = f;
+            m->frames++;
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            m->last_at = now.QuadPart;
+          }
           LeaveCriticalSection(&frame_lock);
           SetEvent(frame_came);
           // (the one before back to the pool: two in it, one held, one for the next)
@@ -304,8 +402,14 @@ static int borderless_allowed(void) {
   if (InterlockedCompareExchange(&borderless, -2, -1) != -1) return 0;
   ComPtr<WGC::IGraphicsCaptureAccessStatics> statics;
   ComPtr<ABI::Windows::Foundation::IAsyncOperation<ABI::Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus>> op;
-  if (FAILED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Graphics_Capture_GraphicsCaptureAccess).Get(),
-                                    IID_PPV_ARGS(&statics))) ||
+  HRESULT fhr = RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Graphics_Capture_GraphicsCaptureAccess).Get(),
+                                       IID_PPV_ARGS(&statics));
+  if (fhr == CO_E_NOTINITIALIZED) {
+    // (asked on a thread without WinRT, as a recording's worker before it starts it: not an answer; asked again later)
+    InterlockedExchange(&borderless, -1);
+    return 0;
+  }
+  if (FAILED(fhr) ||
       FAILED(statics->RequestAccessAsync(WGC::GraphicsCaptureAccessKind_Borderless, &op))) {
     borderless = 0;
     return 0;
@@ -333,6 +437,7 @@ extern "C" int ps_wgc_borderless_ok(void) {
 extern "C" int ps_wgc_restart(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
+  hdr_forget();
   if (!keep_sessions) return 0;
   if (!ps_wgc_ready()) return 0;
   if (!borderless_allowed()) return 0;
@@ -362,6 +467,7 @@ extern "C" void ps_wgc_set_keep(int keep) {
 static void device_lost(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
+  kept_let_go();
   to_srgb.Reset(), to_srgb_k.Reset(), pool_statics.Reset(), item_interop.Reset(), rt_dev.Reset(), ctx.Reset(), dev.Reset();
   ready = 0;
   ps_wgc_wake();
@@ -386,6 +492,7 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
 // rather than made again and let go at each of its takings; as it ends, let go, and the memory given back.
 extern "C" void ps_wgc_long_hold(int on) {
   long_holds = on;
+  if (!on) kept_let_go();
   if (on || keep_sessions) return;
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
@@ -424,11 +531,11 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     m = &mons[0];
     m->mon = mon, m->w = w, m->h = h;
   }
-  if (!m || m->w != w || m->h != h) return NULL;
-  // (HDR turned on or off since its session was made: made again in the other format)
+  if (!m) return NULL;
+  // (HDR turned on or off since its session was made, or the monitor's resolution changed: made again)
   float white = 1.0f;
   int hdr = to_srgb && to_srgb_k && mon_hdr(mon, &white);
-  if (m->pool && hdr != m->hdr) {
+  if ((m->pool && hdr != m->hdr) || m->w != w || m->h != h) {
     mon_stop(m);
     m->mon = mon, m->w = w, m->h = h;
   }
@@ -450,8 +557,15 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     fr.Reset();
     mon_stop(m);
     ResetEvent(frame_came);
-    if (!mon_start(m, mon, w, h)) return NULL;
+    if (!mon_start(m, mon, w, h, hdr)) {
+      // (its slot still this monitor's: tried again at the next taking, not left without a monitor for good)
+      m->mon = mon, m->w = w, m->h = h;
+      return NULL;
+    }
     take_fresh = 1;
+    // (the first frame's time counted from when the session is there, not from when the taking began)
+    LARGE_INTEGER started;
+    QueryPerformanceCounter(&started);
     for (;;) {
       EnterCriticalSection(&frame_lock);
       fr = m->last;
@@ -460,7 +574,7 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
       if (fr) break;
       LARGE_INTEGER now;
       QueryPerformanceCounter(&now);
-      double left = FIRST_FRAME_MS - (now.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+      double left = FIRST_FRAME_MS - (now.QuadPart - started.QuadPart) * 1000.0 / (double)f.QuadPart;
       if (left <= 0) {
         if (!keep_sessions && !long_holds) {
           mon_stop(m);
@@ -550,7 +664,12 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     od.MipLevels = od.ArraySize = 1;
     ComPtr<ID3D11Texture2D> out;
     ComPtr<ID3D11UnorderedAccessView> uav;
-    if (FAILED(dev->CreateTexture2D(&od, NULL, &out)) || FAILED(dev->CreateUnorderedAccessView(out.Get(), NULL, &uav))) {
+    if (long_holds && kept_out) {
+      D3D11_TEXTURE2D_DESC kd;
+      kept_out->GetDesc(&kd);
+      if (kd.Width == od.Width && kd.Height == od.Height && kd.Format == od.Format) out = kept_out, uav = kept_uav;
+    }
+    if (!out && (FAILED(dev->CreateTexture2D(&od, NULL, &out)) || FAILED(dev->CreateUnorderedAccessView(out.Get(), NULL, &uav)))) {
       tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
       drop_on_demand();
       return NULL;
@@ -577,6 +696,7 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     ctx->CSSetShaderResources(0, 1, no_srv);
     ctx->CSSetUnorderedAccessViews(0, 1, no_uav, NULL);
     ctx->CSSetShader(NULL, NULL, 0);
+    if (long_holds) kept_out = out, kept_uav = uav;
     tex = out;
     td = od;
     whole = 1;
@@ -590,7 +710,13 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   td.Height = (UINT)rh;
   ComPtr<ID3D11Texture2D> staging;
   D3D11_MAPPED_SUBRESOURCE mp;
-  if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) {
+  if (long_holds && kept_staging) {
+    D3D11_TEXTURE2D_DESC kd;
+    kept_staging->GetDesc(&kd);
+    if (kd.Width == td.Width && kd.Height == td.Height && kd.Format == td.Format) staging = kept_staging;
+    kept_staging.Reset();
+  }
+  if (!staging && FAILED(dev->CreateTexture2D(&td, NULL, &staging))) {
     tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
     drop_on_demand();
     return NULL;
@@ -641,6 +767,12 @@ extern "C" void ps_wgc_release(void *taken) {
   t->GetDevice(&d);
   d->GetImmediateContext(&c);
   c->Unmap(t, 0);
+  // (a long screenshot's, of the device in use: kept for its next tick, not made again each time)
+  if (long_holds && !kept_staging && d.Get() == dev.Get()) {
+    kept_staging = t;
+    t->Release();
+    return;
+  }
   t->Release();
   c->ClearState();
   c->Flush();
