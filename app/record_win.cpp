@@ -1200,6 +1200,7 @@ struct Mp4Encoder {
     double raw = (double)out_w * (double)out_h * eff_fps(fps) * bpp;
     double lo = codec_mode == 3 ? 650000.0 : (codec_mode == 0 ? 1000000.0 : 1400000.0);
     double hi = codec_mode == 3 ? 12000000.0 : (codec_mode == 0 ? 18000000.0 : 26000000.0);
+    if (fps > 60) hi *= 1.5;
     if (raw < lo) raw = lo;
     if (raw > hi) raw = hi;
     return (UINT32)raw;
@@ -1443,6 +1444,15 @@ struct Mp4Encoder {
         try_open_tier(dev, shared_mgr, 1, true, want_audio, passthrough_audio))
       return true;
     DeleteFileW(out_path.c_str());
+    // Older hardware MFTs may reject 120fps on large regions; retry hardware tiers at 60fps before falling back to SW.
+    if (fps > 60 && (dev || shared_mgr) && allow_hw) {
+      fps = 60;
+      if (allow_hevc && try_open_tier(dev, shared_mgr, 0, true, want_audio, passthrough_audio)) return true;
+      DeleteFileW(out_path.c_str());
+      if (try_open_tier(dev, shared_mgr, 1, true, want_audio, passthrough_audio)) return true;
+      DeleteFileW(out_path.c_str());
+    }
+    if (fps > 60) fps = 60;
     if (try_open_tier(NULL, NULL, 1, false, want_audio, passthrough_audio)) return true;
     DeleteFileW(out_path.c_str());
     if (lock_init) {
@@ -1868,12 +1878,23 @@ struct SysAudioPump {
 
 // ---- Live Recording Worker Thread (always records temp high-quality MP4) ----
 
+// Ref-counted owner of a WGC capture frame: calls IClosable::Close() only when BOTH FrameArrived and rec_worker
+// have finished with the surface, preventing premature surface reclamation mid-encode on high-Hz monitors.
+struct WgcFrameHold {
+  ComPtr<WGC::IDirect3D11CaptureFrame> frame;
+  explicit WgcFrameHold(const ComPtr<WGC::IDirect3D11CaptureFrame> &f) : frame(f) {}
+  ~WgcFrameHold() {
+    ComPtr<ABI::Windows::Foundation::IClosable> c;
+    if (frame && SUCCEEDED(frame.As(&c))) c->Close();
+  }
+};
+
 // What the free-threaded pool's FrameArrived shares with the worker: held by both (the handler's own reference keeps it
 // alive past the worker's return, as a frame may still be arriving on the pool's thread when the worker lets go), and
 // told when the worker is done with it, after which an arriving frame is closed at once and kept nowhere.
 struct RecWorkerState {
   SRWLOCK lock = SRWLOCK_INIT;
-  ComPtr<WGC::IDirect3D11CaptureFrame> last_frame;
+  std::shared_ptr<WgcFrameHold> last_frame;
   HANDLE first_frame_ev = NULL;
   uint64_t frame_seq = 0;
   bool got_frame = false;
@@ -1882,15 +1903,13 @@ struct RecWorkerState {
   ~RecWorkerState() {
     if (first_frame_ev) CloseHandle(first_frame_ev);
   }
-  // The last frame let go (closed) and no other kept from now.
+  // The last frame let go (closed once no worker holds it) and no other kept from now.
   void stop() {
-    ComPtr<WGC::IDirect3D11CaptureFrame> old;
+    std::shared_ptr<WgcFrameHold> old;
     AcquireSRWLockExclusive(&lock);
     stopped = true;
-    old.Swap(last_frame);
+    old.swap(last_frame);
     ReleaseSRWLockExclusive(&lock);
-    ComPtr<ABI::Windows::Foundation::IClosable> c;
-    if (old && SUCCEEDED(old.As(&c))) c->Close();
   }
 };
 
@@ -2016,27 +2035,35 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
       ABI::Windows::Graphics::SizeInt32 sz = {mw, mh};
       auto pix_fmt = is_hdr ? ABI::Windows::Graphics::DirectX::DirectXPixelFormat_R16G16B16A16Float
                             : ABI::Windows::Graphics::DirectX::DirectXPixelFormat_B8G8R8A8UIntNormalized;
-      if (SUCCEEDED(pool_statics->CreateFreeThreaded(rt_dev.Get(), pix_fmt, 2, sz, &pool))) {
+      // 4-buffer pool prevents DWM capture stalls on 120/240Hz monitors while rec_worker encodes the active surface.
+      if (SUCCEEDED(pool_statics->CreateFreeThreaded(rt_dev.Get(), pix_fmt, 4, sz, &pool))) {
         auto arrived = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
                                                            ITypedEventHandler<WGC::Direct3D11CaptureFramePool *, IInspectable *>,
                                                            Microsoft::WRL::FtmBase>>(
             [ws](WGC::IDirect3D11CaptureFramePool *sender, IInspectable *) -> HRESULT {
-              ComPtr<WGC::IDirect3D11CaptureFrame> f;
-              if (SUCCEEDED(sender->TryGetNextFrame(&f)) && f) {
-                ComPtr<WGC::IDirect3D11CaptureFrame> old;
+              // Drain all queued frames so we always publish the freshest surface and return older buffers immediately.
+              ComPtr<WGC::IDirect3D11CaptureFrame> latest;
+              for (;;) {
+                ComPtr<WGC::IDirect3D11CaptureFrame> next;
+                if (FAILED(sender->TryGetNextFrame(&next)) || !next) break;
+                if (latest) {
+                  ComPtr<ABI::Windows::Foundation::IClosable> c;
+                  if (SUCCEEDED(latest.As(&c))) c->Close();
+                }
+                latest = next;
+              }
+              if (latest) {
+                auto hold = std::make_shared<WgcFrameHold>(latest);
+                std::shared_ptr<WgcFrameHold> old;
                 AcquireSRWLockExclusive(&ws->lock);
-                if (ws->stopped) {
-                  old = f;  // (the worker is done: closed at once, kept nowhere)
-                } else {
-                  old = ws->last_frame;
-                  ws->last_frame = f;
+                if (!ws->stopped) {
+                  old.swap(ws->last_frame);
+                  ws->last_frame = hold;
                   ws->frame_seq++;
                   ws->got_frame = true;
                 }
                 ReleaseSRWLockExclusive(&ws->lock);
                 SetEvent(ws->first_frame_ev);
-                ComPtr<ABI::Windows::Foundation::IClosable> c;
-                if (old && SUCCEEDED(old.As(&c))) c->Close();
               }
               return S_OK;
             });
@@ -2221,6 +2248,7 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
   bool preview_captured = false;
   Mp4Encoder mp4;
   bool enc_ok = mp4.open(wgc_ok ? dev.Get() : NULL, NULL, master_path, rw, rh, fps, want_audio);
+  if (enc_ok && mp4.fps > 0) fps = mp4.fps;
   if (!enc_ok) {
     if (pool) pool->remove_FrameArrived(token);
     ComPtr<ABI::Windows::Foundation::IClosable> c;
@@ -2255,6 +2283,10 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
   uint64_t last_shaded_seq = 0;
   ID3D11Texture2D *cached_hdr_srgb = NULL;
 
+  // Sub-millisecond waitable timer keeps 60fps (16.67ms) and 120fps (8.33ms) pacing locked without Sleep jitter.
+  HANDLE pace_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  HANDLE wait_handles[2] = {R.wake_ev, pace_timer};
+
   rec_trace_vram("rec_start", dev.Get());
   rec_post("recording", 0, 0, 0, 0, 0, mp4.has_audio ? 1 : 0, mp4.codec_name.c_str(), L"", "");
 
@@ -2283,14 +2315,26 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
 
     LONGLONG next_slot_hns = (slot * 10000000LL) / fps;
     if (elapsed_hns < next_slot_hns) {
-      DWORD wait_ms = (DWORD)((next_slot_hns - elapsed_hns) / 10000LL);
-      if (wait_ms < 1) wait_ms = 1;
-      if (wait_ms > 50) wait_ms = 50;
-      WaitForSingleObject(R.wake_ev, wait_ms);
+      LONGLONG rem_hns = next_slot_hns - elapsed_hns;
+      if (pace_timer && rem_hns >= 4000LL) {
+        LARGE_INTEGER due;
+        due.QuadPart = -(rem_hns > 500000LL ? 500000LL : rem_hns);
+        if (SetWaitableTimer(pace_timer, &due, 0, NULL, NULL, FALSE)) {
+          WaitForMultipleObjects(2, wait_handles, FALSE, 50);
+        } else {
+          WaitForSingleObject(R.wake_ev, 1);
+        }
+      } else if (rem_hns >= 10000LL) {
+        DWORD wait_ms = (DWORD)(rem_hns / 10000LL);
+        if (wait_ms > 50) wait_ms = 50;
+        WaitForSingleObject(R.wake_ev, wait_ms);
+      } else {
+        SwitchToThread();
+      }
       continue;
     }
 
-    ComPtr<WGC::IDirect3D11CaptureFrame> fr;
+    std::shared_ptr<WgcFrameHold> fr;
     ComPtr<ID3D11Texture2D> src_tex;
     uint64_t fr_seq = 0;
     if (wgc_ok) {
@@ -2298,10 +2342,10 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
       fr = ws->last_frame;
       fr_seq = ws->frame_seq;
       ReleaseSRWLockShared(&ws->lock);
-      if (fr) {
+      if (fr && fr->frame) {
         ComPtr<WD3D::IDirect3DSurface> surf;
         ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> acc;
-        if (SUCCEEDED(fr->get_Surface(&surf)) && SUCCEEDED(surf.As(&acc))) {
+        if (SUCCEEDED(fr->frame->get_Surface(&surf)) && SUCCEEDED(surf.As(&acc))) {
           acc->GetInterface(IID_PPV_ARGS(&src_tex));
         }
       }
@@ -2379,6 +2423,7 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
     }
   }
 
+  if (pace_timer) CloseHandle(pace_timer);
   bool cancel = InterlockedCompareExchange(&R.stop_req, 0, 0) == 2;
   if (audio_pump.active) audio_pump.stop();
   if (!cancel) rec_post("saving", last_elapsed_ms, frames, 0, 0, 0, mp4.has_audio ? 1 : 0, mp4.codec_name.c_str(), L"", "");
@@ -2629,12 +2674,13 @@ static DWORD export_work(const ExportJob &job) {
     static const double kHiAv1[4]   = {12000000.0, 6000000.0, 2600000.0, 1100000.0};
     int qi = quality < 0 ? 2 : (quality > 3 ? 3 : quality);
     double ef = Mp4Encoder::eff_fps(src_fps);
+    double hi_mul = src_fps > 60 ? 1.5 : 1.0;
     double r_hevc = (double)out_w * out_h * ef * kBppHevc[qi];
     double r_h264 = (double)out_w * out_h * ef * kBppH264[qi];
     double r_av1  = (double)out_w * out_h * ef * kBppAv1[qi];
-    enc.custom_bps_hevc = (UINT32)(r_hevc < kLoHevc[qi] ? kLoHevc[qi] : (r_hevc > kHiHevc[qi] ? kHiHevc[qi] : r_hevc));
-    enc.custom_bps_h264 = (UINT32)(r_h264 < kLoH264[qi] ? kLoH264[qi] : (r_h264 > kHiH264[qi] ? kHiH264[qi] : r_h264));
-    enc.custom_bps_av1  = (UINT32)(r_av1  < kLoAv1[qi]  ? kLoAv1[qi]  : (r_av1  > kHiAv1[qi]  ? kHiAv1[qi]  : r_av1));
+    enc.custom_bps_hevc = (UINT32)(r_hevc < kLoHevc[qi] ? kLoHevc[qi] : (r_hevc > kHiHevc[qi] * hi_mul ? kHiHevc[qi] * hi_mul : r_hevc));
+    enc.custom_bps_h264 = (UINT32)(r_h264 < kLoH264[qi] ? kLoH264[qi] : (r_h264 > kHiH264[qi] * hi_mul ? kHiH264[qi] * hi_mul : r_h264));
+    enc.custom_bps_av1  = (UINT32)(r_av1  < kLoAv1[qi]  ? kLoAv1[qi]  : (r_av1  > kHiAv1[qi]  * hi_mul ? kHiAv1[qi]  * hi_mul : r_av1));
 
     if (!enc.open(gpu_dec ? dev.Get() : NULL, gpu_dec ? mgr.Get() : NULL, dst, out_w, out_h, src_fps, has_src_audio,
                   NULL, fmt)) {
@@ -3072,7 +3118,7 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
     CloseHandle(R.rec_thread);
     R.rec_thread = NULL;
   }
-  R.fps = fps < 10 ? 10 : (fps > 60 ? 60 : fps);
+  R.fps = fps < 10 ? 10 : (fps > 120 ? 120 : fps);
   R.cursor = cursor ? 1 : 0;
   R.want_audio = audio ? 1 : 0;
   InterlockedExchange(&R.stop_req, 0);

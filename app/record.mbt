@@ -100,7 +100,7 @@ let rec_phase : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 /// Recording & export preferences (persisted in settings.json via load_settings / save_settings).
-let rec_fps : @signals.Signal[Int] = @signals.signal(30)
+let rec_fps : @signals.Signal[Int] = @signals.signal(60)
 
 ///|
 let rec_cursor : @signals.Signal[Bool] = @signals.signal(true)
@@ -349,20 +349,21 @@ fn rec_target_bps(codec_mode : Int, qual : Int, w : Int, h : Int, fps : Int) -> 
   let ef = rec_eff_fps(fps)
   let px = w.to_double() * h.to_double() * ef
   let qi = clampi(qual, 0, 3)
+  let hi_mul = if fps > 60 { 1.5 } else { 1.0 }
   if codec_mode == 3 {
     let bpp = [0.056, 0.036, 0.018, 0.0085][qi]
     let lo = [650000.0, 400000.0, 200000.0, 110000.0][qi]
-    let hi = [12000000.0, 6000000.0, 2600000.0, 1100000.0][qi]
+    let hi = [12000000.0, 6000000.0, 2600000.0, 1100000.0][qi] * hi_mul
     clamp(px * bpp, lo, hi)
   } else if codec_mode == 0 {
     let bpp = [0.075, 0.048, 0.024, 0.011][qi]
     let lo = [900000.0, 550000.0, 280000.0, 150000.0][qi]
-    let hi = [16000000.0, 8000000.0, 3500000.0, 1500000.0][qi]
+    let hi = [16000000.0, 8000000.0, 3500000.0, 1500000.0][qi] * hi_mul
     clamp(px * bpp, lo, hi)
   } else {
     let bpp = [0.115, 0.072, 0.038, 0.018][qi]
     let lo = [1300000.0, 800000.0, 420000.0, 220000.0][qi]
-    let hi = [24000000.0, 12000000.0, 5200000.0, 2200000.0][qi]
+    let hi = [24000000.0, 12000000.0, 5200000.0, 2200000.0][qi] * hi_mul
     clamp(px * bpp, lo, hi)
   }
 }
@@ -1651,7 +1652,13 @@ fn rec_window(root : @view.View) -> Unit {
               .says(By(fn() { Some(@view.said(Button, label="\{rec_fps.get()}fps")) }))
               .on_press(fn() {
                 if rec_phase.untracked() == 0 {
-                  rec_fps.set(if rec_fps.untracked() == 30 { 60 } else { 30 })
+                  rec_fps.set(
+                    match rec_fps.untracked() {
+                      30 => 60
+                      60 => 120
+                      _ => 30
+                    },
+                  )
                   save_settings()
                 }
               })

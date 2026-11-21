@@ -258,8 +258,8 @@ fn load_settings() -> Unit {
           _ => dflt
         }
       }
-      let rf = rnum("rec_fps", 30)
-      rec_fps.set(if rf == 60 { 60 } else { 30 })
+      let rf = rnum("rec_fps", 60)
+      rec_fps.set(if rf == 120 { 120 } else if rf == 30 { 30 } else { 60 })
       rec_cursor.set(rflag("rec_cursor", true))
       rec_audio.set(rflag("rec_audio", false))
       rec_input.set(rflag("rec_input", false))
