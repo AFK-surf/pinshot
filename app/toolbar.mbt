@@ -141,33 +141,48 @@ let bar_height : Double = 40.0
 let style_height : Double = 36.0
 
 ///|
-/// Where the bar stands (points): under the part at its right edge, kept on the screen.
-fn bar_place(n : @view.View) -> (Double, Double) {
+/// Max combined height of the two expandable sub-rows (style + beauty) plus gaps.
+let bar_sub_max_h : Double = (style_height + 4.0) * 2.0
+
+///|
+/// Main toolbar anchor `(x, main_y, expand_up)` in monitor points: keeps the main bar stationary when sub-rows open
+/// and flips sub-rows upward whenever there is not enough room below (or when the bar sits above the selection).
+fn bar_anchor(n : @view.View) -> (Double, Double, Bool) {
   let k = mon_scale.get()
   let (sw, sh) = mon_pt()
   // (under the picture as it will be copied, where it shows on its way: the part, or the background it is laid on)
-  guard sel.get() is Some(_) else { return (0.0, 0.0) }
+  guard sel.get() is Some(_) else { return (0.0, 0.0, false) }
   match shown_whole(n) {
     Some(r) => {
       let rx1 = r.right().to_double() / k
       let ry0 = r.y.to_double() / k
       let ry1 = r.bottom().to_double() / k
       let w = bar_width()
-      let h = bar_height +
-        (if styling() { style_height + 4.0 } else { 0.0 }) +
-        (if beauty_on.get() { style_height + 4.0 } else { 0.0 })
       let x = clamp(rx1 - w, 8.0, sw - w - 8.0)
-      let y = if ry1 + 8.0 + h <= sh - 4.0 {
+      let my = if ry1 + 8.0 + bar_height <= sh - 4.0 {
         ry1 + 8.0
-      } else if ry0 - 8.0 - h >= 4.0 {
-        ry0 - 8.0 - h
+      } else if ry0 - 8.0 - bar_height >= 4.0 {
+        ry0 - 8.0 - bar_height
       } else {
-        clamp(ry1 - h - 8.0, 8.0, sh - h - 8.0)
+        clamp(ry1 - bar_height - 8.0, 8.0, sh - bar_height - 8.0)
       }
-      (x, y)
+      let open_sub = (if styling() { style_height + 4.0 } else { 0.0 }) +
+        (if beauty_on.get() { style_height + 4.0 } else { 0.0 })
+      let need = dmax(style_height + 4.0, open_sub)
+      let no_room_below = my + bar_height + need > sh - 4.0
+      let bar_is_above_sel = my + bar_height <= ry0
+      let up = (no_room_below || bar_is_above_sel) && my >= need + 4.0
+      (x, my, up)
     }
-    None => (0.0, 0.0)
+    None => (0.0, 0.0, false)
   }
+}
+
+///|
+/// Where the bar column stands (points), anchored so the main row never jumps when sub-rows unfold upward.
+fn bar_place(n : @view.View) -> (Double, Double) {
+  let (x, my, up) = bar_anchor(n)
+  (x, if up { my - bar_sub_max_h } else { my })
 }
 
 ///|
@@ -242,16 +257,26 @@ fn toolbar(stage : @view.View) -> Unit {
           bar_in.put(0.0)
         }
       })
+      let is_up = fn() { bar_anchor(col).2 }
       col
       .gap(Is(4.0))
       // (each row as wide as what it holds, from the bar's left: the style row is not stretched to the bar's width)
       .lines_up(Is(Some(Start)))
+      .height(By(fn() { if is_up() { Some(bar_height + bar_sub_max_h) } else { None } }))
+      .lies_along(By(fn() { if is_up() { @view.End } else { @view.Start } }))
       .offset(By(fn() { bar_place(col) }))
       .alpha(By(fn() { bar_in.shown(col) }))
       .drawn_off(By(fn() { (0.0, 4.0 * (1.0 - bar_in.shown(col))) }))
       // (out of the way while the part is dragged or resized)
       .laid_nowhere(By(fn() { !bar_shown() }))
       |> ignore
+      // Upward-unfolding sub-rows (above the main bar when near the bottom of the screen or above the selection)
+      col.show(fn() { is_up() && beauty_on.get() }, leave=115.0, fn(slot) {
+        dropdown_unfold(slot, style_height, beauty_row, upward=true)
+      })
+      col.show(fn() { is_up() && styling() }, leave=115.0, fn(slot) {
+        dropdown_unfold(slot, style_height, style_row, upward=true)
+      })
       col.box(fn(bar) {
         toolbar_main_view.val = Some(bar)
         bar.owns(fn() { toolbar_main_view.val = None }) |> ignore
@@ -399,10 +424,10 @@ fn toolbar(stage : @view.View) -> Unit {
         tool_button(bar, "check", "复制", fn() { false }, copy_out, strong=true, keys=confirm_key_label)
       })
       |> ignore
-      col.show(fn() { styling() }, leave=115.0, fn(slot) {
+      col.show(fn() { !is_up() && styling() }, leave=115.0, fn(slot) {
         dropdown_unfold(slot, style_height, style_row)
       })
-      col.show(fn() { beauty_on.get() }, leave=115.0, fn(slot) {
+      col.show(fn() { !is_up() && beauty_on.get() }, leave=115.0, fn(slot) {
         dropdown_unfold(slot, style_height, beauty_row)
       })
     })

@@ -210,6 +210,28 @@ let rec_dim_tip_cancel : Ref[() -> Unit] = Ref(fn() {  })
 let rec_fps_open : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
+/// Whether the Ready bar's FPS dropdown opens upward (when there is not enough room below the bar).
+let rec_fps_up : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+fn rec_fps_should_open_up() -> Bool {
+  if rec_wid.val == 0 {
+    return false
+  }
+  let r = numbers_of(text_of(ps_window_rect(rec_wid.val)))
+  if r.length() < 4 || r[3] <= 0.0 {
+    return false
+  }
+  let m = rec_mon.val
+  let k = rec_scale.val
+  let bar_bot = r[1] + r[3] - rec_pad_b * k
+  let room_below = m.bottom().to_double() - bar_bot
+  let room_above = r[1] + rec_pad_t * k - m.y.to_double()
+  let need = 136.0 * k
+  room_below < need && room_above >= need
+}
+
+///|
 /// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma so alpha reaches 0 before every window edge).
 let rec_pad_l : Double = 30.0
 
@@ -548,7 +570,9 @@ fn rec_fit_window(focus : Bool, allow_shrink? : Bool = false) -> Unit {
     return
   }
   let shrinking = pw > 0 && ph > 0 && (w < pw - 1 || h < ph - 1)
-  if shrinking && !allow_shrink {
+  // Pure vertical dropdown open/close in Ready phase: tighten HWND immediately so an upward dropdown never shifts the bar.
+  let instant_dd_shrink = rec_phase.untracked() == 0 && !rec_morph_in.untracked() && (w - pw).abs() <= 4
+  if shrinking && !allow_shrink && !instant_dd_shrink {
     if focus && @ui.env("PINSHOT_TEST_CLOAKED") == "" {
       let r = numbers_of(text_of(ps_window_rect(rec_wid.val)))
       if r.length() >= 4 {
@@ -573,14 +597,20 @@ fn rec_fit_window(focus : Bool, allow_shrink? : Bool = false) -> Unit {
   (rec_shrink_cancel.val)()
   rec_shrink_cancel.val = fn() {  }
   let r = numbers_of(text_of(ps_window_rect(rec_wid.val)))
+  let anchor_bottom = rec_phase.untracked() == 0 && rec_fps_up.untracked() && ph > 0 && (h - ph).abs() > 1
   let (x, y) = if r.length() >= 4 && r[2] > 0.0 && r[3] > 0.0 {
     let cur_x = r[0].round().to_int()
     let cur_y = r[1].round().to_int()
+    let next_y = if anchor_bottom {
+      clampi(cur_y + ph - h, m.y, m.bottom() - h)
+    } else {
+      clampi(cur_y, m.y, m.bottom() - h)
+    }
     if shrinking || (w - pw).abs() <= 24 {
-      (clampi(cur_x, m.x, m.right() - w), clampi(cur_y, m.y, m.bottom() - h))
+      (clampi(cur_x, m.x, m.right() - w), next_y)
     } else {
       let cx = (r[0] + r[2] / 2.0).round().to_int()
-      (clampi(cx - w / 2, m.x, m.right() - w), clampi(cur_y, m.y, m.bottom() - h))
+      (clampi(cx - w / 2, m.x, m.right() - w), next_y)
     }
   } else {
     let p = rec_part.val
@@ -1169,6 +1199,7 @@ fn rec_icon_btn(
   |> ignore
 }
 
+
 ///|
 fn rec_action_btn(
   row : @view.View,
@@ -1237,6 +1268,7 @@ fn rec_action_btn(
   })
   |> ignore
 }
+
 
 ///|
 /// Crisp format tab inside the Studio HUD top strip (white active pill glides underneath via sliding_thumb).
@@ -1409,6 +1441,7 @@ fn rec_prop_row(
   |> ignore
 }
 
+
 ///|
 fn rec_window(root : @view.View) -> Unit {
   rec_root.val = Some(root)
@@ -1471,6 +1504,7 @@ fn rec_window(root : @view.View) -> Unit {
   root.reacts(fn() { rec_phase.get() }, at_start=false, fn(_) {
     rec_tip.set("")
     rec_fps_open.set(false)
+    rec_fps_up.set(false)
     rec_disarm_discard()
   })
 
@@ -1506,6 +1540,11 @@ fn rec_window(root : @view.View) -> Unit {
       .padding(Is((rec_pad_l, rec_pad_t, rec_pad_r, rec_pad_b)))
       .lines_up(Is(Some(Start)))
       |> ignore
+
+      // Upward-unfolding FPS dropdown menu (above Ready bar when near the bottom of the monitor)
+      content.show(fn() { rec_phase.get() == 0 && rec_fps_open.get() && rec_fps_up.get() }, fn(dd_wrap) {
+        rec_fps_menu_view(dd_wrap, true)
+      }, at_once=true)
 
       // Unified morphing superellipse shell: smoothly reshapes across Ready bar -> Recording bar -> Finalizing pill -> Studio HUD card
       content.box(fn(shell) {
@@ -1666,7 +1705,11 @@ fn rec_window(root : @view.View) -> Unit {
               .says(By(fn() { Some(@view.said(Button, label="\{rec_fps.get()}fps")) }))
               .on_press(fn() {
                 if rec_phase.untracked() == 0 {
-                  rec_fps_open.set(!rec_fps_open.untracked())
+                  let next = !rec_fps_open.untracked()
+                  if next {
+                    rec_fps_up.set(rec_fps_should_open_up())
+                  }
+                  rec_fps_open.set(next)
                 }
               })
               .ground(By(fn() {
@@ -2614,75 +2657,8 @@ fn rec_window(root : @view.View) -> Unit {
       |> ignore
 
       // Downward-unfolding FPS dropdown menu (30 / 60 / 90 / 120 fps) aligned directly under the Ready bar's FPS pill
-      content.show(fn() { rec_phase.get() == 0 && rec_fps_open.get() }, fn(dd_wrap) {
-        dd_wrap
-        .padding(Is((62.0, 6.0, 0.0, 0.0)))
-        .shrink(Is(0.0))
-        .lines_up(Is(Some(Start)))
-        |> ignore
-        dd_wrap.box(fn(menu) {
-          enter_reveal(menu, ms=135.0, dy=-8.0, from_scale=0.96)
-          menu
-          .width(Is(Some(98.0)))
-          .padding(Is((4.0, 4.0, 4.0, 4.0)))
-          .gap(Is(2.0))
-          .radius(Is(11.0))
-          .ground(Is(0x18191DF7L))
-          .edge(Is((1.0, 0xFFFFFF2EL)))
-          .shadow(Is((14.0, 4.0, 0x00000070L)))
-          .presses(Is(true))
-          |> ignore
-          for f in [30, 60, 90, 120] {
-            menu.box(fn(item) {
-              let hov = smooth_hover(item, ms=100.0)
-              tactile_press(item, sink_px=0.8)
-              let on = fn() { rec_fps.get() == f }
-              item
-              .row(Is(true))
-              .height(Is(Some(26.0)))
-              .padding(Is((9.0, 0.0, 8.0, 0.0)))
-              .radius(Is(7.0))
-              .lines_up(Is(Some(Middle)))
-              .presses(Is(true))
-              .cursor(Is(Some(Hand)))
-              .says(By(fn() { Some(@view.said(Radio, label="\{f} fps", selected=on())) }))
-              .on_press(fn() {
-                rec_fps.set(f)
-                rec_fps_open.set(false)
-                save_settings()
-              })
-              .ground(By(fn() {
-                if item.pressed() {
-                  0xFFFFFF2EL
-                } else if on() {
-                  mix_rgba(0xFFFFFF22L, 0xFFFFFF2CL, hov())
-                } else {
-                  mix_rgba(0L, 0xFFFFFF18L, hov())
-                }
-              }))
-              |> ignore
-              item.box(fn(lbl) {
-                lbl
-                .grow(Is(1.0))
-                .words(Is("\{f} fps"), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-                .ink(By(fn() { if on() { 0xFFFFFFFFL } else { mix_rgba(0xC4CAD8FFL, 0xF5F6F8FFL, hov()) } }))
-                |> ignore
-              })
-              |> ignore
-              item.show(on, fn(ck) {
-                ck
-                .width(Is(Some(12.0)))
-                .height(Is(Some(12.0)))
-                .shrink(Is(0.0))
-                .picture(Is(Some(glyph("check"))))
-                .tint(Is(0x5CB3FFFFL))
-                |> ignore
-              }, at_once=true)
-            })
-            |> ignore
-          }
-        })
-        |> ignore
+      content.show(fn() { rec_phase.get() == 0 && rec_fps_open.get() && !rec_fps_up.get() }, fn(dd_wrap) {
+        rec_fps_menu_view(dd_wrap, false)
       }, at_once=true)
 
       // Floating hover tooltip / inline discard-confirmation pill centered inside the bottom halo (`rec_pad_b = 36pt`)
@@ -2728,6 +2704,80 @@ fn rec_window(root : @view.View) -> Unit {
       |> ignore
     })
     |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Shared 30 / 60 / 90 / 120 fps dropdown menu for the Ready bar; unfolds upward (`upward=true`) when near the bottom
+/// of the monitor so the Ready bar stays stationary under the pointer.
+fn rec_fps_menu_view(dd_wrap : @view.View, upward : Bool) -> Unit {
+  dd_wrap
+  .padding(Is(if upward { (62.0, 0.0, 0.0, 6.0) } else { (62.0, 6.0, 0.0, 0.0) }))
+  .shrink(Is(0.0))
+  .lines_up(Is(Some(Start)))
+  |> ignore
+  dd_wrap.box(fn(menu) {
+    enter_reveal(menu, ms=135.0, dy=if upward { 8.0 } else { -8.0 }, from_scale=0.96)
+    menu
+    .width(Is(Some(98.0)))
+    .padding(Is((4.0, 4.0, 4.0, 4.0)))
+    .gap(Is(2.0))
+    .radius(Is(11.0))
+    .ground(Is(0x18191DF7L))
+    .edge(Is((1.0, 0xFFFFFF2EL)))
+    .shadow(Is((14.0, 4.0, 0x00000070L)))
+    .presses(Is(true))
+    |> ignore
+    for f in [30, 60, 90, 120] {
+      menu.box(fn(item) {
+        let hov = smooth_hover(item, ms=100.0)
+        tactile_press(item, sink_px=0.8)
+        let on = fn() { rec_fps.get() == f }
+        item
+        .row(Is(true))
+        .height(Is(Some(26.0)))
+        .padding(Is((9.0, 0.0, 8.0, 0.0)))
+        .radius(Is(7.0))
+        .lines_up(Is(Some(Middle)))
+        .presses(Is(true))
+        .cursor(Is(Some(Hand)))
+        .says(By(fn() { Some(@view.said(Radio, label="\{f} fps", selected=on())) }))
+        .on_press(fn() {
+          rec_fps.set(f)
+          rec_fps_open.set(false)
+          save_settings()
+        })
+        .ground(By(fn() {
+          if item.pressed() {
+            0xFFFFFF2EL
+          } else if on() {
+            mix_rgba(0xFFFFFF22L, 0xFFFFFF2CL, hov())
+          } else {
+            mix_rgba(0L, 0xFFFFFF18L, hov())
+          }
+        }))
+        |> ignore
+        item.box(fn(lbl) {
+          lbl
+          .grow(Is(1.0))
+          .words(Is("\{f} fps"), look={ ..@view.words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+          .ink(By(fn() { if on() { 0xFFFFFFFFL } else { mix_rgba(0xC4CAD8FFL, 0xF5F6F8FFL, hov()) } }))
+          |> ignore
+        })
+        |> ignore
+        item.show(on, fn(ck) {
+          ck
+          .width(Is(Some(12.0)))
+          .height(Is(Some(12.0)))
+          .shrink(Is(0.0))
+          .picture(Is(Some(glyph("check"))))
+          .tint(Is(0x5CB3FFFFL))
+          |> ignore
+        }, at_once=true)
+      })
+      |> ignore
+    }
   })
   |> ignore
 }

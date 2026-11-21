@@ -48,6 +48,7 @@ fn dropdown_unfold(
   build : (@view.View) -> Unit,
   enter_ms? : Double = 165.0,
   leave_ms? : Double = 115.0,
+  upward? : Bool = false,
 ) -> Unit {
   let p = @motion.presence_in(
     slot,
@@ -65,7 +66,7 @@ fn dropdown_unfold(
     panel
     .shrink(Is(0.0))
     .alpha(By(p))
-    .drawn_off(By(fn() { (0.0, -14.0 * (1.0 - p())) }))
+    .drawn_off(By(fn() { (0.0, (if upward { 14.0 } else { -14.0 }) * (1.0 - p())) }))
     |> ignore
     build(panel)
   })
