@@ -960,6 +960,8 @@ fn overlay_actions(root : @view.View) -> Unit {
       commit_words()
     } else if selected.untracked() is Some(_) {
       selected.set(None)
+    } else if tool.untracked() != Move {
+      tool.set(Move)
     } else {
       close_capture()
     }

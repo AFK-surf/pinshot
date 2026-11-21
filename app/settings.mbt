@@ -553,6 +553,42 @@ let settings_tabs : Array[String] = ["常规", "快捷键", "截图与贴图", "
 ///|
 fn settings_window(root : @view.View) -> Unit {
   root.tree.hand_over_presses(false)
+  let ctrl = shortcut_mod()
+  let k = fn(code : Int, action : String, mods : Int) -> @view.Binding {
+    { keys: [{ code, mods }], action, when: Always }
+  }
+  root.keymap(
+    Is(
+      @view.Keymap::new([
+        k(@ui.key_escape, "close", 0),
+        k(@ui.key_of_char('1'), "tab-0", ctrl),
+        k(@ui.key_of_char('2'), "tab-1", ctrl),
+        k(@ui.key_of_char('3'), "tab-2", ctrl),
+        k(@ui.key_of_char('4'), "tab-3", ctrl),
+      ]),
+    ),
+  )
+  |> ignore
+  root.on_action("close", fn(_) {
+    if recording.untracked() != 0 {
+      return false
+    }
+    if settings_wid.val > 0 {
+      close_window(settings_wid.val)
+    }
+    true
+  })
+  |> ignore
+  for i in 0..<4 {
+    root.on_action("tab-\{i}", fn(_) {
+      if recording.untracked() != 0 {
+        return false
+      }
+      settings_tab.set(i)
+      true
+    })
+    |> ignore
+  }
   root.box(fn(w) {
     w.over(Is(true)).ground(Is(set_ground)).row(Is(true)) |> ignore
     w.box(fn(side) {
@@ -579,6 +615,7 @@ fn settings_window(root : @view.View) -> Unit {
           .radius(Is(7.0))
           .lines_up(Is(Some(Middle)))
           .presses(Is(true))
+          .cursor(Is(Some(Hand)))
           .says(By(fn() { Some(@view.said(Radio, label=tr(name), selected=settings_tab.get() == i)) }))
           .on_press(fn() { settings_tab.set(i) })
           .ground(By(fn() {
@@ -787,6 +824,7 @@ fn key_clear_button(parent : @view.View, which : Int) -> Unit {
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
+    .cursor(Is(Some(Hand)))
     .says(By(fn() { Some(@view.said(Button, label=tr("清空快捷键"))) }))
     .on_press(fn() { clear_key(which) })
     .ground(By(fn() { if b.pointed() { 0x464A56FFL } else { 0x353841FFL } }))
@@ -829,6 +867,7 @@ fn key_box(parent : @view.View, which : Int) -> Unit {
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
+    .cursor(Is(Some(Hand)))
     .says(By(fn() { Some(@view.said(Button, label=words())) }))
     .on_press(fn() { record_key(which) })
     .edge(By(fn() { (1.0, if recording.get() == which { 0x2F9BFFFFL } else { 0xFFFFFF24L }) }))
@@ -873,7 +912,17 @@ fn capture_page(p : @view.View) -> Unit {
         set_words(b, fn() { settings.get().save_dir }, 12.0, set_muted)
       })
       |> ignore
-      small_button(r, fn() { tr("打开") }, fn() { ps_reveal(cstr(settings.untracked().save_dir)) })
+      r.box(fn(btns) {
+        btns.row(Is(true)).gap(Is(6.0)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+        small_button(btns, fn() { tr("更改…") }, fn() {
+          let picked = text_of(ps_pick_folder(settings_wid.val, cstr(settings.untracked().save_dir)))
+          if picked != "" {
+            change_settings(fn(s) { { ..s, save_dir: picked } })
+          }
+        })
+        small_button(btns, fn() { tr("打开") }, fn() { ps_reveal(cstr(settings.untracked().save_dir)) })
+      })
+      |> ignore
     })
   })
   set_group(p, "贴图", fn(g) {
@@ -1125,6 +1174,9 @@ fn set_words(parent : @view.View, text : () -> String, size : Double, ink : Int6
 }
 
 ///|
+let set_card_rows : Ref[Int] = Ref(0)
+
+///|
 fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -> Unit {
   parent.box(fn(g) {
     g.gap(Is(6.0)) |> ignore
@@ -1133,7 +1185,10 @@ fn set_group(parent : @view.View, title : String, make : (@view.View) -> Unit) -
     }
     g.box(fn(card) {
       card.ground(Is(set_card)).radius(Is(12.0)).edge(Is((1.0, 0xFFFFFF22L))).padding(Is((14.0, 4.0, 14.0, 4.0))) |> ignore
+      let prev = set_card_rows.val
+      set_card_rows.val = 0
       make(card)
+      set_card_rows.val = prev
     })
     |> ignore
   })
@@ -1148,6 +1203,10 @@ fn set_row(
   note? : () -> String = fn() { "" },
   note_ink? : () -> Int64 = fn() { 0xE5A545FFL },
 ) -> Unit {
+  if set_card_rows.val > 0 {
+    parent.box(fn(sep) { sep.height(Is(Some(1.0))).ground(Is(0xFFFFFF14L)) |> ignore }) |> ignore
+  }
+  set_card_rows.val += 1
   parent.box(fn(row) {
     row
     .row(Is(true))
@@ -1201,6 +1260,7 @@ fn choice(parent : @view.View, names : Array[String], at : () -> Int, pick : (In
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         .presses(Is(true))
+        .cursor(Is(Some(Hand)))
         .says(By(fn() { Some(@view.said(Radio, label=tr(name), selected=at() == i)) }))
         .on_press(fn() { pick(i) })
         .ground(By(fn() {
@@ -1237,6 +1297,7 @@ fn switch(parent : @view.View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
     .radius(Is(10.0))
     .shrink(Is(0.0))
     .presses(Is(true))
+    .cursor(Is(Some(Hand)))
     .says(By(fn() { Some(@view.said(Switch, label="", check=if on() { On } else { Off })) }))
     .on_press(fn() { set(!on()) })
     .ground(By(fn() { mix_rgba(0x454852FFL, 0x2F9BFFFFL, knob.shown(s)) }))
@@ -1280,6 +1341,7 @@ fn small_button(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
+    .cursor(Is(Some(Hand)))
     .says(By(fn() { Some(@view.said(Button, label=label())) }))
     .on_press(press)
     .ground(By(fn() { if b.pressed() { 0x4E5361FFL } else { mix_rgba(0x353841FFL, 0x444854FFL, hov()) } }))

@@ -415,6 +415,7 @@ fn beauty_row(row : @view.View) -> Unit {
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         .presses(Is(true))
+        .cursor(Is(Some(Hand)))
         .says(By(fn() { Some(@view.said(Radio, label=tr(name), selected=beauty.get().back == i)) }))
         .on_press(fn() {
           tip_off()
@@ -513,6 +514,7 @@ fn beauty_word_button(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
+    .cursor(Is(Some(Hand)))
     .says(By(fn() { Some(@view.said(Button, label=tr(name))) }))
     .on_press(fn() {
       tip_off()

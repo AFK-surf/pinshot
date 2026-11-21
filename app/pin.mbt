@@ -879,6 +879,7 @@ fn pin_keys() -> @view.Keymap {
     { keys: [{ code, mods }], action, when: Always }
   }
   let ch = fn(c : Char, action : String, mods : Int) { k(@ui.key_of_char(c), action, mods) }
+  let shift = @ui.mod_shift_key
   @view.Keymap::new([
     k(@ui.key_escape, "close", 0),
     ch('c', "copy", shortcut_mod()),
@@ -887,8 +888,33 @@ fn pin_keys() -> @view.Keymap {
     ch('t', "top", shortcut_mod()),
     ch('0', "zoom1", shortcut_mod()),
     ch('r', "turn-cw", shortcut_mod()),
-    ch('r', "turn-ccw", shortcut_mod() | @ui.mod_shift_key),
+    ch('r', "turn-ccw", shortcut_mod() | shift),
+    k(@ui.key_code_left, "left", 0),
+    k(@ui.key_code_right, "right", 0),
+    k(@ui.key_code_up, "up", 0),
+    k(@ui.key_code_down, "down", 0),
+    k(@ui.key_code_left, "left10", shift),
+    k(@ui.key_code_right, "right10", shift),
+    k(@ui.key_code_up, "up10", shift),
+    k(@ui.key_code_down, "down10", shift),
   ])
+}
+
+///|
+fn nudge_pin(p : Pin, dx : Int, dy : Int) -> Unit {
+  let r = numbers_of(text_of(ps_window_rect(p.wid.val)))
+  if r.length() < 4 {
+    return
+  }
+  ps_place(
+    p.wid.val,
+    r[0].round().to_int() + dx,
+    r[1].round().to_int() + dy,
+    r[2].round().to_int(),
+    r[3].round().to_int(),
+    0,
+    0,
+  )
 }
 
 ///|
@@ -912,6 +938,13 @@ fn pin_actions(root : @view.View, p : Pin) -> Unit {
   on("reset", fn() { reset_pin(p) })
   on("turn-cw", fn() { turn_pin(p, true) })
   on("turn-ccw", fn() { turn_pin(p, false) })
+  for step in [(1, ""), (10, "10")] {
+    let (n, s) = step
+    on("left" + s, fn() { nudge_pin(p, -n, 0) })
+    on("right" + s, fn() { nudge_pin(p, n, 0) })
+    on("up" + s, fn() { nudge_pin(p, 0, -n) })
+    on("down" + s, fn() { nudge_pin(p, 0, n) })
+  }
 }
 
 ///|

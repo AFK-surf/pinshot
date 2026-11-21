@@ -1491,6 +1491,39 @@ moonbit_bytes_t ps_save_dialog(int32_t wid, moonbit_bytes_t dir, moonbit_bytes_t
   return out;
 }
 
+// A folder chosen by the person (or empty when cancelled), starting in `dir`.
+moonbit_bytes_t ps_pick_folder(int32_t wid, moonbit_bytes_t dir) {
+  IFileOpenDialog *d = NULL;
+  moonbit_bytes_t out = moonbit_make_bytes(0, 0);
+  if (FAILED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void **)&d)))
+    return out;
+  DWORD opts = 0;
+  if (SUCCEEDED(IFileOpenDialog_GetOptions(d, &opts)))
+    IFileOpenDialog_SetOptions(d, opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+  wchar_t *wd = ps_wide((const char *)dir);
+  CreateDirectoryW(wd, NULL);
+  IShellItem *folder = NULL;
+  if (SUCCEEDED(SHCreateItemFromParsingName(wd, NULL, &IID_IShellItem, (void **)&folder))) {
+    IFileOpenDialog_SetFolder(d, folder);
+    IShellItem_Release(folder);
+  }
+  free(wd);
+  HWND owner = wid >= 0 ? own_window(wid) : NULL;
+  if (SUCCEEDED(IFileOpenDialog_Show(d, owner))) {
+    IShellItem *item = NULL;
+    if (SUCCEEDED(IFileOpenDialog_GetResult(d, &item))) {
+      wchar_t *p = NULL;
+      if (SUCCEEDED(IShellItem_GetDisplayName(item, SIGDN_FILESYSPATH, &p))) {
+        out = ps_utf8_bytes(p);
+        CoTaskMemFree(p);
+      }
+      IShellItem_Release(item);
+    }
+  }
+  IFileOpenDialog_Release(d);
+  return out;
+}
+
 // A folder (or a file, selected in its folder) shown in Explorer.
 void ps_reveal(moonbit_bytes_t path) {
   wchar_t *w = ps_wide((const char *)path);

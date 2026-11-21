@@ -493,6 +493,7 @@ fn tool_group_button(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .presses(Is(true))
+    .cursor(By(fn() { if dim() { None } else { Some(Hand) } }))
     .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
     .on_press(fn() {
       if tip {
@@ -623,6 +624,7 @@ fn sub_tool_strip(left_slot : @view.View, shown_grp : @signals.Signal[Int]) -> U
         .lies_along(Is(Middle))
         .presses(By(has))
         .points(By(has))
+        .cursor(By(fn() { if has() { Some(Hand) } else { None } }))
         .says(By(fn() {
           match sub_tool_of(shown_grp.get(), i) {
             Some(w) => Some(@view.said(Button, label=tr(tool_label(w))))
@@ -827,6 +829,7 @@ fn style_row(row : @view.View) -> Unit {
             .lines_up(Is(Some(Middle)))
             .lies_along(Is(Middle))
             .presses(Is(true))
+            .cursor(Is(Some(Hand)))
             .says(By(fn() { Some(@view.said(Button, label=tr(["细", "中", "粗"][s]))) }))
             .on_press(fn() {
               tip_off()
@@ -877,6 +880,7 @@ fn style_row(row : @view.View) -> Unit {
             .lies_along(Is(Middle))
             .presses(By(live))
             .points(By(live))
+            .cursor(By(fn() { if live() { Some(Hand) } else { None } }))
             .says(Is(Some(@view.said(Button, label=hex6((c >> 8).to_int())))))
             .on_press(fn() {
               if !shown_col.untracked() {

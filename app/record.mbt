@@ -192,6 +192,17 @@ let rec_preview_key : @signals.Signal[String] = @signals.signal("")
 let rec_preview_seq : Ref[Int] = Ref(0)
 
 ///|
+/// Inline 2-step discard confirmation when cancelling an active recording or closing an unexported master.
+let rec_confirm_discard : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+let rec_discard_cancel : Ref[() -> Unit] = Ref(fn() {  })
+
+///|
+/// Local hover tooltip shown cleanly inside the bottom transparent halo (`rec_pad_b = 36pt`) with zero HWND resize.
+let rec_tip : @signals.Signal[String] = @signals.signal("")
+
+///|
 /// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma so alpha reaches 0 before every window edge).
 let rec_pad_l : Double = 30.0
 
@@ -613,6 +624,7 @@ fn rec_start_now() -> Unit {
 
 ///|
 fn rec_toggle_pause() -> Unit {
+  rec_disarm_discard()
   let ph = rec_phase.untracked()
   if ph == 1 {
     rec_phase.set(2)
@@ -625,6 +637,7 @@ fn rec_toggle_pause() -> Unit {
 
 ///|
 fn rec_finish_capture() -> Unit {
+  rec_disarm_discard()
   let ph = rec_phase.untracked()
   if ph != 1 && ph != 2 {
     return
@@ -651,6 +664,7 @@ fn rec_export_dest(ask_dialog : Bool) -> String {
 
 ///|
 fn rec_run_export(ask_dialog : Bool) -> Unit {
+  rec_disarm_discard()
   let ph = rec_phase.untracked()
   if rec_wid.val == 0 || (ph != 4 && ph != 6 && ph != 7) {
     return
@@ -751,15 +765,54 @@ fn rec_av1_told(v : Int) -> Unit {
 }
 
 ///|
+fn rec_disarm_discard() -> Unit {
+  (rec_discard_cancel.val)()
+  rec_discard_cancel.val = fn() {  }
+  if rec_confirm_discard.untracked() {
+    rec_confirm_discard.set(false)
+  }
+}
+
+///|
+fn rec_arm_discard() -> Unit {
+  rec_confirm_discard.set(true)
+  (rec_discard_cancel.val)()
+  match rec_root.val {
+    Some(root) =>
+      rec_discard_cancel.val = root.at_moment(
+        root.cause_at() + 3000.0,
+        fn() {
+          rec_discard_cancel.val = fn() {  }
+          rec_confirm_discard.set(false)
+        },
+        later=true,
+      )
+    None => ()
+  }
+}
+
+///|
 fn rec_cancel() -> Unit {
   let ph = rec_phase.untracked()
+  if ph == 5 {
+    // (an export under way called off alone: the recording kept, back to choosing; told "export-cancelled")
+    rec_disarm_discard()
+    ps_rec_export_cancel()
+    return
+  }
+  if ph == 3 {
+    return
+  }
+  let needs_confirm = ((ph == 1 || ph == 2) && rec_ms.untracked() >= 2000) || (ph == 4 && rec_exports.is_empty())
+  if needs_confirm && !rec_confirm_discard.untracked() {
+    rec_arm_discard()
+    return
+  }
+  rec_disarm_discard()
   if ph == 1 || ph == 2 {
     rec_phase.set(3)
     ps_rec_stop(1)
-  } else if ph == 5 {
-    // (an export under way called off alone: the recording kept, back to choosing; told "export-cancelled")
-    ps_rec_export_cancel()
-  } else if ph != 3 {
+  } else {
     rec_close()
   }
 }
@@ -788,6 +841,8 @@ fn rec_gone() -> Unit {
   rec_shrink_cancel.val = fn() {  }
   (rec_handoff_cancel.val)()
   rec_handoff_cancel.val = fn() {  }
+  rec_disarm_discard()
+  rec_tip.set("")
   if rec_closing_overlay.val {
     rec_closing_overlay.val = false
     close_capture()
@@ -985,11 +1040,28 @@ fn rec_keys() -> @view.Keymap {
   let k = fn(code : Int, action : String, mods : Int) -> @view.Binding {
     { keys: [{ code, mods }], action, when: Always }
   }
+  let ch = fn(c : Char, action : String, mods : Int) { k(@ui.key_of_char(c), action, mods) }
+  let ctrl = shortcut_mod()
   @view.Keymap::new([
     k(@ui.key_escape, "cancel", 0),
     k(@ui.key_code_enter, "primary", 0),
     k(@ui.key_space, "space", 0),
+    ch('c', "copy", ctrl),
+    k(@ui.key_code_copy, "copy", ctrl),
+    ch('s', "save", ctrl),
   ])
+}
+
+///|
+fn rec_tip_follow(v : @view.View, label_fn : () -> String, live? : () -> Bool = fn() { true }) -> Unit {
+  v.reacts(fn() { (v.pointed(), live(), label_fn()) }, at_start=false, fn(st) {
+    let (on, ok, lbl) = st
+    if on && ok {
+      rec_tip.set(lbl)
+    } else if !on && rec_tip.untracked() == lbl {
+      rec_tip.set("")
+    }
+  })
 }
 
 ///|
@@ -1003,12 +1075,14 @@ fn rec_icon_btn(
   size? : Double = bar_button,
   rad? : Double = bar_btn_corner,
   dim? : () -> Bool = fn() { false },
+  danger? : () -> Bool = fn() { false },
   tint_lit? : Int64 = 0x88C8FFFFL,
   bg_lit? : Int64 = 0x2F9BFF29L,
 ) -> Unit {
   row.box(fn(b) {
     let hov = smooth_hover(b, live=fn() { !dim() })
     tactile_press(b, live=fn() { !dim() })
+    rec_tip_follow(b, label_fn, live=fn() { !dim() })
     b
     .width(Is(Some(size)))
     .height(Is(Some(size)))
@@ -1023,12 +1097,14 @@ fn rec_icon_btn(
     .ground(By(fn() {
       if dim() {
         0L
+      } else if danger() {
+        mix_rgba(0xD4333944L, 0xD4333966L, hov())
       } else if b.pressed() {
         0xFFFFFF2EL
       } else if lit() {
         mix_rgba(bg_lit, 0x2F9BFF3DL, hov())
       } else {
-        mix_rgba(0L, 0xFFFFFF17L, hov())
+        mix_rgba(0L, 0xFFFFFF20L, hov())
       }
     }))
     |> ignore
@@ -1040,6 +1116,8 @@ fn rec_icon_btn(
       .tint(By(fn() {
         if dim() {
           0xFFFFFF66L
+        } else if danger() {
+          0xFCA5A5FFL
         } else if lit() {
           tint_lit
         } else {
@@ -1153,6 +1231,7 @@ fn rec_tab_item(
     .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
     .on_press(fn() {
       if rec_phase.untracked() != 5 {
+        rec_disarm_discard()
         press()
         rec_sync_combo_state()
         save_settings()
@@ -1222,6 +1301,7 @@ fn rec_inline_opt(
     .says(By(fn() { Some(@view.said(Button, label=label_fn())) }))
     .on_press(fn() {
       if rec_phase.untracked() != 5 {
+        rec_disarm_discard()
         press()
         rec_sync_combo_state()
         save_settings()
@@ -1321,6 +1401,31 @@ fn rec_window(root : @view.View) -> Unit {
     true
   })
   |> ignore
+  root.on_action("copy", fn(_) {
+    match rec_phase.untracked() {
+      4 | 6 | 7 => {
+        rec_run_export(false)
+        true
+      }
+      _ => false
+    }
+  })
+  |> ignore
+  root.on_action("save", fn(_) {
+    match rec_phase.untracked() {
+      4 | 6 | 7 => {
+        rec_run_export(true)
+        true
+      }
+      _ => false
+    }
+  })
+  |> ignore
+
+  root.reacts(fn() { rec_phase.get() }, at_start=false, fn(_) {
+    rec_tip.set("")
+    rec_disarm_discard()
+  })
 
   // Re-measure and adapt window dimensions cleanly whenever UI structure/labels change (never on timer ticks).
   root.reacts(fn() {
@@ -1498,6 +1603,7 @@ fn rec_window(root : @view.View) -> Unit {
               track_part(fps_b)
               let hov = smooth_hover(fps_b, live=fn() { rec_phase.get() == 0 })
               tactile_press(fps_b, live=fn() { rec_phase.get() == 0 }, sink_px=0.9)
+              rec_tip_follow(fps_b, fn() { tr("点击切换帧率") }, live=fn() { rec_phase.get() == 0 })
               fps_b
               .height(Is(Some(26.0)))
               .shrink(Is(0.0))
@@ -1594,7 +1700,14 @@ fn rec_window(root : @view.View) -> Unit {
             r.box(fn(acts) {
               track_part(acts)
               acts.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
-              rec_icon_btn(acts, fn() { "close" }, fn() { tr("取消 Esc") }, fn() { false }, rec_cancel)
+              rec_icon_btn(
+                acts,
+                fn() { "close" },
+                fn() { if rec_confirm_discard.get() { tr("再按一次丢弃") } else { tr("取消 Esc") } },
+                fn() { false },
+                rec_cancel,
+                danger=fn() { rec_confirm_discard.get() },
+              )
               acts.show(fn() { rec_phase.get() == 0 }, fn(sb) {
                 sb.shrink(Is(0.0)) |> ignore
                 rec_action_btn(
@@ -1846,6 +1959,7 @@ fn rec_window(root : @view.View) -> Unit {
             top.box(fn(cb) {
               let hov = smooth_hover(cb)
               tactile_press(cb, sink_px=0.9)
+              rec_tip_follow(cb, fn() { if rec_confirm_discard.get() { tr("再按一次丢弃") } else { tr("关闭 Esc") } })
               cb
               .width(Is(Some(24.0)))
               .height(Is(Some(24.0)))
@@ -1855,17 +1969,31 @@ fn rec_window(root : @view.View) -> Unit {
               .lies_along(Is(Middle))
               .presses(Is(true))
               .cursor(Is(Some(Hand)))
-              .says(By(fn() { Some(@view.said(Button, label=tr("关闭 Esc"))) }))
-              // (while it exports: that export called off, the recording kept, as Esc does)
-              .on_press(fn() { if rec_phase.untracked() == 5 { rec_cancel() } else { rec_close() } })
-              .ground(By(fn() { if cb.pressed() { 0xFFFFFF1EL } else { mix_rgba(0L, 0xFFFFFF12L, hov()) } }))
+              .says(By(fn() { Some(@view.said(Button, label=if rec_confirm_discard.get() { tr("再按一次丢弃") } else { tr("关闭 Esc") })) }))
+              // (while it exports: that export called off, the recording kept; unexported master asks 2-step confirm)
+              .on_press(rec_cancel)
+              .ground(By(fn() {
+                if rec_confirm_discard.get() {
+                  mix_rgba(0xD4333944L, 0xD4333966L, hov())
+                } else if cb.pressed() {
+                  0xFFFFFF1EL
+                } else {
+                  mix_rgba(0L, 0xFFFFFF16L, hov())
+                }
+              }))
               |> ignore
               cb.box(fn(g) {
                 g
                 .width(Is(Some(11.5)))
                 .height(Is(Some(11.5)))
                 .picture(Is(Some(glyph("close"))))
-                .tint(By(fn() { mix_rgba(0xA2A9B8FFL, 0xFFFFFFFFL, hov()) }))
+                .tint(By(fn() {
+                  if rec_confirm_discard.get() {
+                    0xFCA5A5FFL
+                  } else {
+                    mix_rgba(0xA2A9B8FFL, 0xFFFFFFFFL, hov())
+                  }
+                }))
                 |> ignore
               })
               |> ignore
@@ -2245,6 +2373,7 @@ fn rec_window(root : @view.View) -> Unit {
                 let live = fn() { rec_phase.get() != 5 }
                 let hov = smooth_hover(sa, live~)
                 tactile_press(sa, live~)
+                rec_tip_follow(sa, fn() { tr("另存为") + " Ctrl+S" }, live~)
                 sa
                 .width(Is(Some(32.0)))
                 .height(Is(Some(32.0)))
@@ -2307,17 +2436,17 @@ fn rec_window(root : @view.View) -> Unit {
                 .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(false) } })
                 .ground(By(fn() {
                   if rec_phase.get() == 5 {
-                    0xFFFFFF12L
+                    0x1472E055L
                   } else {
                     let p = ok_p.shown(pri)
-                    let rdy_bg = if pri.pressed() { 0xDDE0E6FFL } else { mix_rgba(0xF3F4F6FFL, 0xFFFFFFFFL, hov()) }
-                    let ok_bg = if pri.pressed() { 0x34D39944L } else { mix_rgba(0x34D39924L, 0x34D39934L, hov()) }
+                    let rdy_bg = if pri.pressed() { 0x0E5EC0FFL } else { mix_rgba(0x1472E0FFL, 0x1E80F0FFL, hov()) }
+                    let ok_bg = if pri.pressed() { 0x34D39944L } else { mix_rgba(0x34D39926L, 0x34D39938L, hov()) }
                     mix_rgba(rdy_bg, ok_bg, p)
                   }
                 }))
                 .edge(By(fn() {
                   let p = ok_p.shown(pri)
-                  if p > 0.01 { (1.0, mix_rgba(0x34D39900L, 0x34D39948L, p)) } else { (0.0, 0L) }
+                  if p > 0.01 { (1.0, mix_rgba(0x34D39900L, 0x34D39952L, p)) } else { (0.0, 0L) }
                 }))
                 |> ignore
                 pri.show(fn() { rec_phase.get() != 5 }, fn(ic) {
@@ -2326,7 +2455,7 @@ fn rec_window(root : @view.View) -> Unit {
                   .height(Is(Some(13.0)))
                   .shrink(Is(0.0))
                   .picture(Is(Some(glyph("copy"))))
-                  .tint(By(fn() { mix_rgba(0x111216FFL, 0x6EE7B7FFL, ok_p.shown(ic)) }))
+                  .tint(By(fn() { mix_rgba(0xFFFFFFFFL, 0x6EE7B7FFL, ok_p.shown(ic)) }))
                   |> ignore
                 }, at_once=true)
                 pri.box(fn(t) {
@@ -2346,7 +2475,7 @@ fn rec_window(root : @view.View) -> Unit {
                     if rec_phase.get() == 5 {
                       0xFFFFFF99L
                     } else {
-                      mix_rgba(0x111216FFL, 0x6EE7B7FFL, ok_p.shown(t))
+                      mix_rgba(0xFFFFFFFFL, 0x6EE7B7FFL, ok_p.shown(t))
                     }
                   }))
                   |> ignore
@@ -2398,6 +2527,46 @@ fn rec_window(root : @view.View) -> Unit {
             later=true,
           )
         }
+      })
+      |> ignore
+
+      // Floating hover tooltip / inline discard-confirmation pill centered inside the bottom halo (`rec_pad_b = 36pt`)
+      content.box(fn(tip_row) {
+        let shown_text = fn() {
+          if rec_confirm_discard.get() {
+            tr("再按一次丢弃")
+          } else {
+            rec_tip.get()
+          }
+        }
+        tip_row
+        .over_at(Is((Some(rec_pad_l), None, Some(rec_pad_r), Some(6.0))))
+        .laid_nowhere(By(fn() { shown_text() == "" }))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .presses(Is(false))
+        |> ignore
+        tip_row.box(fn(tp) {
+          tp
+          .height(Is(Some(24.0)))
+          .padding(Is((9.0, 0.0, 9.0, 0.0)))
+          .radius(Is(7.0))
+          .ground(By(fn() { if rec_confirm_discard.get() { 0x3B1518F5L } else { 0x141519F5L } }))
+          .edge(By(fn() { (1.0, if rec_confirm_discard.get() { 0xF8717188L } else { 0xFFFFFF2AL }) }))
+          .shadow(Is((8.0, 2.0, 0x00000066L)))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .presses(Is(false))
+          |> ignore
+          tp.box(fn(t) {
+            t
+            .words(By(shown_text), look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+            .ink(By(fn() { if rec_confirm_discard.get() { 0xFECACAFFL } else { 0xF5F6F8FFL } }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
     })

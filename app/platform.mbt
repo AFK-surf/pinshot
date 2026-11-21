@@ -234,6 +234,11 @@ extern "C" fn ps_write_file(path : Bytes, data : Bytes) -> Int = "ps_write_file"
 extern "C" fn ps_save_dialog(wid : Int, dir : Bytes, name : Bytes) -> Bytes = "ps_save_dialog"
 
 ///|
+/// A folder chosen by the person (UTF-8 path, empty if cancelled), starting in `dir`.
+#borrow(dir)
+extern "C" fn ps_pick_folder(wid : Int, dir : Bytes) -> Bytes = "ps_pick_folder"
+
+///|
 /// A folder, or a file in its folder, shown.
 #borrow(path)
 extern "C" fn ps_reveal(path : Bytes) -> Unit = "ps_reveal"

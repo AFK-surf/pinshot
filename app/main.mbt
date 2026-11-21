@@ -80,6 +80,7 @@ fn main {
     }
     if wid == ocr_wid.val {
       ocr_wid.val = 0
+      ocr_png.val = b""
       ocr_field.set("")
       trim_soon()
     }

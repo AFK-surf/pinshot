@@ -126,6 +126,17 @@ let long_pending : @signals.Signal[(String, Int, Int)] = @signals.signal(("", 0,
 let long_root : Ref[@view.View?] = Ref(None)
 
 ///|
+/// Inline 2-step confirmation for destructive Reset once multiple frames have been stitched.
+let long_confirm_reset : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+let long_reset_cancel : Ref[() -> Unit] = Ref(fn() {  })
+
+///|
+/// Local hover hint for icon-only buttons in the longshot panel.
+let long_tip : @signals.Signal[String] = @signals.signal("")
+
+///|
 let long_preview_n : Ref[Int] = Ref(0)
 
 ///|
@@ -388,10 +399,46 @@ fn long_toggle_pause() -> Unit {
 }
 
 ///|
+fn long_disarm_reset() -> Unit {
+  (long_reset_cancel.val)()
+  long_reset_cancel.val = fn() {  }
+  if long_confirm_reset.untracked() {
+    long_confirm_reset.set(false)
+  }
+}
+
+///|
+fn long_request_reset() -> Unit {
+  if long_wid.val == 0 || long_h.untracked() == 0 {
+    return
+  }
+  if long_pics.untracked() <= 1 || long_confirm_reset.untracked() {
+    long_disarm_reset()
+    long_reset()
+    return
+  }
+  long_confirm_reset.set(true)
+  (long_reset_cancel.val)()
+  match long_root.val {
+    Some(root) =>
+      long_reset_cancel.val = root.at_moment(
+        root.cause_at() + 3000.0,
+        fn() {
+          long_reset_cancel.val = fn() {  }
+          long_confirm_reset.set(false)
+        },
+        later=true,
+      )
+    None => ()
+  }
+}
+
+///|
 fn long_reset() -> Unit {
   if long_wid.val == 0 {
     return
   }
+  long_disarm_reset()
   long_clear_preview_images()
   @signals.start_batch()
   long_h.set(0)
@@ -611,6 +658,8 @@ fn long_gone() -> Unit {
     ps_long_end()
     ps_capture_open(0)
   }
+  long_disarm_reset()
+  long_tip.set("")
   long_clear_preview_images()
   long_root.val = None
   // (the previews let go now: one still being made a texture is freed as that is through, the native side counts)
@@ -808,11 +857,12 @@ fn long_window(root : @view.View) -> Unit {
       long_pill_button(
         ctrl,
         fn() { "reset" },
-        fn() { tr("重来") },
-        fn() { tr("重新开始 R") },
+        fn() { if long_confirm_reset.get() { tr("确认重来") } else { tr("重来") } },
+        fn() { tr("重新开始 Ctrl+R") },
         fn() { false },
         fn() { long_h.get() == 0 },
-        long_reset,
+        long_request_reset,
+        danger=fn() { long_confirm_reset.get() },
       )
       ctrl.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       ctrl.box(fn(meta) {
@@ -828,13 +878,58 @@ fn long_window(root : @view.View) -> Unit {
     page.box(fn(g) { g.height(Is(Some(10.0))) |> ignore }) |> ignore
 
     // 5. Primary Action Bar: Cancel, Pin, Save | Copy (accent)
+    let wrap_tip = fn(bar : @view.View, label_fn : () -> String, build : (@view.View) -> Unit) {
+      bar.box(fn(w) {
+        w.shrink(Is(0.0)) |> ignore
+        w.reacts(fn() { w.pointed() }, at_start=false, fn(on) {
+          if on {
+            long_tip.set(label_fn())
+          } else if long_tip.untracked() == label_fn() {
+            long_tip.set("")
+          }
+        })
+        build(w)
+      })
+      |> ignore
+    }
     page.box(fn(bar) {
       bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(long_box_w()))).lines_up(Is(Some(Middle))) |> ignore
-      tool_button(bar, "close", "取消 Esc", fn() { false }, long_close, tip=false)
-      tool_button(bar, "pin", "贴到屏幕 Ctrl+T", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tip=false)
-      tool_button(bar, "save", "保存 Ctrl+S", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tip=false)
+      wrap_tip(bar, fn() { tr("取消 Esc") }, fn(w) {
+        tool_button(w, "close", "取消 Esc", fn() { false }, long_close, tip=false)
+      })
+      wrap_tip(bar, fn() { tr("贴到屏幕") + " Ctrl+T" }, fn(w) {
+        tool_button(w, "pin", "贴到屏幕 Ctrl+T", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tip=false)
+      })
+      wrap_tip(bar, fn() { tr("保存") + " Ctrl+S" }, fn(w) {
+        tool_button(w, "save", "保存 Ctrl+S", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tip=false)
+      })
       bar.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       long_copy_button(bar)
+    })
+    |> ignore
+
+    // Floating hover tooltip pill above the bottom action bar for icon-only buttons
+    page.box(fn(tp) {
+      tp
+      .over_at(Is((Some(long_pad), None, None, Some(long_pad + bar_button + 8.0))))
+      .laid_nowhere(By(fn() { long_tip.get() == "" }))
+      .height(Is(Some(24.0)))
+      .padding(Is((9.0, 0.0, 9.0, 0.0)))
+      .radius(Is(7.0))
+      .ground(Is(0x141519F5L))
+      .edge(Is((1.0, 0xFFFFFF2AL)))
+      .shadow(Is((8.0, 2.0, 0x00000066L)))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      .presses(Is(false))
+      |> ignore
+      tp.box(fn(t) {
+        t
+        .words(By(fn() { long_tip.get() }), look={ ..@view.words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+        .ink(Is(long_ink))
+        |> ignore
+      })
+      |> ignore
     })
     |> ignore
   })
@@ -852,7 +947,7 @@ fn long_window(root : @view.View) -> Unit {
   on("save", long_save)
   on("pin", long_pin)
   on("pause", long_toggle_pause)
-  on("reset", long_reset)
+  on("reset", long_request_reset)
   on("scroll-up", fn() { long_scroll_by(-(long_vis_rows() / 5)) })
   on("scroll-down", fn() { long_scroll_by(long_vis_rows() / 5) })
   on("page-up", fn() { long_scroll_by(-(long_vis_rows() * 4 / 5)) })
@@ -1154,6 +1249,7 @@ fn long_pill_button(
   lit : () -> Bool,
   dim : () -> Bool,
   press : () -> Unit,
+  danger? : () -> Bool = fn() { false },
 ) -> Unit {
   row.box(fn(b) {
     let live = fn() { !dim() }
@@ -1174,6 +1270,8 @@ fn long_pill_button(
     .ground(By(fn() {
       if dim() {
         0xFFFFFF06L
+      } else if danger() {
+        mix_rgba(0xD4333938L, 0xD4333952L, hov())
       } else if lit() {
         mix_rgba(0x2F9BFF29L, 0x2F9BFF3DL, hov())
       } else if b.pressed() {
@@ -1183,7 +1281,9 @@ fn long_pill_button(
       }
     }))
     .edge(By(fn() {
-      if lit() && !dim() {
+      if danger() && !dim() {
+        (1.0, 0xF8717199L)
+      } else if lit() && !dim() {
         (1.0, 0x2F9BFF7AL)
       } else {
         (1.0, 0xFFFFFF22L)
@@ -1198,6 +1298,8 @@ fn long_pill_button(
       .tint(By(fn() {
         if dim() {
           0xFFFFFF44L
+        } else if danger() {
+          0xFCA5A5FFL
         } else if lit() {
           0x88C8FFFFL
         } else {
@@ -1213,6 +1315,8 @@ fn long_pill_button(
       .ink(By(fn() {
         if dim() {
           0xFFFFFF44L
+        } else if danger() {
+          0xFCA5A5FFL
         } else if lit() {
           0x88C8FFFFL
         } else {
@@ -1279,7 +1383,7 @@ fn long_keys() -> @view.Keymap {
     k(@ui.key_escape, "close", 0),
     k(@ui.key_code_enter, "copy", 0),
     k(@ui.key_space, "pause", 0),
-    ch('r', "reset", 0),
+    ch('r', "reset", shortcut_mod()),
     ch('c', "copy", shortcut_mod()),
     ch('s', "save", shortcut_mod()),
     ch('t', "pin", shortcut_mod()),

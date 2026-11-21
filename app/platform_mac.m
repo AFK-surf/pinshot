@@ -378,6 +378,16 @@ moonbit_bytes_t ps_save_dialog(int wid, moonbit_bytes_t dir, moonbit_bytes_t nam
   panel.nameFieldStringValue = str(name);
   return ps_string([panel runModal] == NSModalResponseOK ? panel.URL.path : nil);
 }
+moonbit_bytes_t ps_pick_folder(int wid, moonbit_bytes_t dir) {
+  (void)wid;
+  NSOpenPanel *panel = [NSOpenPanel openPanel];
+  panel.canChooseFiles = NO;
+  panel.canChooseDirectories = YES;
+  panel.allowsMultipleSelection = NO;
+  panel.canCreateDirectories = YES;
+  panel.directoryURL = [NSURL fileURLWithPath:str(dir) isDirectory:YES];
+  return ps_string([panel runModal] == NSModalResponseOK ? panel.URL.path : nil);
+}
 // A web page opened in the person's browser (https only).
 void ps_open_url(moonbit_bytes_t url) {
   NSString *s = str(url);

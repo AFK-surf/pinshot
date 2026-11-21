@@ -25,8 +25,13 @@ let ocr_state : @signals.Signal[OcrState] = @signals.signal(Reading)
 let ocr_field : @ui.Field = @ui.Field::new()
 
 ///|
+/// Kept only while the OCR window stays open so a failed run can be retried in one click (cleared on close).
+let ocr_png : Ref[Bytes] = Ref(b"")
+
+///|
 /// The words in `png` read, the window opened (or brought in front) to show them as they come.
 fn read_words(png : Bytes) -> Unit {
+  ocr_png.val = png
   ocr_id.val += 1
   ocr_field.set("")
   ocr_state.set(Reading)
@@ -126,11 +131,27 @@ fn ocr_failed_words(why : String) -> String {
 ///|
 fn ocr_window(root : @view.View) -> Unit {
   root.tree.hand_over_presses(false)
-  root.keymap(Is(@view.Keymap::new([{ keys: [{ code: @ui.key_escape, mods: 0 }], action: "close", when: Always }])))
+  root.keymap(
+    Is(
+      @view.Keymap::new([
+        { keys: [{ code: @ui.key_escape, mods: 0 }], action: "close", when: Always },
+        { keys: [{ code: @ui.key_code_enter, mods: shortcut_mod() }], action: "copy", when: Always },
+      ]),
+    ),
+  )
   |> ignore
   root.on_action("close", fn(_) {
     ocr_close()
     true
+  })
+  |> ignore
+  root.on_action("copy", fn(_) {
+    if ocr_state.untracked() is Read(_) {
+      ocr_copy()
+      true
+    } else {
+      false
+    }
   })
   |> ignore
   root.box(fn(page) {
@@ -217,9 +238,24 @@ fn ocr_window(root : @view.View) -> Unit {
       foot.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
       foot.box(fn(s) {
         s.grow(Is(1.0)) |> ignore
-        set_words(s, fn() { if ocr_state.get() is Read(_) { tr("可直接编辑修改文字 · Esc 关闭") } else { "" } }, 11.5, set_muted)
+        set_words(
+          s,
+          fn() { if ocr_state.get() is Read(_) { tr("可直接编辑修改文字 · Ctrl+Enter 复制 · Esc 关闭") } else { "" } },
+          11.5,
+          set_muted,
+        )
       })
       |> ignore
+      small_button(
+        foot,
+        fn() { tr("重试") },
+        fn() {
+          if ocr_png.val.length() > 0 {
+            read_words(ocr_png.val)
+          }
+        },
+        shown=fn() { ocr_state.get() is Failed(_) && ocr_png.val.length() > 0 },
+      )
       small_button(foot, fn() { tr("关闭") }, ocr_close)
       foot.box(fn(b) {
         b
@@ -230,6 +266,7 @@ fn ocr_window(root : @view.View) -> Unit {
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         .presses(Is(true))
+        .cursor(By(fn() { if ocr_state.get() is Read(_) { Some(Hand) } else { None } }))
         .says(By(fn() { Some(@view.said(Button, label=tr("复制全部"))) }))
         .on_press(fn() { if ocr_state.untracked() is Read(_) { ocr_copy() } })
         .ground(By(fn() {
