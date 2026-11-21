@@ -878,25 +878,11 @@ fn long_window(root : @view.View) -> Unit {
     page.box(fn(g) { g.height(Is(Some(10.0))) |> ignore }) |> ignore
 
     // 5. Primary Action Bar: Cancel, Pin, Save | Copy (accent)
-    let wrap_tip = fn(bar : @view.View, label : String, keys : String, build : (@view.View) -> Unit) {
-      bar.box(fn(w) {
-        w.shrink(Is(0.0)) |> ignore
-        long_tips.follow(w, fn() { label }, Top, keys=fn() { keys })
-        build(w)
-      })
-      |> ignore
-    }
     page.box(fn(bar) {
       bar.row(Is(true)).gap(Is(bar_gap)).width(Is(Some(long_box_w()))).lines_up(Is(Some(Middle))) |> ignore
-      wrap_tip(bar, "取消", "Esc", fn(w) {
-        tool_button(w, "close", "取消 Esc", fn() { false }, long_close, tip=false)
-      })
-      wrap_tip(bar, "贴到屏幕", "Ctrl+T", fn(w) {
-        tool_button(w, "pin", "贴到屏幕 Ctrl+T", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tip=false)
-      })
-      wrap_tip(bar, "保存截图", "Ctrl+S", fn(w) {
-        tool_button(w, "save", "保存 Ctrl+S", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tip=false)
-      })
+      tool_button(bar, "close", "取消", fn() { false }, long_close, tips=long_tips, keys=fn() { "Esc" })
+      tool_button(bar, "pin", "贴到屏幕", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tips=long_tips, keys=fn() { "Ctrl+T" })
+      tool_button(bar, "save", "保存截图", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tips=long_tips, keys=fn() { "Ctrl+S" })
       bar.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       long_copy_button(bar)
     })
@@ -1356,6 +1342,8 @@ fn long_keys() -> @view.Keymap {
     k(@ui.key_space, "pause", 0),
     ch('r', "reset", shortcut_mod()),
     ch('c', "copy", shortcut_mod()),
+    k(@ui.key_code_copy, "copy", shortcut_mod()),
+    k(@ui.key_code_copy, "copy", 0),
     ch('s', "save", shortcut_mod()),
     ch('t', "pin", shortcut_mod()),
     k(@ui.key_code_up, "scroll-up", 0),

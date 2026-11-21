@@ -238,17 +238,19 @@ fn toolbar_main_rect() -> (Double, Double, Double, Double)? {
 }
 
 ///|
+fn bar_shown() -> Bool {
+  sel.get() is Some(_) &&
+  (match hand.get() {
+    Drawing(_, _) | Moving(_, _, _) | Sizing(_, _, _) => false
+    _ => true
+  })
+}
+
+///|
 fn toolbar(stage : @view.View) -> Unit {
   stage.box(fn(o) {
     o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
     o.box(fn(col) {
-      let bar_shown = fn() {
-        sel.get() is Some(_) &&
-        (match hand.get() {
-          Drawing(_, _) | Moving(_, _, _) | Sizing(_, _, _) => false
-          _ => true
-        })
-      }
       let bar_in = @motion.NodeWay::new(if @signals.untracked(bar_shown) { 1.0 } else { 0.0 })
       col.reacts(bar_shown, at_start=false, fn(on) {
         if on {
@@ -484,10 +486,11 @@ fn tool_button(
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
   tip? : Bool = true,
+  tips? : TipScope = bar_tips,
   keys? : () -> String = fn() { "" },
   slot_views? : (Int, Map[Int, @view.View])? = None,
 ) -> Unit {
-  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~, keys~, slot_views~)
+  tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim~, strong~, tip~, tips~, keys~, slot_views~)
 }
 
 ///|
@@ -501,11 +504,10 @@ fn tool_group_button(
   dim? : () -> Bool = fn() { false },
   strong? : Bool = false,
   tip? : Bool = true,
+  tips? : TipScope = bar_tips,
   keys? : () -> String = fn() { "" },
   slot_views? : (Int, Map[Int, @view.View])? = None,
 ) -> Unit {
-  // (`tip`: told by the overlay's tip; a button of another window, the long screenshot's panel, is not: the tip is the
-  // overlay's, its node ids of no other window)
   bar.box(fn(b) {
     let has_slider = match slot_views {
       Some((idx, views)) => {
@@ -529,7 +531,7 @@ fn tool_group_button(
     .says(By(fn() { Some(@view.said(Button, label=tr(label_fn()))) }))
     .on_press(fn() {
       if tip {
-        tip_off()
+        tips.off()
       }
       if !dim() {
         press()
@@ -547,7 +549,7 @@ fn tool_group_button(
     }))
     |> ignore
     if tip {
-      tip_follows(b, label_fn, @view.Top, keys~)
+      tips.follow(b, label_fn, @view.Top, keys~)
     }
     b.box(fn(g) {
       g
@@ -633,7 +635,7 @@ fn sub_tool_strip(left_slot : @view.View, shown_grp : @signals.Signal[Int]) -> U
       views,
       style_btn_corner,
       fn() { 0xFFFFFF3DL },
-      snap_watch=fn() { shown_grp.get() },
+      snap_watch=fn() { shown_grp.get() * 2 + (if bar_shown() { 1 } else { 0 }) },
     )
     for i in 0..<3 {
       btns.box(fn(b) {
@@ -847,7 +849,14 @@ fn style_row(row : @view.View) -> Unit {
         .lines_up(Is(Some(Middle)))
         |> ignore
         let sz_views : Map[Int, @view.View] = Map([])
-        sliding_thumb(sz_grp, fn() { size_now.get() }, sz_views, style_btn_corner, fn() { 0xFFFFFF3DL })
+        sliding_thumb(
+          sz_grp,
+          fn() { size_now.get() },
+          sz_views,
+          style_btn_corner,
+          fn() { 0xFFFFFF3DL },
+          snap_watch=fn() { if bar_shown() { 1 } else { 0 } },
+        )
         for s in 0..<3 {
           sz_grp.box(fn(b) {
             sz_views[s] = b

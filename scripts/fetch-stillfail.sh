@@ -10,6 +10,17 @@ REPO="${STILLFAIL_REPO:-https://github.com/AFK-surf/still.fail.git}"
 farview() { [ "${1:-}" = library ] || [ ! -f "$DIR/apps/mbui/scripts/farview.sh" ] || sh "$DIR/apps/mbui/scripts/farview.sh"; }
 # PinShot's patches to it (patches/*.patch, each saying why at its head), applied once over that commit
 patched() {
+  local need_reset=0
+  for p in "$ROOT"/patches/*.patch; do
+    [ -f "$p" ] || continue
+    if ! git -C "$DIR" apply --check "$p" 2>/dev/null && ! git -C "$DIR" apply --reverse --check "$p" 2>/dev/null; then
+      need_reset=1
+      break
+    fi
+  done
+  if [ "$need_reset" = 1 ] && [ -n "$(git -C "$DIR" status --porcelain 2>/dev/null)" ]; then
+    git -C "$DIR" checkout -- .
+  fi
   for p in "$ROOT"/patches/*.patch; do
     [ -f "$p" ] || continue
     if git -C "$DIR" apply --check "$p" 2>/dev/null; then

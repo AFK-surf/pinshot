@@ -159,6 +159,7 @@ fn sliding_thumb(
           let (ix, iy, iw, ih) = target.laid_window_now()
           if iw <= 0.5 || ih <= 0.5 {
             visible.set(false)
+            placed.val = false
             return
           }
           let dx = ix - ox

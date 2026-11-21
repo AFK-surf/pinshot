@@ -400,6 +400,7 @@ fn beauty_row(row : @view.View) -> Unit {
       style_btn_corner,
       fn() { 0xFFFFFF3DL },
       extra_watch=fn() { if wallpaper.get() is Some(_) { 1 } else { 0 } },
+      snap_watch=fn() { if bar_shown() { 1 } else { 0 } },
     )
     for i, name in beauty_back_names {
       bgs.box(fn(b) {
@@ -470,7 +471,14 @@ fn beauty_row(row : @view.View) -> Unit {
   row.box(fn(rooms) {
     rooms.row(Is(true)).gap(Is(bar_gap)).lines_up(Is(Some(Middle))) |> ignore
     let rm_views : Map[Int, @view.View] = Map([])
-    sliding_thumb(rooms, fn() { beauty.get().room }, rm_views, style_btn_corner, fn() { 0xFFFFFF3DL })
+    sliding_thumb(
+      rooms,
+      fn() { beauty.get().room },
+      rm_views,
+      style_btn_corner,
+      fn() { 0xFFFFFF3DL },
+      snap_watch=fn() { if bar_shown() { 1 } else { 0 } },
+    )
     for i, name in ["小", "中", "大"] {
       beauty_word_button(
         rooms,
