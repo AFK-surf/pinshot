@@ -2499,7 +2499,7 @@ fn rec_window(root : @view.View) -> Unit {
                 let live = fn() { rec_phase.get() != 5 }
                 let hov = smooth_hover(sa, live~)
                 tactile_press(sa, live~)
-                rec_tip_follow(sa, fn() { tr("另存为") + " Ctrl+S" }, live~)
+                rec_tip_follow(sa, fn() { tr("另存为") + " " + key_hint("Ctrl+S") }, live~)
                 sa
                 .width(Is(Some(32.0)))
                 .height(Is(Some(32.0)))
