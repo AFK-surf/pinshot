@@ -106,6 +106,7 @@ let en_words : Map[String, String] = {
   "打开位置": "Show",
   "再按一次丢弃": "Press again to discard",
   "再按丢弃": "Discard?",
+  "丢弃录制": "Discard recording",
   "点击切换帧率": "Toggle frame rate",
   "启动录屏失败": "Couldn't start recording",
   "启动导出失败": "Couldn't start export",

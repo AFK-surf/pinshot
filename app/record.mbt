@@ -1408,6 +1408,10 @@ fn rec_window(root : @view.View) -> Unit {
   root.tree.hand_over_presses(false)
   root.keymap(Is(rec_keys())) |> ignore
   root.on_action("cancel", fn(_) {
+    let ph = rec_phase.untracked()
+    if ph == 1 || ph == 2 {
+      return true
+    }
     rec_cancel()
     true
   })
@@ -1734,7 +1738,15 @@ fn rec_window(root : @view.View) -> Unit {
               rec_icon_btn(
                 acts,
                 fn() { "close" },
-                fn() { if rec_confirm_discard.get() { tr("再按一次丢弃") } else { tr("取消 Esc") } },
+                fn() {
+                  if rec_confirm_discard.get() {
+                    tr("再按一次丢弃")
+                  } else if rec_phase.get() == 0 {
+                    tr("取消 Esc")
+                  } else {
+                    tr("丢弃录制")
+                  }
+                },
                 fn() { false },
                 rec_cancel,
                 danger=fn() { rec_confirm_discard.get() },
