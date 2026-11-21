@@ -50,8 +50,6 @@ fn main {
       settings_window
     } else if what == "toast" {
       toast_window
-    } else if what == "ocr" {
-      ocr_window
     } else if what == "long" {
       long_window
     } else if what == "rec" {
@@ -77,12 +75,6 @@ fn main {
     }
     if wid == toast_wid.val {
       toast_wid.val = 0
-    }
-    if wid == ocr_wid.val {
-      ocr_wid.val = 0
-      ocr_png.val = b""
-      ocr_field.set("")
-      trim_soon()
     }
     if wid == long_wid.val {
       long_gone()
@@ -228,7 +220,7 @@ fn told(json : String, bytes : Bytes?) -> Unit {
           let wid = w.to_int()
           if wid == 0 {
             close_capture()
-          } else if wid == settings_wid.val || wid == ocr_wid.val {
+          } else if wid == settings_wid.val {
             close_window(wid)
           } else if wid == long_wid.val {
             long_close()

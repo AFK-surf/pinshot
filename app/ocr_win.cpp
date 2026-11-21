@@ -251,16 +251,20 @@ static HRESULT engine_found(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcr
   return SUCCEEDED(hr) && engine ? S_OK : S_FALSE;
 }
 
-// What came of a reading: its words (UTF-8), the language read in, why it failed ("" it did not).
+// What came of a reading: its words (UTF-8), per-word normalized boxes (TSV: line\tspace\tx\ty\tw\th\ttext), the
+// language read in, why it failed ("" it did not).
 struct OcrOut {
   std::string text;
+  std::string boxes;
   std::string lang;
   const char *why;
   int lines;
   double ms;
 };
 
-static void ocr_run(const uint8_t *png, int len, OcrOut *o) {
+static double clamp01(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
+
+static void ocr_run(const uint8_t *png, int len, OcrOut *o, bool want_boxes) {
   LARGE_INTEGER f, t0, t1;
   QueryPerformanceFrequency(&f);
   QueryPerformanceCounter(&t0);
@@ -312,6 +316,8 @@ static void ocr_run(const uint8_t *png, int len, OcrOut *o) {
   }
   UINT32 nl = 0;
   lines->get_Size(&nl);
+  double inv_w = w > 0 ? 1.0 / (double)w : 0.0;
+  double inv_h = h > 0 ? 1.0 / (double)h : 0.0;
   std::wstring all;
   for (UINT32 i = 0; i < nl; i++) {
     ComPtr<OCR::IOcrLine> line;
@@ -320,6 +326,7 @@ static void ocr_run(const uint8_t *png, int len, OcrOut *o) {
     UINT32 nw = 0;
     words->get_Size(&nw);
     std::wstring l;
+    int line_idx = o->lines;
     for (UINT32 j = 0; j < nw; j++) {
       ComPtr<OCR::IOcrWord> word;
       HString t;
@@ -330,21 +337,41 @@ static void ocr_run(const uint8_t *png, int len, OcrOut *o) {
       int space = !l.empty() && !(unspaced(l.back()) && unspaced(s[0]));
       if (space) l.push_back(L' ');
       l.append(s, n);
+      if (want_boxes && inv_w > 0.0 && inv_h > 0.0) {
+        WF::Rect rc = {0, 0, 0, 0};
+        if (SUCCEEDED(word->get_BoundingRect(&rc))) {
+          double nx = clamp01((double)rc.X * inv_w);
+          double ny = clamp01((double)rc.Y * inv_h);
+          double bw = clamp01((double)rc.Width * inv_w);
+          double bh = clamp01((double)rc.Height * inv_h);
+          if (nx + bw > 1.0) bw = 1.0 - nx;
+          if (ny + bh > 1.0) bh = 1.0 - ny;
+          std::string u = utf8_of(t.Get());
+          for (char &c : u) {
+            if (c == '\t' || c == '\r' || c == '\n') c = ' ';
+          }
+          char row[96];
+          int rn = snprintf(row, sizeof row, "%d\t%d\t%.5f\t%.5f\t%.5f\t%.5f\t", line_idx, space, nx, ny, bw, bh);
+          if (rn > 0 && rn < (int)sizeof row) {
+            o->boxes.append(row, (size_t)rn);
+            o->boxes.append(u);
+            o->boxes.push_back('\n');
+          }
+        }
+      }
     }
     if (l.empty()) continue;
     if (!all.empty()) all.push_back(L'\n');
     all += l;
     o->lines++;
   }
-  if (!all.empty()) {
+  if (!want_boxes && !all.empty()) {
     int m = WideCharToMultiByte(CP_UTF8, 0, all.data(), (int)all.size(), NULL, 0, NULL, NULL);
     o->text.assign(m > 0 ? m : 0, '\0');
     if (m > 0) WideCharToMultiByte(CP_UTF8, 0, all.data(), (int)all.size(), &o->text[0], m, NULL, NULL);
   }
   QueryPerformanceCounter(&t1);
   o->ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / f.QuadPart;
-  (void)w;
-  (void)h;
 }
 
 struct OcrJob {
@@ -363,15 +390,15 @@ static DWORD WINAPI ocr_thread(LPVOID p) {
   OcrJob *job = (OcrJob *)p;
   HRESULT ro = RoInitialize(RO_INIT_MULTITHREADED);
   while (job) {
-    OcrOut o = {"", "", "", 0, 0.0};
-    ocr_run(job->png, job->len, &o);
+    OcrOut o = {"", "", "", "", 0, 0.0};
+    ocr_run(job->png, job->len, &o, true);
     char json[256];
     int n = snprintf(json, sizeof json,
-                     "{\"do\":\"ocr\",\"id\":%d,\"why\":\"%s\",\"lang\":\"%.40s\",\"lines\":%d,\"ms\":%.0f}", job->id,
-                     o.why, o.lang.c_str(), o.lines, o.ms);
+                     "{\"do\":\"ocr\",\"id\":%d,\"why\":\"%s\",\"lang\":\"%.40s\",\"lines\":%d,\"ms\":%.0f,\"fmt\":\"boxes\"}",
+                     job->id, o.why, o.lang.c_str(), o.lines, o.ms);
     if (n < 0) n = 0;
     else if (n >= (int)sizeof json) n = (int)sizeof json - 1;
-    mb_post("ps", json, (size_t)n, (const uint8_t *)o.text.data(), o.text.size());
+    mb_post("ps", json, (size_t)n, (const uint8_t *)o.boxes.data(), o.boxes.size());
     free(job);
     AcquireSRWLockExclusive(&jobs_lock);
     job = job_next;
@@ -424,7 +451,7 @@ extern "C" moonbit_bytes_t ps_ocr_now(moonbit_bytes_t png) {
   o.ms = 0;
   if (len > 0) {
     HRESULT ro = RoInitialize(RO_INIT_MULTITHREADED);
-    ocr_run(png, len, &o);
+    ocr_run(png, len, &o, false);
     if (SUCCEEDED(ro)) RoUninitialize();
   }
   char head[128];
