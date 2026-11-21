@@ -623,7 +623,6 @@ fn sub_tool_strip(left_slot : @view.View, shown_grp : @signals.Signal[Int]) -> U
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         .presses(By(has))
-        .points(By(has))
         .cursor(By(fn() { if has() { Some(Hand) } else { None } }))
         .says(By(fn() {
           match sub_tool_of(shown_grp.get(), i) {
@@ -863,7 +862,6 @@ fn style_row(row : @view.View) -> Unit {
         .gap(Is(bar_gap))
         .lines_up(Is(Some(Middle)))
         .alpha(By(fn() { color_a.shown(csec) }))
-        .points(By(fn() { shown_col.get() }))
         .presses(By(fn() { shown_col.get() }))
         |> ignore
         bar_rule_node(csec)
@@ -879,7 +877,6 @@ fn style_row(row : @view.View) -> Unit {
             .lines_up(Is(Some(Middle)))
             .lies_along(Is(Middle))
             .presses(By(live))
-            .points(By(live))
             .cursor(By(fn() { if live() { Some(Hand) } else { None } }))
             .says(Is(Some(@view.said(Button, label=hex6((c >> 8).to_int())))))
             .on_press(fn() {
