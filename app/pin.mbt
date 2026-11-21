@@ -39,6 +39,20 @@ struct Pin {
   edge : @signals.Signal[Int]
   /// a drag by an edge under way: none, or where it went down
   sizing : Ref[PinSizing?]
+  /// Live Text (in-place OCR selection on the pin image; zero idle cost while ocr_on is false)
+  ocr_on : @signals.Signal[Bool]
+  ocr : @signals.Signal[PinOcr]
+  ocr_sel : @signals.Signal[(Int, Int)?]
+  ocr_hover : @signals.Signal[Int]
+  ocr_copied_at : @signals.Signal[Double]
+  ocr_req : Ref[Int]
+  ocr_from_capture : Ref[Bool]
+  ocr_selecting : Ref[Bool]
+  ocr_anchor : Ref[Int]
+  ocr_drag_moved : Ref[Bool]
+  ocr_click_at : Ref[Double]
+  ocr_click_word : Ref[Int]
+  ocr_clicks : Ref[Int]
 }
 
 ///|
@@ -69,7 +83,7 @@ let pins_hidden : Ref[Bool] = Ref(false)
 
 ///|
 /// A pin of `png` (w by h pixels) opened at x, y on the screen, at `zoom` (a long screenshot's: brought down to fit).
-fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom? : Double = 1.0) -> Unit {
+fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom? : Double = 1.0, start_ocr? : Bool = false) -> Unit {
   pin_n.val += 1
   let what = "pin:\{pin_n.val}"
   let key = "mem:" + what
@@ -96,6 +110,19 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom? : Double = 1.
     flash: @signals.signal(0.0),
     edge: @signals.signal(0),
     sizing: Ref(None),
+    ocr_on: @signals.signal(false),
+    ocr: @signals.signal_by(Idle, same=fn(a, b) { physical_equal(a, b) }),
+    ocr_sel: @signals.signal(None),
+    ocr_hover: @signals.signal(-1),
+    ocr_copied_at: @signals.signal(-10000.0),
+    ocr_req: Ref(0),
+    ocr_from_capture: Ref(start_ocr),
+    ocr_selecting: Ref(false),
+    ocr_anchor: Ref(-1),
+    ocr_drag_moved: Ref(false),
+    ocr_click_at: Ref(-10000.0),
+    ocr_click_word: Ref(-1),
+    ocr_clicks: Ref(0),
   }
   pins[what] = p
   let wid = @ui.window_open_here(what)
@@ -122,6 +149,9 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom? : Double = 1.
     ps_opacity(wid, s.pin_alpha)
   }
   pins_hidden.val = false
+  if start_ocr {
+    pin_start_ocr(p, from_capture=true)
+  }
   log("pin \{w}x\{h} opened (\{pins.length()} open)")
 }
 
@@ -166,6 +196,7 @@ fn close_pin(wid : Int) -> Unit {
 /// A pin's window gone (closed here or by the system): what it held let go.
 fn pin_gone(wid : Int) -> Unit {
   guard pin_of_wid(wid) is Some((what, p)) else { return }
+  pin_ocr_clear_pending(p)
   pins.remove(what)
   pin_roots.remove(wid)
   @ui.forget_image(p.key.untracked())
@@ -308,6 +339,17 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   p.zoomed_at.set(now_of(p))
   @signals.end_batch()
   ps_place(p.wid.val, (cx - nw / 2.0).round().to_int(), (cy - nh / 2.0).round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
+  // (rotated or flipped: previous Live Text boxes no longer match the shown pixels; re-read if Live Text is active)
+  pin_ocr_clear_pending(p)
+  p.ocr_selecting.val = false
+  @signals.start_batch()
+  p.ocr.set(Idle)
+  p.ocr_sel.set(None)
+  p.ocr_hover.set(-1)
+  @signals.end_batch()
+  if p.ocr_on.untracked() {
+    pin_start_ocr(p)
+  }
   p.edge.set(pin_edge(p))
 }
 
@@ -514,25 +556,33 @@ fn bmp_rgba(b : Bytes) -> (Int, Int, FixedArray[Byte])? {
 }
 
 ///|
-/// Which of pin `p`'s edges the pointer is by now (within 8 points of it, at most a quarter of the pin in from it):
-/// 1 left, 2 right, 4 top, 8 bottom, a corner two of them; 0 inside it, or not over it.
-fn pin_edge(p : Pin) -> Int {
+/// Pointer relative to pin `p` in one native round-trip: `(edge, u, v, w_px, h_px)` where `edge` is the resize band
+/// (1 left, 2 right, 4 top, 8 bottom, 0 inside) and `(u, v)` are normalized `[0, 1]` coordinates in the pin image.
+fn pin_pointer_uv(p : Pin) -> (Int, Double, Double, Double, Double) {
   let r = numbers_of(text_of(ps_window_rect(p.wid.val)))
   let q = numbers_of(text_of(ps_pointer()))
   if r.length() < 5 || q.length() < 2 {
-    return 0
+    return (0, -1.0, -1.0, 0.0, 0.0)
   }
   let (x, y, w, h) = (r[0], r[1], r[2], r[3])
   let (px, py) = (q[0] - x, q[1] - y)
-  if px < 0.0 || py < 0.0 || px >= w || py >= h {
-    return 0
+  if w <= 0.0 || h <= 0.0 || px < 0.0 || py < 0.0 || px >= w || py >= h {
+    return (0, -1.0, -1.0, w, h)
   }
   let band = 8.0 * dmax(r[4], 96.0) / 96.0
   let bx = dmin(band, w / 4.0)
   let by = dmin(band, h / 4.0)
   let ex = if px < bx { 1 } else if px >= w - bx { 2 } else { 0 }
   let ey = if py < by { 4 } else if py >= h - by { 8 } else { 0 }
-  ex | ey
+  (ex | ey, px / w, py / h, w, h)
+}
+
+///|
+/// Which of pin `p`'s edges the pointer is by now (within 8 points of it, at most a quarter of the pin in from it):
+/// 1 left, 2 right, 4 top, 8 bottom, a corner two of them; 0 inside it, or not over it.
+fn pin_edge(p : Pin) -> Int {
+  let (e, _, _, _, _) = pin_pointer_uv(p)
+  e
 }
 
 ///|
@@ -655,20 +705,56 @@ fn pin_menu(p : Pin) -> Unit {
   let top = p.top.untracked()
   let a = p.alpha.untracked()
   let o = tr("不透明度")
-  let lines = [
-    "copy\t" + tr("复制") + "\t" + key_hint("Ctrl+C"), "save\t" + tr("另存为…") + "\t", "ocr\t" + tr("提取文字") + "\t", "-", "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
-    "front\t" + tr("移到最前") + "\t", "-", "turn-ccw\t" + tr("向左旋转 90°") + "\t" + key_hint("Ctrl+Shift+R"),
+  let ocr_active = p.ocr_on.untracked()
+  let ocr_ready = p.ocr.untracked() is Ready(_, _)
+  let has_sel = ocr_active && ocr_ready && p.ocr_sel.untracked() is Some(_)
+  let lines : Array[String] = []
+  if ocr_active {
+    if has_sel {
+      lines.push("copy-sel\t" + tr("复制选中文字") + "\t" + key_hint("Ctrl+C"))
+      lines.push("copy-all\t" + tr("复制全部文字") + "\t")
+    } else if ocr_ready {
+      lines.push("copy-all\t" + tr("复制全部文字") + "\t" + key_hint("Ctrl+C"))
+    }
+    lines.push("ocr-off\t" + tr("退出选字") + "\t" + key_hint("Ctrl+O"))
+    lines.push("-")
+    lines.push("copy\t" + tr("复制图片") + "\t")
+    lines.push("save\t" + tr("另存为…") + "\t")
+  } else {
+    lines.push("copy\t" + tr("复制") + "\t" + key_hint("Ctrl+C"))
+    lines.push("save\t" + tr("另存为…") + "\t")
+    lines.push("ocr\t" + tr("提取文字") + "\t" + key_hint("Ctrl+O"))
+  }
+  for item in [
+    "-",
+    "top\t" + tr("置顶") + "\t" + (if top { "c" } else { "" }),
+    "front\t" + tr("移到最前") + "\t",
+    "-",
+    "turn-ccw\t" + tr("向左旋转 90°") + "\t" + key_hint("Ctrl+Shift+R"),
     "turn-cw\t" + tr("向右旋转 90°") + "\t" + key_hint("Ctrl+R"),
-    "flip-x\t" + tr("水平翻转") + "\t", "flip-y\t" + tr("垂直翻转") + "\t", "zoom1\t" + tr("原始大小 (100%)") + "\t" + key_hint("Ctrl+0"), "reset\t" + tr("重置") + "\t" + (if pin_as_pinned(p) { "g" } else { "" }), "-",
-    "a100\t\{o} 100%\t" + (if a >= 255 { "c" } else { "" }), "a80\t\{o} 80%\t" + (if a == 204 { "c" } else { "" }),
-    "a60\t\{o} 60%\t" + (if a == 153 { "c" } else { "" }), "a40\t\{o} 40%\t" + (if a == 102 { "c" } else { "" }), "-",
-    "close\t" + tr("关闭") + "\tEsc", "close-all\t" + tr("关闭全部贴图") + "\t",
-  ]
+    "flip-x\t" + tr("水平翻转") + "\t",
+    "flip-y\t" + tr("垂直翻转") + "\t",
+    "zoom1\t" + tr("原始大小 (100%)") + "\t" + key_hint("Ctrl+0"),
+    "reset\t" + tr("重置") + "\t" + (if pin_as_pinned(p) { "g" } else { "" }),
+    "-",
+    "a100\t\{o} 100%\t" + (if a >= 255 { "c" } else { "" }),
+    "a80\t\{o} 80%\t" + (if a == 204 { "c" } else { "" }),
+    "a60\t\{o} 60%\t" + (if a == 153 { "c" } else { "" }),
+    "a40\t\{o} 40%\t" + (if a == 102 { "c" } else { "" }),
+    "-",
+    "close\t" + tr("关闭") + "\tEsc",
+    "close-all\t" + tr("关闭全部贴图") + "\t",
+  ] {
+    lines.push(item)
+  }
   let chose = text_of(ps_popup_menu(p.wid.val, @utf8.encode(menu_lines(lines))))
   match chose {
+    "copy-sel" => pin_copy_ocr_selected(p) |> ignore
+    "copy-all" => pin_copy_ocr_all(p) |> ignore
+    "ocr-off" => pin_exit_ocr(p)
     "copy" => copy_pin(p)
     "save" => save_pin(p)
-    "ocr" => read_words(shown_picture(p))
+    "ocr" => pin_start_ocr(p)
     "top" => {
       p.top.set(!top)
       ps_topmost(p.wid.val, if top { 0 } else { 1 }, 0)
@@ -746,8 +832,34 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
     .ground(Is(0x000000FFL))
     .keymap(Is(pin_keys()))
     .presses(Is(true))
-    .cursor(By(fn() { Some(edge_cursor(p.edge.get())) }))
-    .on_pointer_moved(fn() { if p.sizing.val is None { p.edge.set(pin_edge(p)) } })
+    .cursor(By(fn() {
+      let e = p.edge.get()
+      if e != 0 {
+        Some(edge_cursor(e))
+      } else if p.ocr_on.get() && (p.ocr_selecting.val || p.ocr_hover.get() >= 0) {
+        Some(IBeam)
+      } else {
+        Some(Arrow)
+      }
+    }))
+    .on_pointer_moved(fn() {
+      if p.sizing.val is None {
+        if !p.ocr_on.untracked() {
+          p.edge.set(pin_edge(p))
+        } else {
+          let (e, u, v, pw, ph) = pin_pointer_uv(p)
+          p.edge.set(e)
+          if e != 0 {
+            p.ocr_hover.set(-1)
+          } else {
+            match p.ocr.untracked() {
+              Ready(ws, _) => p.ocr_hover.set(ocr_hit_word(ws, u, v, pw, ph))
+              _ => p.ocr_hover.set(-1)
+            }
+          }
+        }
+      }
+    })
     .on_drag(fn(d) {
       // (by an edge or a corner: sized as the pointer goes, till it is let go)
       match p.sizing.val {
@@ -762,9 +874,60 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
         }
         _ => ()
       }
+      // (Live Text drag selection in progress)
+      if p.ocr_selecting.val && d.kind != Down {
+        match p.ocr.untracked() {
+          Ready(ws, _) if !ws.is_empty() => {
+            let (_, _, lw, lh) = root.laid_window_now()
+            let (u, v) = if lw > 0.0 && lh > 0.0 {
+              (clamp(d.x / lw, 0.0, 1.0), clamp(d.y / lh, 0.0, 1.0))
+            } else {
+              let (_, pu, pv, _, _) = pin_pointer_uv(p)
+              (clamp(pu, 0.0, 1.0), clamp(pv, 0.0, 1.0))
+            }
+            if d.kind == Moved {
+              if !p.ocr_drag_moved.val && (d.x - d.ox).abs() + (d.y - d.oy).abs() >= 3.0 {
+                p.ocr_drag_moved.val = true
+              }
+              if p.ocr_drag_moved.val {
+                let focus = ocr_nearest_word(ws, u, v)
+                if focus >= 0 {
+                  p.ocr_sel.set(Some((p.ocr_anchor.val, focus)))
+                }
+              }
+            } else {
+              p.ocr_selecting.val = false
+              if !p.ocr_drag_moved.val {
+                let idx = p.ocr_anchor.val
+                if idx >= 0 && idx < ws.length() {
+                  let prev_i = p.ocr_click_word.val
+                  let same = d.at - p.ocr_click_at.val <= 420.0 &&
+                    (prev_i == idx || (prev_i >= 0 && prev_i < ws.length() && ws[prev_i].line == ws[idx].line))
+                  let clicks = if same { (p.ocr_clicks.val % 3) + 1 } else { 1 }
+                  p.ocr_click_at.val = d.at
+                  p.ocr_click_word.val = idx
+                  p.ocr_clicks.val = clicks
+                  if clicks == 1 {
+                    p.ocr_sel.set(None)
+                  } else if clicks == 2 {
+                    p.ocr_sel.set(Some(ocr_token_range(ws, idx)))
+                  } else {
+                    p.ocr_sel.set(Some(ocr_line_range(ws, idx)))
+                  }
+                }
+              } else {
+                p.ocr_clicks.val = 0
+              }
+            }
+          }
+          _ => p.ocr_selecting.val = false
+        }
+        return
+      }
       if d.kind == Down {
         p.sizing.val = None
-        let e = pin_edge(p)
+        p.ocr_selecting.val = false
+        let (e, u, v, pw, ph) = pin_pointer_uv(p)
         p.edge.set(e)
         if e != 0 {
           let r = numbers_of(text_of(ps_window_rect(wid)))
@@ -783,6 +946,24 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
             })
             return
           }
+        }
+        if p.ocr_on.untracked() {
+          match p.ocr.untracked() {
+            Ready(ws, _) if !ws.is_empty() => {
+              let hit = ocr_hit_word(ws, u, v, pw, ph)
+              if hit >= 0 {
+                p.ocr_selecting.val = true
+                p.ocr_anchor.val = hit
+                p.ocr_drag_moved.val = false
+                p.ocr_hover.set(hit)
+                return
+              }
+            }
+            _ => ()
+          }
+          // Clicked empty image area while Live Text is active: clear selection and move pin normally.
+          p.ocr_sel.set(None)
+          p.ocr_clicks.val = 0
         }
         // (moved by the system's own move, the press then let go of as the move ends: mbui hears no release from
         // it, and took the next press for one, every other press not moving the pin)
@@ -807,6 +988,11 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
     // (a long screenshot's taller than a texture may be: decoded brought down to fit one)
     let px = clampi(if p.w > p.h { p.w } else { p.h }, 1, 16384)
     root.box(fn(i) { i.over(Is(true)).image(By(fn() { Some((p.key.get(), "", px)) })).presses(Is(false)) |> ignore })
+    |> ignore
+    // (Live Text highlight layer: one vector node, drawn only while Live Text is on)
+    root.box(fn(lt) {
+      lt.over(Is(true)).presses(Is(false)).picture(By(fn() { ocr_overlay_picture(p, root.pointed()) })) |> ignore
+    })
     |> ignore
     // (its edge: a hairline; the accent's while the pointer is on it; the window in front, a frame of the accent, and
     // as it is taken a flash: the frame comes in thick and narrows as a tint of the accent over it fades, 360 ms; the
@@ -839,9 +1025,15 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
       |> ignore
     })
     |> ignore
-    // (its zoom and how clear it is, a moment after either changes)
+    // (its zoom and how clear it is, a moment after either changes; shifted up when the Live Text pill is visible)
     root.box(fn(o) {
-      o.over(Is(true)).presses(Is(false)).lines_up(Is(Some(End))).lies_along(Is(End)).padding(Is((6.0, 6.0, 6.0, 6.0))) |> ignore
+      o
+      .over(Is(true))
+      .presses(Is(false))
+      .lines_up(Is(Some(End)))
+      .lies_along(Is(End))
+      .padding(By(fn() { if p.ocr_on.get() { (6.0, 6.0, 6.0, 40.0) } else { (6.0, 6.0, 6.0, 6.0) } }))
+      |> ignore
       o.box(fn(l) {
         l
         .height(Is(Some(20.0)))
@@ -869,6 +1061,7 @@ fn pin_window(wid : Int, what : String) -> (@view.View) -> Unit {
       |> ignore
     })
     |> ignore
+    ocr_floating_bar(root, p)
     pin_actions(root, p)
   }
 }
@@ -884,6 +1077,8 @@ fn pin_keys() -> @view.Keymap {
     k(@ui.key_escape, "close", 0),
     ch('c', "copy", shortcut_mod()),
     k(@ui.key_code_copy, "copy", shortcut_mod()),
+    ch('a', "select-all", shortcut_mod()),
+    ch('o', "ocr", shortcut_mod()),
     ch('s', "save", shortcut_mod()),
     ch('t', "top", shortcut_mod()),
     ch('0', "zoom1", shortcut_mod()),
@@ -926,8 +1121,33 @@ fn pin_actions(root : @view.View, p : Pin) -> Unit {
     })
     |> ignore
   }
-  on("close", fn() { close_pin(p.wid.val) })
-  on("copy", fn() { copy_pin(p) })
+  on("close", fn() {
+    if p.ocr_on.untracked() && p.ocr_sel.untracked() is Some(_) {
+      p.ocr_sel.set(None)
+    } else if p.ocr_on.untracked() && !p.ocr_from_capture.val {
+      pin_exit_ocr(p)
+    } else {
+      close_pin(p.wid.val)
+    }
+  })
+  on("copy", fn() {
+    if p.ocr_on.untracked() && p.ocr.untracked() is Ready(_, _) {
+      if !pin_copy_ocr_selected(p) {
+        pin_copy_ocr_all(p) |> ignore
+      }
+    } else {
+      copy_pin(p)
+    }
+  })
+  on("select-all", fn() {
+    if p.ocr_on.untracked() {
+      match p.ocr.untracked() {
+        Ready(ws, _) if !ws.is_empty() => p.ocr_sel.set(Some((0, ws.length() - 1)))
+        _ => ()
+      }
+    }
+  })
+  on("ocr", fn() { pin_toggle_ocr(p) })
   on("save", fn() { save_pin(p) })
   on("top", fn() {
     let top = !p.top.untracked()
