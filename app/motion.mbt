@@ -64,6 +64,39 @@ fn pop_presence(
 }
 
 ///|
+/// Crisp downward drawer unfold for 2nd/3rd toolbar rows: smoothly expands height `0 -> full_h` (pushing lower rows
+/// down naturally), clips only while animating so settled shadows stay intact, and slides the bar down from beneath its parent.
+fn dropdown_unfold(
+  slot : @view.View,
+  full_h : Double,
+  build : (@view.View) -> Unit,
+  enter_ms? : Double = 165.0,
+  leave_ms? : Double = 115.0,
+) -> Unit {
+  let p = @motion.presence_in(
+    slot,
+    @motion.tween(enter_ms, ease=Out),
+    exit=@motion.tween(leave_ms, ease=Leave),
+    carries=true,
+  )
+  slot
+  .height(By(fn() { Some(full_h * p()) }))
+  .shrink(Is(0.0))
+  .clips(By(fn() { p() < 0.995 }))
+  .lines_up(Is(Some(Start)))
+  |> ignore
+  slot.box(fn(panel) {
+    panel
+    .shrink(Is(0.0))
+    .alpha(By(p))
+    .drawn_off(By(fn() { (0.0, -14.0 * (1.0 - p())) }))
+    |> ignore
+    build(panel)
+  })
+  |> ignore
+}
+
+///|
 /// Enter-only fade + micro-rise + subtle scale (safe with `at_once=true` and auto-fitted windows).
 fn enter_reveal(
   v : @view.View,

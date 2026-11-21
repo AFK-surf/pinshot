@@ -75,6 +75,11 @@ let rec_from_bar : Ref[(Double, Double, Double, Double)?] = Ref(None)
 let rec_closing_overlay : Ref[Bool] = Ref(false)
 
 ///|
+/// True for Frame 0 when transitioning from the screenshot toolbar so `shell` starts at the exact screenshot toolbar width
+/// and smoothly morphs its length inward to the Ready bar width (with `cur_x` fixed so DWM never teleports the swapchain).
+let rec_morph_in : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
 let rec_handoff_cancel : Ref[() -> Unit] = Ref(fn() {  })
 
 ///|
@@ -421,6 +426,7 @@ fn rec_out() -> Unit {
   rec_closing_overlay.val = true
   rec_placed_size.val = (0, 0)
   @signals.start_batch()
+  rec_morph_in.set(from_bar is Some(_))
   rec_phase.set(0)
   rec_ms.set(0)
   rec_frames.set(0)
@@ -467,10 +473,11 @@ fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
   let k = rec_scale.val
   let (x, y, w, h) = match rec_from_bar.val {
     Some((bx, by, bw, bh)) => {
-      let inner_w = pt_w - rec_pad_l - rec_pad_r
-      let ww = (pt_w * k).ceil().to_int()
+      // Exact screenshot toolbar footprint (with transparent shadow halo) so Frame 0 matches pixel-for-pixel
+      // before `shell` morphs horizontally from `bw` down to the Ready bar width with `cur_x` fixed.
+      let ww = ((bw + rec_pad_l + rec_pad_r) * k).ceil().to_int()
       let hh = ((bh + rec_pad_t + rec_pad_b) * k).ceil().to_int()
-      let xx = clampi(m.x + ((bx + bw - inner_w - rec_pad_l) * k).round().to_int(), m.x, m.right() - ww)
+      let xx = clampi(m.x + ((bx - rec_pad_l) * k).round().to_int(), m.x, m.right() - ww)
       let yy = clampi(m.y + ((by - rec_pad_t) * k).round().to_int(), m.y, m.bottom() - hh)
       (xx, yy, ww, hh)
     }
@@ -522,7 +529,13 @@ fn rec_fit_window(focus : Bool, allow_shrink? : Bool = false) -> Unit {
     return
   }
   let shrinking = pw > 0 && ph > 0 && (w < pw - 1 || h < ph - 1)
-  if shrinking && !focus && !allow_shrink {
+  if shrinking && !allow_shrink {
+    if focus && @ui.env("PINSHOT_TEST_CLOAKED") == "" {
+      let r = numbers_of(text_of(ps_window_rect(rec_wid.val)))
+      if r.length() >= 4 {
+        ps_place(rec_wid.val, r[0].round().to_int(), r[1].round().to_int(), pw, ph, 1, 1)
+      }
+    }
     (rec_shrink_cancel.val)()
     match rec_root.val {
       Some(root) =>
@@ -782,6 +795,7 @@ fn rec_gone() -> Unit {
   rec_root.val = None
   rec_content.val = None
   rec_from_bar.val = None
+  rec_morph_in.set(false)
   rec_placed_size.val = (0, 0)
   rec_clear_exports()
   rec_clear_preview()
@@ -1312,6 +1326,7 @@ fn rec_window(root : @view.View) -> Unit {
   root.reacts(fn() {
     (
       rec_phase.get(),
+      rec_morph_in.get(),
       rec_codec.get(),
       rec_fps.get(),
       rec_exp_fmt.get(),
@@ -1353,15 +1368,19 @@ fn rec_window(root : @view.View) -> Unit {
         }
         if rec_from_bar.val is None {
           enter_reveal(shell, ms=145.0, dy=4.0, from_scale=0.975)
-        } else {
-          // Stay 100% opaque on Frame 0 so the dark pill seamlessly replaces the screenshot toolbar with zero blink;
-          // only apply a subtle scale settle while the recording controls crossfade in.
-          let settle = @motion.NodeWay::new(0.0)
-          settle.go_from(shell, 0.0, 1.0, @motion.tween(155.0, ease=Out))
-          shell.scale(By(fn() { 0.985 + 0.015 * settle.shown(shell) })) |> ignore
         }
         shell
         .shrink(Is(0.0))
+        .min_width(By(fn() {
+          if rec_morph_in.get() {
+            match rec_from_bar.val {
+              Some((_, _, bw, _)) => Some(bw)
+              None => None
+            }
+          } else {
+            None
+          }
+        }))
         .radius(By(fn() { if is_exp() { 18.0 } else { bar_corner } }))
         .ground(By(fn() { mix_rgba(0x1E1F23F7L, 0x141519F8L, exp_p.shown(shell)) }))
         .edge(By(fn() { (1.0, mix_rgba(0xFFFFFF1FL, 0xFFFFFF17L, exp_p.shown(shell))) }))
@@ -1409,9 +1428,12 @@ fn rec_window(root : @view.View) -> Unit {
           // Phases 0, 1, 2: Ready / Recording / Paused
           bar.show(fn() { rec_phase.get() >= 0 && rec_phase.get() <= 2 }, fn(r) {
             if rec_from_bar.val is Some(_) {
-              enter_reveal(r, ms=145.0, dy=0.0, from_scale=0.985)
+              // Start softly visible (0.35 -> 1.0) so Frame 0 already shows controls while the pill morphs narrower.
+              let fade = @motion.NodeWay::new(0.0)
+              fade.go_from(r, 0.0, 1.0, @motion.tween(150.0, ease=Out))
+              r.alpha(By(fn() { 0.35 + 0.65 * fade.shown(r) })) |> ignore
             }
-            r.row(Is(true)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
+            r.row(Is(true)).grow(Is(1.0)).gap(Is(bar_gap)).shrink(Is(0.0)).lines_up(Is(Some(Middle))) |> ignore
 
             // Draggable left status + tabular timer
             r.box(fn(drag) {
@@ -1554,6 +1576,7 @@ fn rec_window(root : @view.View) -> Unit {
             }, at_once=true)
 
             bar_rule_node(r)
+            r.show(fn() { rec_morph_in.get() }, fn(sp) { sp.grow(Is(1.0)) |> ignore }, at_once=true)
             r.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(pb) {
               enter_reveal(pb, ms=130.0, dy=0.0, from_scale=0.92)
               pb.shrink(Is(0.0)) |> ignore
@@ -2338,7 +2361,11 @@ fn rec_window(root : @view.View) -> Unit {
         }, at_once=true)
 
         // Register moves_for LAST so all .show() structural additions/removals complete BEFORE FLIP measures the new length/size!
-        let rec_moves = @motion.moves_for(shell, fn() { rec_phase.get() }, spec=@motion.tween(185.0, ease=Out))
+        let rec_moves = @motion.moves_for(
+          shell,
+          fn() { (rec_phase.get(), rec_morph_in.get()) },
+          spec=@motion.tween(185.0, ease=Out),
+        )
         rec_moves_ref.val = Some(rec_moves)
         rec_moves.reshapes(shell)
         for p in rec_parts {
@@ -2346,8 +2373,9 @@ fn rec_window(root : @view.View) -> Unit {
             rec_moves.moves_with(p)
           }
         }
-        // Once Frame 0 has presented & uncloaked cleanly on top of the screenshot toolbar, cloak the overlay underneath,
-        // mark capture_open=1, and snugly fit/focus the recording bar (width delta <= ~4px, cur_x fixed -> zero DWM flash).
+        // Once Frame 0 has presented & uncloaked cleanly on top of the screenshot toolbar at its exact width,
+        // cloak the overlay underneath, release `rec_morph_in` so `shell` smoothly shrinks horizontally into the Ready bar,
+        // and focus the window immediately while deferring HWND width tightening by 215ms (keeping `cur_x` fixed -> zero DWM flash).
         if rec_closing_overlay.val {
           (rec_handoff_cancel.val)()
           let cloaked = @ui.env("PINSHOT_TEST_CLOAKED") != ""
@@ -2360,7 +2388,10 @@ fn rec_window(root : @view.View) -> Unit {
                 close_capture()
                 ps_capture_open(1)
               }
-              rec_fit_window(!cloaked, allow_shrink=true)
+              if rec_morph_in.untracked() {
+                rec_morph_in.set(false)
+              }
+              rec_schedule_fit(!cloaked)
             },
             later=true,
           )

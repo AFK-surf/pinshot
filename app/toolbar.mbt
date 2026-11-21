@@ -242,7 +242,6 @@ fn toolbar(stage : @view.View) -> Unit {
           bar_in.put(0.0)
         }
       })
-      let col_moves_ref : Ref[@motion.Moves?] = Ref(None)
       col
       .gap(Is(4.0))
       // (each row as wide as what it holds, from the bar's left: the style row is not stretched to the bar's width)
@@ -400,34 +399,12 @@ fn toolbar(stage : @view.View) -> Unit {
         tool_button(bar, "check", "复制", fn() { false }, copy_out, strong=true, keys=confirm_key_label)
       })
       |> ignore
-      col.show(fn() { styling() }, leave=100.0, fn(row) {
-        pop_presence(row, enter_ms=140.0, leave_ms=100.0, dy=-4.0, from_scale=0.97)
-        style_row(row)
+      col.show(fn() { styling() }, leave=115.0, fn(slot) {
+        dropdown_unfold(slot, style_height, style_row)
       })
-      let beauty_row_ref : Ref[@view.View?] = Ref(None)
-      col.show(fn() { beauty_on.get() }, leave=100.0, fn(row) {
-        beauty_row_ref.val = Some(row)
-        match col_moves_ref.val {
-          Some(m) => m.moves_with(row)
-          None => ()
-        }
-        row.box(fn(panel) {
-          pop_presence(panel, enter_ms=140.0, leave_ms=100.0, dy=-4.0, from_scale=0.97)
-          beauty_row(panel)
-        })
-        |> ignore
+      col.show(fn() { beauty_on.get() }, leave=115.0, fn(slot) {
+        dropdown_unfold(slot, style_height, beauty_row)
       })
-      // Register moves_for AFTER child .show() slots so structural layout changes happen before FLIP measurement!
-      let col_moves = @motion.moves_for(
-        col,
-        fn() { (styling(), beauty_on.get()) },
-        spec=@motion.tween(155.0, ease=Out),
-      )
-      col_moves_ref.val = Some(col_moves)
-      match beauty_row_ref.val {
-        Some(r) if r.alive() => col_moves.moves_with(r)
-        _ => ()
-      }
     })
     |> ignore
     bar_tip_node(o)
