@@ -457,12 +457,4 @@ void ps_set_capture_keep(int32_t keep) { (void)keep; }
 
 // (ps_long_*: longshot_mac.m)
 // (ps_rec_*: record_mac.m)
-// (the system's codecs not asked here: the app turns and encodes pictures itself)
-moonbit_bytes_t ps_picture_jpeg(moonbit_bytes_t pic, int32_t quality) {
-  (void)pic, (void)quality;
-  return moonbit_make_bytes(0, 0);
-}
-moonbit_bytes_t ps_picture_oriented(moonbit_bytes_t pic, int32_t turns, int32_t flipped, int32_t shown) {
-  (void)pic, (void)turns, (void)flipped, (void)shown;
-  return moonbit_make_bytes(0, 0);
-}
+// (ps_picture_jpeg / ps_picture_oriented: picture_mac.m)
