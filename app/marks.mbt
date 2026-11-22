@@ -253,23 +253,30 @@ fn mark_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
       let (x1, y1) = m.pts[m.pts.length() - 1]
       [stroke_layer(oval_path(dmin(x0, x1), dmin(y0, y1), (x1 - x0).abs(), (y1 - y0).abs()), m.color, w)]
     }
-    Arrow => [fill_layer(arrow_path(m.pts[0], m.pts[m.pts.length() - 1], w), m.color)]
-    Line => [fill_layer(capsule_path(m.pts[0], m.pts[m.pts.length() - 1], w), m.color)]
+    Arrow => {
+      let sw = w * 0.88
+      let d = arrow_path(m.pts[0], m.pts[m.pts.length() - 1], w, k~)
+      if d == "" { [] } else { [stroke_layer(d, m.color, sw)] }
+    }
+    Line => {
+      let (ax, ay) = m.pts[0]
+      let (bx, by) = m.pts[m.pts.length() - 1]
+      [stroke_layer("M\{num(ax)} \{num(ay)}L\{num(bx)} \{num(by)}", m.color, w)]
+    }
     Pen => {
-      // (each step a round-ended band, all one filled outline: round joins and ends, no seam where a stroke and a dot
-      // would meet; a point the pointer hardly moved past left out)
+      // Single open polyline stroked via mbui's exact GPU analytical SDF (round caps, round joins, 360° smooth AA).
       let sb = StringBuilder()
       let mut last = m.pts[0]
-      sb.write_string(capsule_path(last, last, w))
+      sb.write_string("M\{num(last.0)} \{num(last.1)}")
       for p in m.pts {
         let dx = p.0 - last.0
         let dy = p.1 - last.1
         if dx * dx + dy * dy >= 1.0 {
-          sb.write_string(capsule_path(last, p, w))
+          sb.write_string("L\{num(p.0)} \{num(p.1)}")
           last = p
         }
       }
-      [fill_layer(sb.to_string(), m.color)]
+      [stroke_layer(sb.to_string(), m.color, w)]
     }
     Number => {
       let (cx, cy) = m.pts[0]
@@ -287,8 +294,10 @@ fn mark_layers(m : Mark, k : Double) -> Array[@pixels.VectorPath] {
 }
 
 ///|
-/// An arrow from `a` to `b`, its line `w` wide tapering from its tail, its head a triangle: one filled outline.
-fn arrow_path(a : (Double, Double), b : (Double, Double), w : Double) -> String {
+/// A minimalist open V-chevron arrow from `a` to `b` (`w` line width, `k` pixels per point): open 3-segment stroke
+/// path (stem + symmetric chevron wings) rendered with mbui's analytical GPU SDF stroke (round caps, seamless round
+/// tip join, 360° smooth antialiasing, tip outer edge landing exactly on `b`).
+fn arrow_path(a : (Double, Double), b : (Double, Double), w : Double, k? : Double = 1.0) -> String {
   let (ax, ay) = a
   let (bx, by) = b
   let dx = bx - ax
@@ -302,31 +311,17 @@ fn arrow_path(a : (Double, Double), b : (Double, Double), w : Double) -> String 
   // (across it)
   let nx = -uy
   let ny = ux
-  let head = dmin(len * 0.6, w * 3.2 + 8.0)
-  let head_w = head * 0.62
-  let neck = head * 0.78
-  let tail = w * 0.35
-  let shaft = w * 0.6
-  let hx = bx - ux * neck
-  let hy = by - uy * neck
-  let pts = [
-    (ax + nx * tail, ay + ny * tail),
-    (hx + nx * shaft, hy + ny * shaft),
-    (bx - ux * head + nx * head_w, by - uy * head + ny * head_w),
-    (bx, by),
-    (bx - ux * head - nx * head_w, by - uy * head - ny * head_w),
-    (hx - nx * shaft, hy - ny * shaft),
-    (ax - nx * tail, ay - ny * tail),
-  ]
-  let sb = StringBuilder()
-  for i, p in pts {
-    sb.write_string(if i == 0 { "M" } else { "L" })
-    sb.write_string(num(p.0))
-    sb.write_char(' ')
-    sb.write_string(num(p.1))
-  }
-  sb.write_string("z")
-  sb.to_string()
+  let sw = w * 0.88
+  let tip_inset = dmin(len * 0.5, sw * 0.5)
+  let tx = bx - ux * tip_inset
+  let ty = by - uy * tip_inset
+  let wing_len = dmin(len * 0.36, w * 2.0 + 3.0 * k)
+  let wing_w = wing_len * 0.54
+  let p1x = tx - ux * wing_len + nx * wing_w
+  let p1y = ty - uy * wing_len + ny * wing_w
+  let p2x = tx - ux * wing_len - nx * wing_w
+  let p2y = ty - uy * wing_len - ny * wing_w
+  "M\{num(ax)} \{num(ay)}L\{num(tx)} \{num(ty)}M\{num(p1x)} \{num(p1y)}L\{num(tx)} \{num(ty)}L\{num(p2x)} \{num(p2y)}"
 }
 
 ///|
@@ -560,10 +555,10 @@ fn cell_mean(gx : Int, gy : Int, cell : Int, sample : Int) -> Int {
 }
 
 ///|
-test "arrow path closes" {
+test "arrow path open chevron" {
   let d = arrow_path((0.0, 0.0), (100.0, 0.0), 4.0)
   assert_true(d.has_prefix("M"))
-  assert_true(d.has_suffix("z"))
+  assert_true(d.contains("L"))
   assert_eq(arrow_path((0.0, 0.0), (0.0, 0.0), 4.0), "")
 }
 
@@ -588,26 +583,6 @@ test "snap45" {
   assert_true((y).abs() < 0.001 && x > 99.0)
   let (x2, y2) = snap45(0.0, 0.0, 3.0, 100.0)
   assert_true(x2.abs() < 0.001 && y2 > 99.0)
-}
-
-///|
-/// A line from `a` to `b`, `w` wide, its ends round: one filled outline (two half circles and the band between), so
-/// its ends are not a stroke and a dot drawn over each other, edge on edge.
-fn capsule_path(a : (Double, Double), b : (Double, Double), w : Double) -> String {
-  let (ax, ay) = a
-  let (bx, by) = b
-  let r = w / 2.0
-  let dx = bx - ax
-  let dy = by - ay
-  let len = (dx * dx + dy * dy).sqrt()
-  if len < 0.01 {
-    return circle_path(ax, ay, r)
-  }
-  // (across it, r long)
-  let nx = -dy / len * r
-  let ny = dx / len * r
-  let rr = num(r)
-  "M\{num(ax + nx)} \{num(ay + ny)}L\{num(bx + nx)} \{num(by + ny)}A\{rr} \{rr} 0 0 0 \{num(bx - nx)} \{num(by - ny)}L\{num(ax - nx)} \{num(ay - ny)}A\{rr} \{rr} 0 0 0 \{num(ax + nx)} \{num(ay + ny)}Z"
 }
 
 // ---- moved ----
