@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PinShot — 截图 · 标注 · 贴图 · 录屏 · 长截图 · OCR</title>
-<meta name="description" content="PinShot: lightweight native screenshot, markup, pin, scrolling capture, offline OCR, and hardware-accelerated H.265/GIF screen recording for Windows and macOS. Free and open source (MIT).">
+<title>PinShot — 截图 · 标注 · 贴图 · 长截图 · 原位 OCR · 区域录屏</title>
+<meta name="description" content="PinShot: lightweight native screenshot, markup, pin, scrolling capture, Live Text offline OCR, and hardware-accelerated H.265/AV1/H.264/GIF screen recording up to 120fps for Windows and macOS. Free and open source (MIT).">
 <link rel="icon" href="/favicon.ico">
 <style>
   :root {
@@ -16,8 +16,8 @@
     --subtle: #94979e;
     --line: rgba(17, 18, 20, 0.08);
     --line-strong: rgba(17, 18, 20, 0.14);
-    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
-    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, "PingFang SC", "Microsoft YaHei UI", monospace;
   }
   * { box-sizing: border-box; }
   html {
@@ -68,7 +68,7 @@
   /* Hero */
   .hero {
     text-align: center;
-    max-width: 820px;
+    max-width: 920px;
     margin: 18px auto 26px;
   }
   .title-row {
@@ -87,7 +87,7 @@
   }
   h1 {
     font-size: clamp(34px, 5vw, 44px);
-    font-weight: 650;
+    font-weight: 700;
     line-height: 1.1;
     letter-spacing: -0.03em;
     margin: 0;
@@ -111,9 +111,9 @@
   .btn {
     display: inline-flex;
     align-items: center;
-    gap: 9px;
+    gap: 8px;
     height: 40px;
-    padding: 0 17px;
+    padding: 0 15px;
     border-radius: 9px;
     font-size: 13.5px;
     font-weight: 500;
@@ -147,6 +147,9 @@
     font-weight: 400;
     opacity: 0.62;
     font-family: var(--mono);
+  }
+  .btn .meta .sans-in-meta {
+    font-family: var(--sans);
   }
 
   .fine {
@@ -205,7 +208,7 @@
     background: rgba(17, 18, 20, 0.07);
   }
 
-  /* Showcase stage */
+  /* Showcase stage — unified typography across HTML and all 4 SVGs */
   .showcase {
     margin: 0;
     border-radius: 16px;
@@ -217,6 +220,18 @@
     width: 100%;
     height: auto;
     display: block;
+    font-family: var(--sans);
+  }
+  .showcase svg text,
+  .showcase svg tspan {
+    font-family: var(--sans);
+  }
+  .showcase svg .t-mono,
+  .showcase svg .t-mono tspan {
+    font-family: var(--mono);
+  }
+  .showcase svg .t-sans {
+    font-family: var(--sans);
   }
   .scene-panel {
     display: none;
@@ -327,8 +342,8 @@
       <h1>PinShot</h1>
     </div>
     <p class="subtitle">
-      <span data-l="zh">原生轻量截屏工具：截图、标注、贴图、长截图、离线 OCR 与 H.265 区域录屏</span>
-      <span data-l="en">Lightweight native capture for Windows &amp; macOS: screenshot, markup, pin, scrolling shot, OCR &amp; H.265 recording</span>
+      <span data-l="zh">双端原生轻量截屏工具：截图、标注、贴图、双向长截图、原位 OCR 与区域录屏</span>
+      <span data-l="en">Native lightweight capture for Windows &amp; macOS: screenshot, markup, pin, scrolling shot, Live Text OCR &amp; recording</span>
     </p>
 
     <div class="actions">
@@ -337,22 +352,22 @@
           <path d="M8 2.5v8M4.5 7.5 8 11l3.5-3.5M3 13.5h10"/>
         </svg>
         <span data-l="zh">下载安装包</span><span data-l="en">Download Installer</span>
-        <span class="meta"><span class="ver">1.0.11</span> · <span class="size-setup">3.5 MB</span></span>
+        <span class="meta"><span class="ver">1.0.22</span> · <span class="size-setup">3.7 MB</span></span>
       </a>
       <a class="btn btn-secondary" href="/dl/pinshot.exe">
         <span data-l="zh">免安装版</span><span data-l="en">Portable</span>
-        <span class="meta">pinshot.exe · <span class="size-exe">5.5 MB</span></span>
+        <span class="meta">pinshot.exe · <span class="size-exe">6.3 MB</span></span>
       </a>
       <a class="btn btn-secondary" href="/dl/PinShot-mac.zip">
         <span>macOS</span>
-        <span class="meta"><span data-l="zh">Apple 芯片 · macOS 14+</span><span data-l="en">Apple silicon · macOS 14+</span> · <span class="size-mac">2.9 MB</span></span>
+        <span class="meta"><span data-l="zh" class="sans-in-meta">Apple 芯片</span><span data-l="en">Apple silicon</span> · macOS 14+ · <span class="size-mac">3.2 MB</span></span>
       </a>
     </div>
 
     <p class="fine" data-l="zh">免费、开源 (MIT)。若 Windows 提示「已保护你的电脑」，点「更多信息 › 仍要运行」。</p>
     <p class="fine" data-l="en">Free &amp; open source (MIT). If Windows says it protected your PC, choose More info › Run anyway.</p>
-    <p class="fine" data-l="zh">Mac 版未公证：首次打开到「系统设置 › 隐私与安全性」点「仍要打开」，并在「录屏与系统录音」里允许 PinShot。长截图、OCR 与录屏目前为 Windows 专属。</p>
-    <p class="fine" data-l="en">macOS build is ad-hoc signed: open via System Settings › Privacy &amp; Security › Open Anyway and grant Screen Recording. Scrolling shot, OCR, and screen recording are currently Windows-only.</p>
+    <p class="fine" data-l="zh">Mac 版未公证：首次打开到「系统设置 › 隐私与安全性」点「仍要打开」，并在「屏幕与系统音频录制」中允许 PinShot。Windows 与 macOS 均已原生支持截图、贴图、长截图、离线 OCR 与区域录屏。</p>
+    <p class="fine" data-l="en">macOS build is ad-hoc signed: open via System Settings › Privacy &amp; Security › Open Anyway and grant Screen &amp; System Audio Recording. Capture, pins, scrolling shot, offline OCR, and recording are native on both Windows and macOS.</p>
   </header>
 
   <div class="scene-bar">
@@ -362,14 +377,13 @@
       </button>
       <button class="scene-tab" role="tab" aria-selected="false" data-scene="record" type="button">
         <span data-l="zh">区域录屏</span><span data-l="en">Screen Recording</span>
-        <span class="scene-tag">H.265 / GIF</span>
+        <span class="scene-tag">120fps · AV1 / H.265</span>
       </button>
       <button class="scene-tab" role="tab" aria-selected="false" data-scene="longshot" type="button">
         <span data-l="zh">双向长截图</span><span data-l="en">Scrolling Shot</span>
-        <span class="scene-tag">Win</span>
       </button>
       <button class="scene-tab" role="tab" aria-selected="false" data-scene="ocr" type="button">
-        <span data-l="zh">离线 OCR &amp; 美化</span><span data-l="en">Offline OCR &amp; Beautify</span>
+        <span data-l="zh">原位 OCR &amp; 美化</span><span data-l="en">Live Text &amp; Beautify</span>
       </button>
     </div>
   </div>
@@ -383,13 +397,13 @@
             <circle cx="12" cy="12" r="1" fill="#111214" fill-opacity="0.07"/>
           </pattern>
           <filter id="card-shadow-1" x="-8%" y="-6%" width="116%" height="118%">
-            <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#111214" flood-opacity="0.06"/>
+            <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#111214" flood-opacity="0.10"/>
           </filter>
           <filter id="pin-shadow-1" x="-12%" y="-10%" width="124%" height="128%">
-            <feDropShadow dx="0" dy="14" stdDeviation="20" flood-color="#111214" flood-opacity="0.12"/>
+            <feDropShadow dx="0" dy="14" stdDeviation="20" flood-color="#111214" flood-opacity="0.14"/>
           </filter>
-          <filter id="bar-shadow-1" x="-8%" y="-24%" width="116%" height="160%">
-            <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#111214" flood-opacity="0.22"/>
+          <filter id="bar-shadow-1" x="-8%" y="-40%" width="116%" height="220%">
+            <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#111214" flood-opacity="0.24"/>
           </filter>
           <clipPath id="sel-clip-1">
             <rect x="88" y="64" width="664" height="376"/>
@@ -400,7 +414,7 @@
         <rect width="1120" height="548" fill="url(#dot-grid-1)"/>
 
         <!-- Quiet background window outside selection -->
-        <g opacity="0.42">
+        <g opacity="0.46">
           <rect x="44" y="28" width="760" height="444" rx="10" fill="#fafaf9" stroke="#111214" stroke-opacity="0.12" stroke-width="1"/>
           <line x1="44" y1="60" x2="804" y2="60" stroke="#111214" stroke-opacity="0.08"/>
           <circle cx="64" cy="44" r="4" fill="#111214" fill-opacity="0.18"/>
@@ -412,11 +426,14 @@
           <rect x="64" y="152" width="72" height="8" rx="2" fill="#111214" fill-opacity="0.07"/>
         </g>
 
+        <!-- Subtle viewfinder dim veil around the background window outside selection -->
+        <path d="M44 28h760v444H44z M88 64h664v376H88z" fill="#111214" fill-opacity="0.16" fill-rule="evenodd"/>
+
         <!-- Active Selection Region -->
         <rect x="88" y="64" width="664" height="376" fill="#ffffff" filter="url(#card-shadow-1)"/>
         <g clip-path="url(#sel-clip-1)">
           <line x1="212" y1="64" x2="212" y2="440" stroke="#111214" stroke-opacity="0.07"/>
-          <g font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#8c9098">
+          <g font-size="12" fill="#8c9098">
             <text x="112" y="104" font-weight="600" fill="#111214" data-l="zh">界面规范</text>
             <text x="112" y="104" font-weight="600" fill="#111214" data-l="en">Specification</text>
             <text x="112" y="134" data-l="zh">排版网格</text>
@@ -427,24 +444,24 @@
             <text x="112" y="194" data-l="en">API Keys</text>
           </g>
 
-          <text x="244" y="105" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="14" font-weight="600" fill="#111214" letter-spacing="-0.01em" data-l="zh">组件排版与令牌校验</text>
-          <text x="244" y="105" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="14" font-weight="600" fill="#111214" letter-spacing="-0.01em" data-l="en">Typography &amp; Token Inspection</text>
-          <text x="720" y="104" text-anchor="end" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#8c9098">v2.4 · 2x</text>
+          <text x="244" y="105" font-size="14" font-weight="600" fill="#111214" letter-spacing="-0.01em" data-l="zh">组件排版与令牌校验</text>
+          <text x="244" y="105" font-size="14" font-weight="600" fill="#111214" letter-spacing="-0.01em" data-l="en">Typography &amp; Token Inspection</text>
+          <text x="720" y="104" text-anchor="end" class="t-mono" font-size="11" fill="#8c9098">v2.4 · 2x</text>
           <line x1="244" y1="120" x2="720" y2="120" stroke="#111214" stroke-opacity="0.07"/>
 
           <rect x="244" y="138" width="224" height="84" rx="7" fill="#fafaf9" stroke="#111214" stroke-opacity="0.09"/>
-          <text x="262" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#686b72" data-l="zh">标题字重 / 行高</text>
-          <text x="262" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#686b72" data-l="en">Heading Weight / Line</text>
-          <text x="262" y="198" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="22" font-weight="650" fill="#111214" letter-spacing="-0.02em">44px / 1.10</text>
+          <text x="262" y="162" font-size="11.5" fill="#686b72" data-l="zh">标题字重 / 行高</text>
+          <text x="262" y="162" font-size="11.5" fill="#686b72" data-l="en">Heading Weight / Line</text>
+          <text x="262" y="198" class="t-mono" font-size="22" font-weight="700" fill="#111214" letter-spacing="-0.02em">44px / 1.10</text>
 
           <rect x="484" y="138" width="236" height="84" rx="7" fill="#fafaf9" stroke="#111214" stroke-opacity="0.09"/>
-          <text x="502" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#686b72" data-l="zh">基准栅格留白</text>
-          <text x="502" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#686b72" data-l="en">Base Grid Padding</text>
-          <text x="502" y="198" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="22" font-weight="650" fill="#111214" letter-spacing="-0.02em">24px · 8pt</text>
+          <text x="502" y="162" font-size="11.5" fill="#686b72" data-l="zh">基准栅格留白</text>
+          <text x="502" y="162" font-size="11.5" fill="#686b72" data-l="en">Base Grid Padding</text>
+          <text x="502" y="198" class="t-mono" font-size="22" font-weight="700" fill="#111214" letter-spacing="-0.02em">24px · 8pt</text>
 
           <rect x="244" y="238" width="476" height="68" rx="7" fill="#ffffff" stroke="#111214" stroke-opacity="0.08"/>
-          <text x="262" y="261" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" fill="#8c9098" data-l="zh">响应式断点比例</text>
-          <text x="262" y="261" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" fill="#8c9098" data-l="en">Responsive Scale Ratio</text>
+          <text x="262" y="261" font-size="11" fill="#8c9098" data-l="zh">响应式断点比例</text>
+          <text x="262" y="261" font-size="11" fill="#8c9098" data-l="en">Responsive Scale Ratio</text>
           <g fill="#111214">
             <rect x="262" y="274" width="64" height="6" rx="3" fill-opacity="0.85"/>
             <rect x="334" y="274" width="96" height="6" rx="3" fill-opacity="0.35"/>
@@ -455,16 +472,16 @@
           <rect x="244" y="322" width="476" height="94" rx="7" fill="#ffffff" stroke="#111214" stroke-opacity="0.09"/>
           <line x1="244" y1="350" x2="720" y2="350" stroke="#111214" stroke-opacity="0.06"/>
           <line x1="244" y1="382" x2="720" y2="382" stroke="#111214" stroke-opacity="0.06"/>
-          <g font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#8c9098">
-            <text x="262" y="341">ENV</text>
-            <text x="380" y="341">SECRET TOKEN</text>
-            <text x="646" y="341">STATE</text>
+          <g class="t-mono" font-size="11" fill="#8c9098">
+            <text x="262" y="341" class="t-mono">ENV</text>
+            <text x="380" y="341" class="t-mono">SECRET TOKEN</text>
+            <text x="646" y="341" class="t-mono">STATE</text>
           </g>
-          <g font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11.5" fill="#111214">
-            <text x="262" y="371">production</text>
-            <text x="262" y="403">staging</text>
-            <text x="646" y="371" fill="#686b72">active</text>
-            <text x="646" y="403" fill="#686b72">active</text>
+          <g font-size="11.5" fill="#111214">
+            <text x="262" y="371" class="t-mono">production</text>
+            <text x="262" y="403" class="t-mono">staging</text>
+            <text x="646" y="371" class="t-mono" fill="#686b72">active</text>
+            <text x="646" y="403" class="t-mono" fill="#686b72">active</text>
           </g>
 
           <!-- Pixelated mosaic -->
@@ -479,23 +496,36 @@
           <path d="M454 252 L404 214" fill="none" stroke="#d84a2f" stroke-width="2.4" stroke-linecap="round"/>
           <path d="M401 212 L414 215 L406 224 Z" fill="#d84a2f"/>
           <circle cx="472" cy="255" r="11" fill="#d84a2f"/>
-          <text x="472" y="259" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#ffffff">1</text>
-          <text x="490" y="260" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="14.5" font-weight="650" fill="#d84a2f" data-l="zh">字号收紧到 40px</text>
-          <text x="490" y="260" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="14.5" font-weight="650" fill="#d84a2f" data-l="en">Tighten to 40px</text>
+          <text x="472" y="259" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">1</text>
+          <text x="490" y="260" font-size="14.5" font-weight="600" fill="#d84a2f" data-l="zh">字号收紧到 40px</text>
+          <text x="490" y="260" font-size="14.5" font-weight="600" fill="#d84a2f" data-l="en">Tighten to 40px</text>
 
           <rect x="374" y="352" width="224" height="60" rx="3" fill="none" stroke="#d84a2f" stroke-width="1.8"/>
           <circle cx="356" cy="382" r="11" fill="#d84a2f"/>
-          <text x="356" y="386" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#ffffff">2</text>
+          <text x="356" y="386" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">2</text>
         </g>
 
-        <!-- Selection frame + handles -->
-        <rect x="88" y="36" width="76" height="22" rx="6" fill="#1e1f23"/>
-        <text x="126" y="51" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" font-weight="500" fill="#e6e8ec">1280 × 720</text>
-        <rect x="88" y="64" width="664" height="376" fill="none" stroke="#2f9bff" stroke-width="1.6"/>
-        <g fill="#ffffff" stroke="#2f9bff" stroke-width="1.6">
-          <rect x="84" y="60" width="8" height="8" rx="1.5"/><rect x="416" y="60" width="8" height="8" rx="1.5"/><rect x="748" y="60" width="8" height="8" rx="1.5"/>
-          <rect x="84" y="248" width="8" height="8" rx="1.5"/><rect x="748" y="248" width="8" height="8" rx="1.5"/>
-          <rect x="84" y="436" width="8" height="8" rx="1.5"/><rect x="416" y="436" width="8" height="8" rx="1.5"/><rect x="748" y="436" width="8" height="8" rx="1.5"/>
+        <!-- Proposal A Dual-Contrast Viewfinder Frame (outside selection perimeter, 0px eaten) -->
+        <rect x="88" y="34" width="76" height="22" rx="6" fill="#17181b" fill-opacity="0.92" stroke="#ffffff" stroke-opacity="0.14" stroke-width="0.8"/>
+        <text x="126" y="49" text-anchor="middle" class="t-mono" font-size="11" font-weight="500" fill="#e6e8ec">1280 × 720</text>
+        <!-- Outer dark casing + crisp white hairline -->
+        <rect x="87" y="63" width="666" height="378" fill="none" stroke="#111214" stroke-opacity="0.46" stroke-width="3.4"/>
+        <rect x="87" y="63" width="666" height="378" fill="none" stroke="#ffffff" stroke-width="1.6"/>
+        <!-- Rounded corner L-brackets (dual contrast) -->
+        <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M87 78V63h15 M738 63h15v15 M87 426v15h15 M738 441h15v-15" stroke="#111214" stroke-opacity="0.54" stroke-width="5.6"/>
+          <path d="M87 78V63h15 M738 63h15v15 M87 426v15h15 M738 441h15v-15" stroke="#ffffff" stroke-width="3.2"/>
+        </g>
+        <!-- Mid-edge directional pill grabbers -->
+        <g>
+          <rect x="411" y="60" width="18" height="6" rx="3" fill="#111214" fill-opacity="0.52"/>
+          <rect x="412.2" y="61.2" width="15.6" height="3.6" rx="1.8" fill="#ffffff"/>
+          <rect x="411" y="438" width="18" height="6" rx="3" fill="#111214" fill-opacity="0.52"/>
+          <rect x="412.2" y="439.2" width="15.6" height="3.6" rx="1.8" fill="#ffffff"/>
+          <rect x="84" y="243" width="6" height="18" rx="3" fill="#111214" fill-opacity="0.52"/>
+          <rect x="85.2" y="244.2" width="3.6" height="15.6" rx="1.8" fill="#ffffff"/>
+          <rect x="750" y="243" width="6" height="18" rx="3" fill="#111214" fill-opacity="0.52"/>
+          <rect x="751.2" y="244.2" width="3.6" height="15.6" rx="1.8" fill="#ffffff"/>
         </g>
 
         <!-- Pinned Window Card on right -->
@@ -506,225 +536,284 @@
           <g transform="translate(13, 10) scale(0.78)" fill="none" stroke="#111214" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M7 2.8h4l-.6 4.6 2.6 2.4v1.4H5v-1.4l2.6-2.4z"/><path d="M9 11.2v4.3"/>
           </g>
-          <text x="31" y="21" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" font-weight="600" fill="#111214" data-l="zh">贴图置顶 · Ctrl+T</text>
-          <text x="31" y="21" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" font-weight="600" fill="#111214" data-l="en">Pinned on top · Ctrl+T</text>
-          <text x="268" y="21" text-anchor="end" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="10.5" fill="#8c9098">100%</text>
-          <text x="20" y="60" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" font-weight="600" fill="#111214" data-l="zh">设计稿基准值（四边等比缩放）</text>
-          <text x="20" y="60" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" font-weight="600" fill="#111214" data-l="en">Design Tokens (Aspect-Locked Pin)</text>
-          <g font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11.5">
+          <text x="31" y="21" font-size="11" font-weight="600" fill="#111214" data-l="zh">贴图置顶 · Ctrl+T</text>
+          <text x="31" y="21" font-size="11" font-weight="600" fill="#111214" data-l="en">Pinned on top · Ctrl+T</text>
+          <text x="268" y="21" text-anchor="end" class="t-mono" font-size="10.5" fill="#8c9098">100%</text>
+          <text x="20" y="60" font-size="11.5" font-weight="600" fill="#111214" data-l="zh">设计稿基准值（四边等比缩放）</text>
+          <text x="20" y="60" font-size="11.5" font-weight="600" fill="#111214" data-l="en">Design Tokens (Aspect-Locked Pin)</text>
+          <g font-size="11.5">
             <rect x="20" y="74" width="242" height="28" rx="6" fill="#fafaf9" stroke="#111214" stroke-opacity="0.07"/>
-            <text x="30" y="92" fill="#686b72">--font-display</text>
-            <text x="250" y="92" text-anchor="end" font-weight="600" fill="#111214">40px / 650</text>
+            <text x="30" y="92" class="t-mono" fill="#686b72">--font-display</text>
+            <text x="250" y="92" text-anchor="end" class="t-mono" font-weight="600" fill="#111214">40px / 650</text>
             <rect x="20" y="110" width="242" height="28" rx="6" fill="#fafaf9" stroke="#111214" stroke-opacity="0.07"/>
-            <text x="30" y="128" fill="#686b72">--grid-gap</text>
-            <text x="250" y="128" text-anchor="end" font-weight="600" fill="#111214">24px</text>
+            <text x="30" y="128" class="t-mono" fill="#686b72">--grid-gap</text>
+            <text x="250" y="128" text-anchor="end" class="t-mono" font-weight="600" fill="#111214">24px</text>
             <rect x="20" y="146" width="242" height="28" rx="6" fill="#fafaf9" stroke="#111214" stroke-opacity="0.07"/>
-            <text x="30" y="164" fill="#686b72">--accent-mark</text>
+            <text x="30" y="164" class="t-mono" fill="#686b72">--accent-mark</text>
             <circle cx="192" cy="160" r="4.5" fill="#d84a2f"/>
-            <text x="250" y="164" text-anchor="end" font-weight="600" fill="#111214">#D84A2F</text>
+            <text x="250" y="164" text-anchor="end" class="t-mono" font-weight="600" fill="#111214">#D84A2F</text>
           </g>
-          <text x="20" y="202" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" fill="#8c9098" data-l="zh">滚轮缩放 · Ctrl+滚轮透明度 · 双击关闭</text>
-          <text x="20" y="202" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" fill="#8c9098" data-l="en">Wheel zoom · Ctrl+wheel opacity · Dbl-click</text>
+          <text x="20" y="202" font-size="11" fill="#8c9098" data-l="zh">滚轮缩放 · Ctrl+滚轮透明度 · Esc 关闭</text>
+          <text x="20" y="202" font-size="11" fill="#8c9098" data-l="en">Wheel zoom · Ctrl+wheel opacity · Esc close</text>
         </g>
 
-        <!-- Monoid-style Tooltip above Record icon on toolbar -->
-        <g transform="translate(502, 417)" filter="url(#bar-shadow-1)">
-          <rect width="124" height="28" rx="10" fill="#26282f" stroke="#ffffff" stroke-opacity="0.11" stroke-width="1"/>
-          <text x="11" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" font-weight="500" fill="#eceef2" data-l="zh">区域录屏</text>
-          <text x="11" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" font-weight="500" fill="#eceef2" data-l="en">Record</text>
-          <rect x="65" y="4.5" width="32" height="19" rx="6" fill="#ffffff" fill-opacity="0.12"/>
-          <text x="81" y="17.5" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="10.5" font-weight="600" fill="#e6e8ed">Ctrl</text>
-          <rect x="100" y="4.5" width="19" height="19" rx="6" fill="#ffffff" fill-opacity="0.12"/>
-          <text x="109.5" y="17.5" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="10.5" font-weight="600" fill="#e6e8ed">R</text>
+        <!-- Monoid-style Tooltip centered directly above Record button #12 (center x = 167 + 409 + 16 = 592) -->
+        <g data-l="zh" transform="translate(543, 422)" filter="url(#bar-shadow-1)">
+          <rect width="98" height="28" rx="10" fill="#26282f" stroke="#ffffff" stroke-opacity="0.11" stroke-width="1"/>
+          <text x="11" y="18" font-size="11.5" font-weight="500" fill="#eceef2">录屏</text>
+          <rect x="41" y="4.5" width="31" height="19" rx="6" fill="#ffffff" fill-opacity="0.12"/>
+          <text x="56.5" y="17.5" text-anchor="middle" class="t-mono" font-size="10.5" font-weight="600" fill="#e6e8ed">Ctrl</text>
+          <rect x="74" y="4.5" width="19" height="19" rx="6" fill="#ffffff" fill-opacity="0.12"/>
+          <text x="83.5" y="17.5" text-anchor="middle" class="t-mono" font-size="10.5" font-weight="600" fill="#e6e8ed">R</text>
+        </g>
+        <g data-l="en" transform="translate(521, 422)" filter="url(#bar-shadow-1)">
+          <rect width="142" height="28" rx="10" fill="#26282f" stroke="#ffffff" stroke-opacity="0.11" stroke-width="1"/>
+          <text x="11" y="18" font-size="11.5" font-weight="500" fill="#eceef2">Record area</text>
+          <rect x="85" y="4.5" width="31" height="19" rx="6" fill="#ffffff" fill-opacity="0.12"/>
+          <text x="100.5" y="17.5" text-anchor="middle" class="t-mono" font-size="10.5" font-weight="600" fill="#e6e8ed">Ctrl</text>
+          <rect x="118" y="4.5" width="19" height="19" rx="6" fill="#ffffff" fill-opacity="0.12"/>
+          <text x="127.5" y="17.5" text-anchor="middle" class="t-mono" font-size="10.5" font-weight="600" fill="#e6e8ed">R</text>
         </g>
 
-        <!-- Authentic 16-Button Concentric Superellipse PinShot Toolbar (w=585, right-aligned under selection) -->
-        <g transform="translate(167, 452)">
-          <rect width="585" height="40" rx="15" fill="#1e1f23" stroke="#ffffff" stroke-opacity="0.12" stroke-width="1" filter="url(#bar-shadow-1)"/>
-          <!-- Active highlight on Select (x=4) and hover highlight on Record (x=413) -->
-          <rect x="4" y="4" width="32" height="32" rx="11" fill="#ffffff" fill-opacity="0.16"/>
-          <rect x="413" y="4" width="32" height="32" rx="11" fill="#ffffff" fill-opacity="0.10"/>
+        <!-- Authentic 16-Button Concentric Superellipse PinShot Toolbar (exact paths & coordinates from app/toolbar.mbt) -->
+        <g transform="translate(167, 456)">
+          <rect width="585" height="40" rx="15" fill="#18191d" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1" filter="url(#bar-shadow-1)"/>
+          <!-- Active highlight on Select (x=4) and hover highlight on Record #12 (x=409) -->
+          <rect x="4" y="4" width="32" height="32" rx="11" fill="#ffffff" fill-opacity="0.24"/>
+          <rect x="409" y="4" width="32" height="32" rx="11" fill="#ffffff" fill-opacity="0.13"/>
 
           <!-- 1..8: select, box, arrow, pen, mosaic, number, words, beautify -->
           <g transform="translate(11, 11)" fill="none" stroke="#ffffff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.8v11.4l2.9-2.8 2.1 4.6 2-.9-2.1-4.5h4z"/></g>
-          <g transform="translate(46, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.5h11v9h-11z"/></g>
-          <g transform="translate(81, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14 14 4"/><path d="M7.5 4H14v6.5"/></g>
-          <g transform="translate(116, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 14.5l1-3.5 8-8 2.5 2.5-8 8z"/><path d="M11 4.5l2.5 2.5"/></g>
-          <g transform="translate(151, 11)"><path d="M3.5 3.5h11v11h-11z" fill="none" stroke="#d9dbe0" stroke-width="1.6"/><path d="M3.5 3.5h3.7v3.7h-3.7zM10.8 3.5h3.7v3.7h-3.7zM7.2 7.2h3.6v3.6h-3.6zM3.5 10.8h3.7v3.7h-3.7zM10.8 10.8h3.7v3.7h-3.7z" fill="#d9dbe0"/></g>
-          <g transform="translate(186, 11)"><circle cx="9" cy="9" r="6.5" fill="none" stroke="#d9dbe0" stroke-width="1.6"/><path d="M8.3 6.4l1.6-1v7.4h-1.6z" fill="#d9dbe0"/></g>
-          <g transform="translate(221, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5V3.8h10V5"/><path d="M9 3.8v10.7"/><path d="M7 14.5h4"/></g>
-          <g transform="translate(256, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="12" height="12" rx="3"/><rect x="6" y="6" width="6" height="6" rx="1.2"/></g>
+          <g transform="translate(46, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.5h11v9h-11z"/></g>
+          <g transform="translate(81, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14 14 4"/><path d="M7.5 4H14v6.5"/></g>
+          <g transform="translate(116, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 14.5l1-3.5 8-8 2.5 2.5-8 8z"/><path d="M11 4.5l2.5 2.5"/></g>
+          <g transform="translate(151, 11)"><path d="M3.5 3.5h11v11h-11z" fill="none" stroke="#eaecef" stroke-width="1.6"/><path d="M3.5 3.5h3.7v3.7h-3.7zM10.8 3.5h3.7v3.7h-3.7zM7.2 7.2h3.6v3.6h-3.6zM3.5 10.8h3.7v3.7h-3.7zM10.8 10.8h3.7v3.7h-3.7z" fill="#eaecef"/></g>
+          <g transform="translate(186, 11)"><circle cx="9" cy="9" r="6.5" fill="none" stroke="#eaecef" stroke-width="1.6"/><path d="M8.3 6.4l1.6-1v7.4h-1.6z" fill="#eaecef"/></g>
+          <g transform="translate(221, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5V3.8h10V5"/><path d="M9 3.8v10.7"/><path d="M7 14.5h4"/></g>
+          <!-- Exact beautify glyph: outer squircle stroke + inner filled rounded square -->
+          <g transform="translate(256, 11)">
+            <path d="M5.6 2.8h6.8c1.8 0 2.8 1 2.8 2.8v6.8c0 1.8-1 2.8-2.8 2.8H5.6c-1.8 0-2.8-1-2.8-2.8V5.6c0-1.8 1-2.8 2.8-2.8z" fill="none" stroke="#eaecef" stroke-width="1.6"/>
+            <path d="M7 6h4c.6 0 1 .4 1 1v4c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V7c0-.6.4-1 1-1z" fill="#eaecef"/>
+          </g>
 
-          <line x1="287.5" y1="12" x2="287.5" y2="28" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1"/>
+          <line x1="287.5" y1="12" x2="287.5" y2="28" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1"/>
           <!-- 9: undo -->
-          <g transform="translate(301, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 4 3 7.5 6.5 11"/><path d="M3.5 7.5h7a4 4 0 0 1 0 8H8"/></g>
-          <line x1="332.5" y1="12" x2="332.5" y2="28" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1"/>
+          <g transform="translate(301, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 4 3 7.5 6.5 11"/><path d="M3.5 7.5h7a4 4 0 0 1 0 8H8"/></g>
+          <line x1="332.5" y1="12" x2="332.5" y2="28" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1"/>
 
-          <!-- 10..16: ocr, longshot, record, pin, save, close, check -->
-          <g transform="translate(346, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 6V2.8H6M12 2.8h3.2V6M15.2 12v3.2H12M6 15.2H2.8V12M6 6.5h6M9 6.5v5.5"/></g>
-          <g transform="translate(381, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2.8" width="10" height="12.4" rx="2"/><path d="M9 6.5v5M7 9.5l2 2 2-2"/></g>
-          <g transform="translate(416, 11)"><circle cx="9" cy="9" r="6.2" fill="none" stroke="#ffffff" stroke-width="1.6"/><circle cx="9" cy="9" r="3" fill="#ef4444"/></g>
-          <g transform="translate(451, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2.8h4l-.6 4.6 2.6 2.4v1.4H5v-1.4l2.6-2.4z"/><path d="M9 11.2v4.3"/></g>
-          <g transform="translate(486, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v8.5"/><path d="M5.5 8 9 11.5 12.5 8"/><path d="M3.5 13v1.7h11V13"/></g>
-          <g transform="translate(521, 11)" fill="none" stroke="#d9dbe0" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l9 9"/><path d="M13.5 4.5l-9 9"/></g>
-          <g transform="translate(556, 11)" fill="none" stroke="#4cc38a" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 9.5 7.3 13.2 14.5 5"/></g>
+          <!-- 10..16: ocr, long, record (monochrome white concentric circle), pin, save, close, check -->
+          <g transform="translate(346, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 6V2.8H6M12 2.8h3.2V6M15.2 12v3.2H12M6 15.2H2.8V12M6 6.5h6M9 6.5v5.5"/></g>
+          <g transform="translate(381, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2.5h10v13h-10z"/><path d="M9 5.5v7"/><path d="M6.5 10 9 12.5 11.5 10"/></g>
+          <g transform="translate(416, 11)"><circle cx="9" cy="9" r="6.2" fill="none" stroke="#ffffff" stroke-width="1.5"/><circle cx="9" cy="9" r="3.2" fill="#ffffff"/></g>
+          <g transform="translate(451, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2.8h4l-.6 4.6 2.6 2.4v1.4H5v-1.4l2.6-2.4z"/><path d="M9 11.2v4.3"/></g>
+          <g transform="translate(486, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v8.5"/><path d="M5.5 8 9 11.5 12.5 8"/><path d="M3.5 13v1.7h11V13"/></g>
+          <g transform="translate(521, 11)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l9 9"/><path d="M13.5 4.5l-9 9"/></g>
+          <g transform="translate(556, 11)" fill="none" stroke="#4cc38a" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 9.5 7.3 13.2 14.5 5"/></g>
         </g>
       </svg>
     </div>
 
-    <!-- ==================== SCENE 2: SCREEN RECORDING (H.265 / H.264 / GIF) ==================== -->
+    <!-- ==================== SCENE 2: SCREEN RECORDING (STUDIO HUD + 120FPS + AV1/H.265/GIF) ==================== -->
     <div class="scene-panel" data-panel="record">
-      <svg viewBox="0 0 1120 548" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PinShot hardware-accelerated H.265 and GIF screen recording">
+      <svg viewBox="0 0 1120 548" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PinShot hardware-accelerated screen recording and Landscape Studio HUD exporter">
         <defs>
           <pattern id="dot-grid-2" width="24" height="24" patternUnits="userSpaceOnUse">
             <circle cx="12" cy="12" r="1" fill="#111214" fill-opacity="0.07"/>
           </pattern>
           <filter id="rec-shadow" x="-12%" y="-14%" width="124%" height="136%">
-            <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#111214" flood-opacity="0.22"/>
+            <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#111214" flood-opacity="0.24"/>
+          </filter>
+          <filter id="rec-bar-shadow" x="-14%" y="-40%" width="128%" height="220%">
+            <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#111214" flood-opacity="0.24"/>
           </filter>
           <filter id="card-shadow-2" x="-8%" y="-6%" width="116%" height="118%">
-            <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#111214" flood-opacity="0.06"/>
+            <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#111214" flood-opacity="0.08"/>
           </filter>
+          <linearGradient id="cover-scrim" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#0e1015" stop-opacity="0.02"/>
+            <stop offset="0.52" stop-color="#0e1015" stop-opacity="0.14"/>
+            <stop offset="1" stop-color="#0a0c10" stop-opacity="0.88"/>
+          </linearGradient>
+          <clipPath id="cover-clip">
+            <rect x="0" y="0" width="152" height="196" rx="11"/>
+          </clipPath>
         </defs>
 
         <rect width="1120" height="548" fill="#f2f2ef"/>
         <rect width="1120" height="548" fill="url(#dot-grid-2)"/>
 
-        <!-- Left: Active Recording Region with dashed recording border + click ripple + keycap HUD -->
-        <g transform="translate(54, 48)">
-          <rect width="540" height="360" rx="10" fill="#ffffff" filter="url(#card-shadow-2)"/>
+        <!-- Left: Active Recording Region with Proposal A recording viewfinder + click ripple + keycap HUD -->
+        <g transform="translate(46, 52)">
+          <rect width="486" height="354" rx="10" fill="#ffffff" filter="url(#card-shadow-2)"/>
           <!-- Clean app window being recorded -->
-          <rect x="0" y="0" width="540" height="34" rx="10" fill="#fafaf9"/>
-          <line x1="0" y1="34" x2="540" y2="34" stroke="#111214" stroke-opacity="0.07"/>
+          <rect x="0" y="0" width="486" height="34" rx="10" fill="#fafaf9"/>
+          <line x1="0" y1="34" x2="486" y2="34" stroke="#111214" stroke-opacity="0.07"/>
           <circle cx="18" cy="17" r="4" fill="#111214" fill-opacity="0.18"/>
           <circle cx="32" cy="17" r="4" fill="#111214" fill-opacity="0.18"/>
           <circle cx="46" cy="17" r="4" fill="#111214" fill-opacity="0.18"/>
-          <text x="270" y="21" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#8c9098">demo-walkthrough.app</text>
+          <text x="243" y="21" text-anchor="middle" class="t-mono" font-size="11" fill="#8c9098">demo-walkthrough.app</text>
 
-          <!-- Minimalist code / prototype lines -->
-          <rect x="26" y="56" width="140" height="12" rx="4" fill="#111214" fill-opacity="0.82"/>
-          <rect x="26" y="80" width="248" height="8" rx="3" fill="#111214" fill-opacity="0.15"/>
-          <rect x="26" y="98" width="210" height="8" rx="3" fill="#111214" fill-opacity="0.10"/>
+          <!-- Minimalist prototype lines -->
+          <rect x="24" y="54" width="136" height="12" rx="4" fill="#111214" fill-opacity="0.82"/>
+          <rect x="24" y="76" width="236" height="8" rx="3" fill="#111214" fill-opacity="0.15"/>
+          <rect x="24" y="94" width="192" height="8" rx="3" fill="#111214" fill-opacity="0.10"/>
 
-          <rect x="26" y="128" width="234" height="106" rx="8" fill="#fafaf9" stroke="#111214" stroke-opacity="0.08"/>
-          <rect x="276" y="128" width="238" height="106" rx="8" fill="#fafaf9" stroke="#111214" stroke-opacity="0.08"/>
-          <text x="44" y="156" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#8c9098">ENCODER</text>
-          <text x="44" y="188" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="20" font-weight="650" fill="#111214">HEVC · GPU</text>
-          <text x="44" y="214" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" fill="#686b72" data-l="zh">零拷贝 NV12 管线 · 60fps</text>
-          <text x="44" y="214" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" fill="#686b72" data-l="en">Zero-copy NV12 · 60fps</text>
+          <rect x="24" y="122" width="212" height="106" rx="8" fill="#fafaf9" stroke="#111214" stroke-opacity="0.08"/>
+          <rect x="250" y="122" width="212" height="106" rx="8" fill="#fafaf9" stroke="#111214" stroke-opacity="0.08"/>
+          <text x="40" y="148" class="t-mono" font-size="10.5" fill="#8c9098">ENCODER</text>
+          <text x="40" y="180" class="t-mono" font-size="18.5" font-weight="700" fill="#111214">HEVC · AV1</text>
+          <text x="40" y="208" font-size="11" fill="#686b72" data-l="zh">GPU 管线 · 30–120fps</text>
+          <text x="40" y="208" font-size="11" fill="#686b72" data-l="en">GPU pipeline · 30–120fps</text>
 
-          <text x="294" y="156" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#8c9098">AUDIO</text>
-          <text x="294" y="188" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="20" font-weight="650" fill="#111214">AAC 48 kHz</text>
-          <text x="294" y="214" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" fill="#686b72" data-l="zh">可选 WASAPI 系统内录</text>
-          <text x="294" y="214" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" fill="#686b72" data-l="en">Optional WASAPI loopback</text>
+          <text x="266" y="148" class="t-mono" font-size="10.5" fill="#8c9098">CAPTURE</text>
+          <text x="266" y="180" class="t-mono" font-size="18.5" font-weight="700" fill="#111214">WGC · SCK</text>
+          <text x="266" y="208" font-size="11" fill="#686b72" data-l="zh">Win &amp; Mac 双端含内录</text>
+          <text x="266" y="208" font-size="11" fill="#686b72" data-l="en">Win &amp; Mac + system audio</text>
 
           <!-- Click ripple illustration -->
-          <circle cx="212" cy="276" r="22" fill="none" stroke="#2f9bff" stroke-width="2" stroke-opacity="0.35"/>
-          <circle cx="212" cy="276" r="12" fill="#2f9bff" fill-opacity="0.16" stroke="#2f9bff" stroke-width="1.6"/>
+          <circle cx="190" cy="274" r="22" fill="none" stroke="#2f9bff" stroke-width="2" stroke-opacity="0.35"/>
+          <circle cx="190" cy="274" r="12" fill="#2f9bff" fill-opacity="0.16" stroke="#2f9bff" stroke-width="1.6"/>
           <!-- Floating keycap overlay pill inside recording area -->
-          <g transform="translate(364, 304)">
-            <rect width="144" height="34" rx="10" fill="#181a20" fill-opacity="0.88" stroke="#ffffff" stroke-opacity="0.14"/>
+          <g transform="translate(316, 300)">
+            <rect width="144" height="34" rx="10" fill="#181a20" fill-opacity="0.90" stroke="#ffffff" stroke-opacity="0.14"/>
             <rect x="8" y="6" width="44" height="22" rx="6" fill="#ffffff" fill-opacity="0.14"/>
-            <text x="30" y="21" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" font-weight="600" fill="#ffffff">Ctrl</text>
-            <text x="61" y="21" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#9ea3ab">+</text>
+            <text x="30" y="21" text-anchor="middle" class="t-mono" font-size="11" font-weight="600" fill="#ffffff">Ctrl</text>
+            <text x="61" y="21" text-anchor="middle" class="t-mono" font-size="11" fill="#9ea3ab">+</text>
             <rect x="70" y="6" width="66" height="22" rx="6" fill="#ffffff" fill-opacity="0.14"/>
-            <text x="103" y="21" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" font-weight="600" fill="#ffffff">Space</text>
+            <text x="103" y="21" text-anchor="middle" class="t-mono" font-size="11" font-weight="600" fill="#ffffff">Space</text>
           </g>
 
-          <!-- Dashed recording border -->
-          <rect x="-2" y="-2" width="544" height="364" rx="11" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="7 5"/>
+          <!-- Proposal A Recording Viewfinder Border (red hairline + rounded L-brackets) -->
+          <rect x="-2" y="-2" width="490" height="358" rx="2" fill="none" stroke="#ef4444" stroke-opacity="0.88" stroke-width="1.8" stroke-dasharray="7 5"/>
+          <g fill="none" stroke="#ef4444" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M-2 15V-2h17 M471 -2h17v17 M-2 339v17h17 M471 356h17v-17"/>
+          </g>
 
-          <!-- Floating 15pt Superellipse Minimal Recording Pill under the frame -->
-          <g transform="translate(115, 386)" filter="url(#rec-shadow)">
-            <rect width="310" height="44" rx="16" fill="#1e1f23" stroke="#ffffff" stroke-opacity="0.14" stroke-width="1"/>
-            <circle cx="20" cy="22" r="4.5" fill="#ef4444"/>
-            <text x="34" y="26.5" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="13.5" font-weight="650" fill="#ffffff">00:05</text>
-            <rect x="88" y="10" width="68" height="24" rx="8" fill="#ffffff" fill-opacity="0.08"/>
-            <text x="122" y="26" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11.5" font-weight="600" fill="#d0d4dc">H.265·60</text>
-            <line x1="166" y1="13" x2="166" y2="31" stroke="#ffffff" stroke-opacity="0.16"/>
+          <!-- Floating 15pt Superellipse Morphing Recording Pill under the frame -->
+          <g transform="translate(97, 384)" filter="url(#rec-bar-shadow)">
+            <rect width="292" height="42" rx="15" fill="#18191d" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1"/>
+            <circle cx="19" cy="21" r="4.5" fill="#ef4444"/>
+            <text x="32" y="25.5" class="t-mono" font-size="13" font-weight="600" fill="#ffffff">00:05</text>
+            <!-- FPS pill (120fps) -->
+            <rect x="82" y="8" width="56" height="26" rx="8" fill="#ffffff" fill-opacity="0.10"/>
+            <text x="110" y="25" text-anchor="middle" class="t-mono" font-size="11.5" font-weight="600" fill="#d0d5df">120fps</text>
+            <line x1="147" y1="12" x2="147" y2="30" stroke="#ffffff" stroke-opacity="0.16"/>
             <!-- Pause & Cancel -->
-            <rect x="178" y="15" width="3" height="14" rx="1.2" fill="#e6e8ec"/>
-            <rect x="185" y="15" width="3" height="14" rx="1.2" fill="#e6e8ec"/>
-            <rect x="200" y="6" width="30" height="32" rx="10" fill="#ffffff" fill-opacity="0.08"/>
-            <path d="M210 17l10 10M220 17l-10 10" stroke="#e6e8ec" stroke-width="1.6" stroke-linecap="round"/>
+            <g transform="translate(155, 12)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 4.2v9.6M11.5 4.2v9.6"/></g>
+            <rect x="182" y="5" width="32" height="32" rx="10" fill="#ffffff" fill-opacity="0.08"/>
+            <path d="M193 16l10 10M203 16l-10 10" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round"/>
             <!-- Stop pill -->
-            <rect x="236" y="6" width="68" height="32" rx="11" fill="#e5484d"/>
-            <rect x="249" y="18" width="8" height="8" rx="1.5" fill="#ffffff"/>
-            <text x="263" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12.5" font-weight="600" fill="#ffffff" data-l="zh">停止</text>
-            <text x="263" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12.5" font-weight="600" fill="#ffffff" data-l="en">Stop</text>
+            <rect x="220" y="5" width="67" height="32" rx="11" fill="#d43339"/>
+            <rect x="232" y="17" width="8" height="8" rx="1.5" fill="#ffffff"/>
+            <text x="246" y="25" font-size="12.5" font-weight="600" fill="#ffffff" data-l="zh">停止</text>
+            <text x="246" y="25" font-size="12.5" font-weight="600" fill="#ffffff" data-l="en">Stop</text>
           </g>
         </g>
 
-        <!-- Right: Floating 16pt Superellipse Post-Recording Export Panel -->
-        <g transform="translate(632, 118)" filter="url(#rec-shadow)">
-          <rect width="438" height="274" rx="16" fill="#1e1f23" stroke="#ffffff" stroke-opacity="0.13" stroke-width="1"/>
-          <!-- Header -->
-          <circle cx="22" cy="28" r="4.5" fill="#4cc38a"/>
-          <text x="36" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="13" font-weight="600" fill="#eceef2" data-l="zh">录制完成 · 00:05 · 1440×900 · 2.3 MB</text>
-          <text x="36" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="13" font-weight="600" fill="#eceef2" data-l="en">Recorded · 00:05 · 1440×900 · 2.3 MB</text>
-          <rect x="292" y="18" width="46" height="20" rx="6" fill="#2f9bff" fill-opacity="0.18"/>
-          <text x="315" y="31.5" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" font-weight="600" fill="#7bc4ff" data-l="zh">含声音</text>
-          <text x="315" y="31.5" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11" font-weight="600" fill="#7bc4ff" data-l="en">Audio</text>
-          <path d="M408 23l9 9M417 23l-9 9" stroke="#9ea3ab" stroke-width="1.5" stroke-linecap="round"/>
-          <line x1="16" y1="52" x2="422" y2="52" stroke="#ffffff" stroke-opacity="0.08"/>
+        <!-- Right: Landscape Studio HUD Post-Recording Export Card (matches app/record.mbt) -->
+        <g transform="translate(566, 136)" filter="url(#rec-shadow)">
+          <!-- Outer 18pt superellipse shell -->
+          <rect width="510" height="224" rx="18" fill="#141519" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1"/>
 
-          <!-- Row 1: Format -->
-          <text x="20" y="80" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#9ea3ab" data-l="zh">格式</text>
-          <text x="20" y="80" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#9ea3ab" data-l="en">Format</text>
-          <rect x="78" y="62" width="90" height="28" rx="9" fill="#2f9bff" fill-opacity="0.20" stroke="#2f9bff" stroke-width="1.2"/>
-          <text x="123" y="80" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11.5" font-weight="600" fill="#ffffff">MP4 · H.265</text>
-          <rect x="174" y="62" width="90" height="28" rx="9" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.10"/>
-          <text x="219" y="80" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11.5" fill="#d0d4dc">MP4 · H.264</text>
-          <rect x="270" y="62" width="52" height="28" rx="9" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.10"/>
-          <text x="296" y="80" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11.5" fill="#d0d4dc">GIF</text>
-
-          <!-- Row 2: Quality with per-tier size estimates -->
-          <text x="20" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#9ea3ab" data-l="zh">画质</text>
-          <text x="20" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#9ea3ab" data-l="en">Quality</text>
-          <g transform="translate(78, 102)">
-            <rect x="0" y="0" width="80" height="42" rx="9" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.10"/>
-            <text x="40" y="18" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="500" fill="#e6e8ec" data-l="zh">原画</text>
-            <text x="40" y="18" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="500" fill="#e6e8ec" data-l="en">Original</text>
-            <text x="40" y="34" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="10.5" fill="#8f95a0">2.3 MB</text>
-
-            <rect x="86" y="0" width="80" height="42" rx="9" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.10"/>
-            <text x="126" y="18" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="500" fill="#e6e8ec" data-l="zh">高清</text>
-            <text x="126" y="18" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="500" fill="#e6e8ec" data-l="en">High</text>
-            <text x="126" y="34" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="10.5" fill="#8f95a0">~1.7 MB</text>
-
-            <rect x="172" y="0" width="80" height="42" rx="9" fill="#2f9bff" fill-opacity="0.20" stroke="#2f9bff" stroke-width="1.2"/>
-            <text x="212" y="18" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="600" fill="#ffffff" data-l="zh">均衡</text>
-            <text x="212" y="18" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="600" fill="#ffffff" data-l="en">Balanced</text>
-            <text x="212" y="34" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="10.5" fill="#7bc4ff">~943 KB</text>
-
-            <rect x="258" y="0" width="80" height="42" rx="9" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.10"/>
-            <text x="298" y="18" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="500" fill="#e6e8ec" data-l="zh">小体积</text>
-            <text x="298" y="18" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="500" fill="#e6e8ec" data-l="en">Compact</text>
-            <text x="298" y="34" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="10.5" fill="#8f95a0">~474 KB</text>
+          <!-- 1. Left: Rounded full-bleed first-frame cover preview (152 x 196) -->
+          <g transform="translate(14, 14)">
+            <g clip-path="url(#cover-clip)">
+              <rect width="152" height="196" fill="#f7f7f5"/>
+              <!-- Mini preview of the recorded window -->
+              <rect x="0" y="0" width="152" height="22" fill="#ffffff"/>
+              <line x1="0" y1="22" x2="152" y2="22" stroke="#111214" stroke-opacity="0.08"/>
+              <circle cx="10" cy="11" r="2.5" fill="#111214" fill-opacity="0.22"/>
+              <circle cx="19" cy="11" r="2.5" fill="#111214" fill-opacity="0.22"/>
+              <circle cx="28" cy="11" r="2.5" fill="#111214" fill-opacity="0.22"/>
+              <rect x="12" y="34" width="66" height="7" rx="2.5" fill="#111214" fill-opacity="0.72"/>
+              <rect x="12" y="48" width="112" height="4.5" rx="2" fill="#111214" fill-opacity="0.16"/>
+              <rect x="12" y="58" width="90" height="4.5" rx="2" fill="#111214" fill-opacity="0.11"/>
+              <rect x="12" y="74" width="61" height="48" rx="5" fill="#ffffff" stroke="#111214" stroke-opacity="0.09"/>
+              <rect x="79" y="74" width="61" height="48" rx="5" fill="#ffffff" stroke="#111214" stroke-opacity="0.09"/>
+              <rect x="20" y="88" width="38" height="6" rx="2" fill="#111214" fill-opacity="0.62"/>
+              <rect x="87" y="88" width="38" height="6" rx="2" fill="#111214" fill-opacity="0.62"/>
+              <circle cx="72" cy="138" r="9" fill="#2f9bff" fill-opacity="0.20" stroke="#2f9bff" stroke-width="1.2"/>
+              <!-- Silky bottom dark scrim -->
+              <rect width="152" height="196" fill="url(#cover-scrim)"/>
+              <!-- Bottom metadata overlay -->
+              <text x="11" y="168" class="t-mono" font-size="12" font-weight="600" fill="#ffffff">00:05</text>
+              <!-- Speaker glyph -->
+              <g transform="translate(55, 158)" fill="none" stroke="#93c5fd" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1.5 4.2h2.2L6.6 2v8L3.7 7.8H1.5z"/>
+                <path d="M8.8 4a2.8 2.8 0 0 1 0 4"/>
+              </g>
+              <text x="141" y="168" text-anchor="end" class="t-mono" font-size="10.5" font-weight="500" fill="#ffffff" fill-opacity="0.78">2.3 MB</text>
+              <text x="11" y="185" class="t-mono" font-size="10" fill="#ffffff" fill-opacity="0.72">1440×900 → 1080×675</text>
+            </g>
+            <rect width="152" height="196" rx="11" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="1"/>
           </g>
 
-          <!-- Row 3: Size -->
-          <text x="20" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#9ea3ab" data-l="zh">尺寸</text>
-          <text x="20" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" fill="#9ea3ab" data-l="en">Size</text>
-          <rect x="78" y="158" width="66" height="28" rx="9" fill="#2f9bff" fill-opacity="0.20" stroke="#2f9bff" stroke-width="1.2"/>
-          <text x="111" y="176" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="600" fill="#ffffff" data-l="zh">原尺寸</text>
-          <text x="111" y="176" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="600" fill="#ffffff" data-l="en">Original</text>
-          <rect x="150" y="158" width="58" height="28" rx="9" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.10"/>
-          <text x="179" y="176" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11.5" fill="#d0d4dc">1080p</text>
-          <rect x="214" y="158" width="52" height="28" rx="9" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.10"/>
-          <text x="240" y="176" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11.5" fill="#d0d4dc">720p</text>
+          <!-- 2. Right: Airy controls column -->
+          <g transform="translate(180, 14)">
+            <!-- 2a. Top row: Format segmented strip with white sliding thumb + close circle -->
+            <rect x="0" y="0" width="248" height="32" rx="9" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.10"/>
+            <!-- White active sliding thumb on H.265 -->
+            <rect x="3" y="3" width="66" height="26" rx="7" fill="#f2f3f6"/>
+            <text x="31" y="20" text-anchor="middle" class="t-mono" font-size="11.5" font-weight="600" fill="#111214">H.265</text>
+            <circle cx="59" cy="16" r="2.3" fill="#22c55e"/>
+            <text x="99" y="20" text-anchor="middle" class="t-mono" font-size="11.5" font-weight="500" fill="#cfd4de">H.264</text>
+            <text x="157" y="20" text-anchor="middle" class="t-mono" font-size="11.5" font-weight="500" fill="#cfd4de">AV1</text>
+            <text x="213" y="20" text-anchor="middle" class="t-mono" font-size="11.5" font-weight="500" fill="#cfd4de">GIF</text>
+            <!-- Close button -->
+            <circle cx="304" cy="16" r="12" fill="#ffffff" fill-opacity="0.06"/>
+            <path d="M300 12l8 8M308 12l-8 8" stroke="#a2a9b8" stroke-width="1.4" stroke-linecap="round"/>
 
-          <line x1="16" y1="204" x2="422" y2="204" stroke="#ffffff" stroke-opacity="0.08"/>
-          <!-- Footer: saved result + actions -->
-          <text x="20" y="242" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="12" font-weight="600" fill="#4cc38a" data-l="zh">已保存 · 1.1 MB (-51%)</text>
-          <text x="20" y="242" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="12" font-weight="600" fill="#4cc38a" data-l="en">Saved · 1.1 MB (-51%)</text>
-          <rect x="224" y="220" width="76" height="34" rx="10" fill="#ffffff" fill-opacity="0.09"/>
-          <text x="262" y="241" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="500" fill="#eceef2" data-l="zh">另存为…</text>
-          <text x="262" y="241" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="500" fill="#eceef2" data-l="en">Save as…</text>
-          <rect x="308" y="220" width="110" height="34" rx="10" fill="#2f9bff"/>
-          <text x="363" y="241" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="600" fill="#ffffff" data-l="zh">✓ 保存并复制</text>
-          <text x="363" y="241" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="600" fill="#ffffff" data-l="en">✓ Save &amp; Copy</text>
+            <!-- 2b. Borderless property rows: Quality & Proportional Scale (exact i18n labels) -->
+            <text x="2" y="68" font-size="12" fill="#8e95a4" data-l="zh">画质</text>
+            <text x="2" y="68" font-size="12" fill="#8e95a4" data-l="en">Quality</text>
+            <g transform="translate(56, 48)">
+              <text x="24" y="20" text-anchor="middle" font-size="12" fill="#b7becb" data-l="zh">原画</text>
+              <text x="26" y="20" text-anchor="middle" font-size="12" fill="#b7becb" data-l="en">Original</text>
+              <text x="72" y="20" text-anchor="middle" font-size="12" fill="#b7becb" data-l="zh">高</text>
+              <text x="82" y="20" text-anchor="middle" font-size="12" fill="#b7becb" data-l="en">High</text>
+              <!-- Active pill on 标准 / Balanced -->
+              <rect x="104" y="2" width="72" height="26" rx="7.5" fill="#ffffff" fill-opacity="0.14"/>
+              <text x="140" y="20" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff" data-l="zh">标准</text>
+              <text x="140" y="20" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff" data-l="en">Balanced</text>
+              <text x="216" y="20" text-anchor="middle" font-size="12" fill="#b7becb" data-l="zh">小体积</text>
+              <text x="216" y="20" text-anchor="middle" font-size="12" fill="#b7becb" data-l="en">Compact</text>
+            </g>
+
+            <text x="2" y="108" font-size="12" fill="#8e95a4" data-l="zh">尺寸</text>
+            <text x="2" y="108" font-size="12" fill="#8e95a4" data-l="en">Size</text>
+            <g transform="translate(56, 88)">
+              <text x="28" y="20" text-anchor="middle" class="t-mono" font-size="12" fill="#b7becb">100%</text>
+              <rect x="64" y="2" width="52" height="26" rx="7.5" fill="#ffffff" fill-opacity="0.14"/>
+              <text x="90" y="20" text-anchor="middle" class="t-mono" font-size="12" font-weight="600" fill="#ffffff">75%</text>
+              <text x="148" y="20" text-anchor="middle" class="t-mono" font-size="12" fill="#b7becb">50%</text>
+            </g>
+
+            <!-- Hairline divider -->
+            <line x1="0" y1="138" x2="316" y2="138" stroke="#ffffff" stroke-opacity="0.12"/>
+
+            <!-- 2c. Footer: live tabular size estimate + Save As icon + Primary CTA with exact copy glyph -->
+            <text x="2" y="168" class="t-mono" font-size="14" font-weight="600" fill="#f2f4f8">~943 KB</text>
+            <text x="2" y="186" font-size="11" fill="#9fa6b5" data-l="zh">较原文件 <tspan class="t-mono" fill="#34d399" font-weight="600">-59%</tspan></text>
+            <text x="2" y="186" font-size="11" fill="#9fa6b5" data-l="en">vs source <tspan class="t-mono" fill="#34d399" font-weight="600">-59%</tspan></text>
+
+            <!-- Save As icon button (32x32) -->
+            <rect x="166" y="156" width="32" height="32" rx="9" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.15"/>
+            <g transform="translate(173, 163)" fill="none" stroke="#e2e6f0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 3v8.5M5.5 8 9 11.5 12.5 8M3.5 13v1.7h11V13"/>
+            </g>
+            <!-- Primary CTA (exact glyph("copy") + Save & Copy) -->
+            <rect x="204" y="156" width="112" height="32" rx="9" fill="#1472e0"/>
+            <g transform="translate(216, 165) scale(0.75)" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6.5 6.5h8v8h-8z"/><path d="M11.5 6.5V3.5h-8v8h3"/>
+            </g>
+            <text x="268" y="176" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff" data-l="zh">保存并复制</text>
+            <text x="268" y="176" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff" data-l="en">Save &amp; Copy</text>
+          </g>
         </g>
+
+        <!-- Quiet note under Studio HUD -->
+        <text x="821" y="392" text-anchor="middle" font-size="11.5" fill="#686b72" data-l="zh">横向 Studio HUD · 同参数二次导出秒级复用 · GIF 支持 10/15/20fps 与 1080px 上限</text>
+        <text x="821" y="392" text-anchor="middle" font-size="11.5" fill="#686b72" data-l="en">Landscape Studio HUD · Instant reuse of exported presets · GIF 10/15/20fps &amp; 1080px cap</text>
       </svg>
     </div>
 
@@ -736,19 +825,26 @@
             <circle cx="12" cy="12" r="1" fill="#111214" fill-opacity="0.07"/>
           </pattern>
           <filter id="long-shadow" x="-10%" y="-8%" width="120%" height="120%">
-            <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#111214" flood-opacity="0.18"/>
+            <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#111214" flood-opacity="0.20"/>
           </filter>
         </defs>
 
         <rect width="1120" height="548" fill="#f2f2ef"/>
         <rect width="1120" height="548" fill="url(#dot-grid-3)"/>
 
-        <!-- Left: Live scrolling capture frame -->
+        <!-- Left: Live scrolling capture frame with Proposal A blue viewfinder -->
         <g transform="translate(82, 54)">
-          <rect width="580" height="440" rx="10" fill="#ffffff" stroke="#2f9bff" stroke-width="2.2"/>
-          <rect x="16" y="16" width="176" height="24" rx="6" fill="#1e1f23"/>
-          <text x="104" y="32" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#eceef2" data-l="zh">蓝框内上下滚动 · Ctrl+L</text>
-          <text x="104" y="32" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#eceef2" data-l="en">Scroll up/down · Ctrl+L</text>
+          <rect width="580" height="440" rx="2" fill="#ffffff"/>
+          <!-- Dual-contrast blue viewfinder border + L-brackets -->
+          <rect x="-1" y="-1" width="582" height="442" rx="2" fill="none" stroke="#111214" stroke-opacity="0.22" stroke-width="3.6"/>
+          <rect x="-1" y="-1" width="582" height="442" rx="2" fill="none" stroke="#2f9bff" stroke-width="2"/>
+          <g fill="none" stroke="#3da6ff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M-1 18V-1h19 M562 -1h19v19 M-1 422v19h19 M562 441h19v-19"/>
+          </g>
+
+          <rect x="16" y="16" width="194" height="24" rx="7" fill="#1e1f23"/>
+          <text x="113" y="32" text-anchor="middle" font-size="11" fill="#eceef2" data-l="zh">框内上下滚动 · <tspan class="t-mono">Ctrl+L / ⌘L</tspan></text>
+          <text x="113" y="32" text-anchor="middle" font-size="11" fill="#eceef2" data-l="en">Scroll up/down · <tspan class="t-mono">Ctrl+L / ⌘L</tspan></text>
 
           <!-- Document rows inside live scrolling viewport -->
           <g transform="translate(28, 60)">
@@ -780,16 +876,16 @@
 
         <!-- Right: Floating LongShot Virtualized Scrollable Preview Panel -->
         <g transform="translate(700, 54)" filter="url(#long-shadow)">
-          <rect width="336" height="440" rx="14" fill="#1e1f23" stroke="#ffffff" stroke-opacity="0.13"/>
+          <rect width="336" height="440" rx="16" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.14"/>
           <circle cx="22" cy="24" r="4" fill="#4cc38a"/>
-          <text x="34" y="28" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12.5" font-weight="600" fill="#eceef2" data-l="zh">长截图 · 1160 × 4820</text>
-          <text x="34" y="28" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12.5" font-weight="600" fill="#eceef2" data-l="en">Scrolling · 1160 × 4820</text>
-          <text x="318" y="28" text-anchor="end" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#9ea3ab" data-l="zh">4.2 屏 · 100%</text>
-          <text x="318" y="28" text-anchor="end" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#9ea3ab" data-l="en">4.2x · 100%</text>
+          <text x="34" y="28" font-size="12.5" font-weight="600" fill="#eceef2" data-l="zh">长截图 · <tspan class="t-mono">1160 × 4820</tspan></text>
+          <text x="34" y="28" font-size="12.5" font-weight="600" fill="#eceef2" data-l="en">Scrolling · <tspan class="t-mono">1160 × 4820</tspan></text>
+          <text x="318" y="28" text-anchor="end" font-size="11" fill="#9ea3ab" data-l="zh"><tspan class="t-mono">4.2</tspan> 屏 · <tspan class="t-mono">100%</tspan></text>
+          <text x="318" y="28" text-anchor="end" class="t-mono" font-size="11" fill="#9ea3ab" data-l="en">4.2x · 100%</text>
 
           <rect x="16" y="42" width="304" height="24" rx="7" fill="#4cc38a" fill-opacity="0.12"/>
-          <text x="26" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" font-weight="500" fill="#6ee7b7" data-l="zh">↓ 已自动拼接 14 帧 · 亚像素行对齐</text>
-          <text x="26" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" font-weight="500" fill="#6ee7b7" data-l="en">↓ Stitched 14 frames · sub-pixel match</text>
+          <text x="26" y="58" font-size="11.5" font-weight="500" fill="#6ee7b7" data-l="zh">↓ 已自动拼接 14 帧 · 亚像素行对齐</text>
+          <text x="26" y="58" font-size="11.5" font-weight="500" fill="#6ee7b7" data-l="en">↓ Stitched 14 frames · sub-pixel match</text>
 
           <!-- Virtualized stitched preview + scrollbar -->
           <rect x="16" y="76" width="286" height="304" rx="8" fill="#ffffff"/>
@@ -805,32 +901,37 @@
             <rect x="0" y="204" width="100" height="8" rx="3" fill-opacity="0.72"/>
             <rect x="0" y="220" width="246" height="5" rx="2" fill-opacity="0.16"/>
             <rect x="0" y="232" width="224" height="5" rx="2" fill-opacity="0.12"/>
-            <rect x="0" y="248" width="260" height="28" rx="5" fill="#eef6ff" stroke="#2f9bff" stroke-opacity="0.45"/>
           </g>
+          <!-- Auto-follow bottom hint pill inside viewport -->
+          <rect x="89" y="348" width="140" height="22" rx="11" fill="#16171b" fill-opacity="0.86" stroke="#ffffff" stroke-opacity="0.16"/>
+          <text x="159" y="362.5" text-anchor="middle" font-size="10.5" font-weight="500" fill="#d5d8e0" data-l="zh">底部 · 滚轮可浏览</text>
+          <text x="159" y="362.5" text-anchor="middle" font-size="10.5" font-weight="500" fill="#d5d8e0" data-l="en">Bottom · Scroll preview</text>
+
           <!-- Scrollbar with live capture window marker -->
           <rect x="310" y="76" width="10" height="304" rx="5" fill="#ffffff" fill-opacity="0.08"/>
-          <rect x="312" y="280" width="6" height="92" rx="3" fill="#2f9bff"/>
+          <rect x="312" y="280" width="6" height="92" rx="3" fill="#ffffff" fill-opacity="0.58"/>
 
-          <!-- Bottom action bar -->
+          <!-- Bottom action bar (matches app/longshot.mbt) -->
           <rect x="16" y="392" width="68" height="32" rx="9" fill="#ffffff" fill-opacity="0.08"/>
-          <text x="50" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#e6e8ec" data-l="zh">暂停</text>
-          <text x="50" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#e6e8ec" data-l="en">Pause</text>
+          <text x="50" y="412" text-anchor="middle" font-size="11.5" fill="#e6e8ec" data-l="zh">暂停</text>
+          <text x="50" y="412" text-anchor="middle" font-size="11.5" fill="#e6e8ec" data-l="en">Pause</text>
           <rect x="92" y="392" width="66" height="32" rx="9" fill="#ffffff" fill-opacity="0.08"/>
-          <text x="125" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#e6e8ec" data-l="zh">贴图</text>
-          <text x="125" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#e6e8ec" data-l="en">Pin</text>
+          <text x="125" y="412" text-anchor="middle" font-size="11.5" fill="#e6e8ec" data-l="zh">贴图</text>
+          <text x="125" y="412" text-anchor="middle" font-size="11.5" fill="#e6e8ec" data-l="en">Pin</text>
           <rect x="166" y="392" width="66" height="32" rx="9" fill="#ffffff" fill-opacity="0.08"/>
-          <text x="199" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#e6e8ec" data-l="zh">保存</text>
-          <text x="199" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#e6e8ec" data-l="en">Save</text>
-          <rect x="240" y="392" width="80" height="32" rx="9" fill="#2f9bff"/>
-          <text x="280" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="600" fill="#ffffff" data-l="zh">复制</text>
-          <text x="280" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="12" font-weight="600" fill="#ffffff" data-l="en">Copy</text>
+          <text x="199" y="412" text-anchor="middle" font-size="11.5" fill="#e6e8ec" data-l="zh">保存</text>
+          <text x="199" y="412" text-anchor="middle" font-size="11.5" fill="#e6e8ec" data-l="en">Save</text>
+          <rect x="240" y="392" width="80" height="32" rx="9" fill="#1472e0"/>
+          <g transform="translate(251, 400) scale(0.85)" fill="none" stroke="#ffffff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 9.5 7.3 13.2 14.5 5"/></g>
+          <text x="288" y="412" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff" data-l="zh">复制</text>
+          <text x="288" y="412" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff" data-l="en">Copy</text>
         </g>
       </svg>
     </div>
 
-    <!-- ==================== SCENE 4: OFFLINE OCR & BEAUTIFY ==================== -->
+    <!-- ==================== SCENE 4: IN-PLACE LIVE TEXT OCR & BEAUTIFY ==================== -->
     <div class="scene-panel" data-panel="ocr">
-      <svg viewBox="0 0 1120 548" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PinShot offline OCR and screenshot beautify">
+      <svg viewBox="0 0 1120 548" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PinShot in-place Live Text offline OCR on pins and one-click screenshot beautify">
         <defs>
           <pattern id="dot-grid-4" width="24" height="24" patternUnits="userSpaceOnUse">
             <circle cx="12" cy="12" r="1" fill="#111214" fill-opacity="0.07"/>
@@ -843,62 +944,105 @@
           <filter id="ocr-shadow" x="-10%" y="-8%" width="120%" height="122%">
             <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#111214" flood-opacity="0.16"/>
           </filter>
+          <filter id="pill-shadow" x="-15%" y="-45%" width="130%" height="230%">
+            <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#111214" flood-opacity="0.24"/>
+          </filter>
         </defs>
 
         <rect width="1120" height="548" fill="#f2f2ef"/>
         <rect width="1120" height="548" fill="url(#dot-grid-4)"/>
 
-        <!-- Left: Offline OCR overlay -->
-        <g transform="translate(64, 68)" filter="url(#ocr-shadow)">
-          <rect width="470" height="412" rx="14" fill="#1e1f23" stroke="#ffffff" stroke-opacity="0.12"/>
-          <text x="22" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="13" font-weight="600" fill="#eceef2" data-l="zh">离线提取文字 · Ctrl+O</text>
-          <text x="22" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="13" font-weight="600" fill="#eceef2" data-l="en">Offline OCR · Ctrl+O</text>
-          <rect x="348" y="16" width="100" height="24" rx="7" fill="#2f9bff"/>
-          <text x="398" y="32" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" font-weight="600" fill="#ffffff" data-l="zh">复制全部</text>
-          <text x="398" y="32" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" font-weight="600" fill="#ffffff" data-l="en">Copy all</text>
-          <line x1="16" y1="50" x2="454" y2="50" stroke="#ffffff" stroke-opacity="0.08"/>
+        <!-- Left: In-place Apple Live Text / PixPin style OCR directly on a Pinned Image -->
+        <g transform="translate(56, 68)">
+          <g filter="url(#ocr-shadow)">
+            <!-- Floating pinned screenshot window -->
+            <rect width="484" height="352" rx="13" fill="#ffffff" stroke="#2f9bff" stroke-opacity="0.55" stroke-width="1.4"/>
+            <!-- Subtle captured app header inside the pin -->
+            <path d="M1 13A12 12 0 0 1 13 1h458a12 12 0 0 1 12 12v28H1z" fill="#f7f7f5"/>
+            <line x1="1" y1="41" x2="483" y2="41" stroke="#111214" stroke-opacity="0.07"/>
+            <circle cx="18" cy="21" r="4" fill="#111214" fill-opacity="0.18"/>
+            <circle cx="32" cy="21" r="4" fill="#111214" fill-opacity="0.18"/>
+            <circle cx="46" cy="21" r="4" fill="#111214" fill-opacity="0.18"/>
+            <text x="64" y="25" class="t-mono" font-size="11" font-weight="500" fill="#686b72">release-notes.log</text>
+            <rect x="382" y="10" width="88" height="22" rx="6" fill="#2f9bff" fill-opacity="0.12"/>
+            <text x="426" y="25" text-anchor="middle" class="t-mono" font-size="10.5" font-weight="600" fill="#1472e0">Live Text</text>
 
-          <!-- Editable recognized text box -->
-          <rect x="20" y="66" width="430" height="292" rx="10" fill="#141518" stroke="#ffffff" stroke-opacity="0.08"/>
-          <g font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="12.5" fill="#e6e8ec">
-            <rect x="34" y="86" width="302" height="22" rx="4" fill="#2f9bff" fill-opacity="0.26"/>
-            <text x="40" y="102">POST /v1/releases/pinshot-1.0.11</text>
-            <text x="40" y="132" fill="#b8bdc6">Content-Type: application/json</text>
-            <text x="40" y="162" fill="#b8bdc6">Codec: HEVC (hvc1) · Hardware NV12</text>
-            <text x="40" y="192" fill="#b8bdc6">Signature: ECDSA P-256 Verified OK</text>
-            <rect x="34" y="216" width="356" height="22" rx="4" fill="#2f9bff" fill-opacity="0.18"/>
-            <text x="40" y="232" data-l="zh">本地 Windows OCR 引擎 · 零联网秒识别</text>
-            <text x="40" y="232" data-l="en">Native Windows OCR · 100% offline</text>
-            <text x="40" y="266" fill="#8f95a0" data-l="zh">支持直接编辑修改识别结果，贴图右键同样可用。</text>
-            <text x="40" y="266" fill="#8f95a0" data-l="en">Edit recognized text directly, or OCR any pin.</text>
+            <!-- Captured content inside pin with in-place Live Text highlights -->
+            <g transform="translate(24, 62)">
+              <text x="0" y="16" font-size="14" font-weight="600" fill="#111214" data-l="zh">贴图原位划词 · 无需弹窗</text>
+              <text x="0" y="16" font-size="14" font-weight="600" fill="#111214" data-l="en">In-Place Live Text on Any Pin</text>
+
+              <!-- Code / release block inside screenshot -->
+              <rect x="0" y="32" width="436" height="174" rx="9" fill="#fafaf9" stroke="#111214" stroke-opacity="0.08"/>
+
+              <!-- Hover wash on line 1 -->
+              <rect x="14" y="47" width="322" height="22" rx="4.5" fill="#2f9bff" fill-opacity="0.11"/>
+              <!-- Active Apple Live Text blue selection ribbons across lines 2 & 3 -->
+              <rect x="14" y="77" width="392" height="23" rx="4.5" fill="#2f9bff" fill-opacity="0.34"/>
+              <rect x="14" y="107" width="286" height="23" rx="4.5" fill="#2f9bff" fill-opacity="0.34"/>
+              <!-- Crisp I-beam selection caret at end of selection -->
+              <line x1="300" y1="107" x2="300" y2="130" stroke="#1472e0" stroke-width="1.8" stroke-linecap="round"/>
+
+              <g font-size="12" fill="#111214">
+                <text x="20" y="63" class="t-mono">POST /v1/releases/pinshot-1.0.22</text>
+                <text x="20" y="93" class="t-mono" font-weight="500">Codec: HEVC / AV1 · 120fps Hardware NV12</text>
+                <text x="20" y="123" class="t-mono" font-weight="500">OCR: Windows OCR / macOS Vision</text>
+                <text x="20" y="153" class="t-mono" fill="#686b72">Signature: ECDSA P-256 Verified OK</text>
+                <text x="20" y="183" fill="#686b72" data-l="zh">本地离线识别 · 图片绝不上传云端</text>
+                <text x="20" y="183" fill="#686b72" data-l="en">100% on-device · Images never leave your PC</text>
+              </g>
+            </g>
+
+            <!-- Compact whisper-quiet floating Live Text capsule anchored at bottom-right (matches app/ocr.mbt) -->
+            <g data-l="zh" transform="translate(292, 308)" filter="url(#pill-shadow)">
+              <rect width="180" height="32" rx="10" fill="#16181d" fill-opacity="0.94" stroke="#ffffff" stroke-opacity="0.16"/>
+              <rect x="5" y="5" width="84" height="22" rx="6.5" fill="#1472e0"/>
+              <text x="47" y="20" text-anchor="middle" font-size="11.5" font-weight="600" fill="#ffffff">复制选中</text>
+              <text x="118" y="20" text-anchor="middle" font-size="11.5" font-weight="500" fill="#c8cdd8">全选</text>
+              <path d="M156 11.5l9 9M165 11.5l-9 9" stroke="#9fa7b5" stroke-width="1.5" stroke-linecap="round"/>
+            </g>
+            <g data-l="en" transform="translate(256, 308)" filter="url(#pill-shadow)">
+              <rect width="216" height="32" rx="10" fill="#16181d" fill-opacity="0.94" stroke="#ffffff" stroke-opacity="0.16"/>
+              <rect x="5" y="5" width="106" height="22" rx="6.5" fill="#1472e0"/>
+              <text x="58" y="20" text-anchor="middle" font-size="11.5" font-weight="600" fill="#ffffff">Copy selection</text>
+              <text x="148" y="20" text-anchor="middle" font-size="11.5" font-weight="500" fill="#c8cdd8">Select all</text>
+              <path d="M192 11.5l9 9M201 11.5l-9 9" stroke="#9fa7b5" stroke-width="1.5" stroke-linecap="round"/>
+            </g>
           </g>
-          <text x="22" y="390" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#8f95a0" data-l="zh">完全在本地运行，图片绝不上传云端</text>
-          <text x="22" y="390" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#8f95a0" data-l="en">Runs entirely on-device — images never leave your PC</text>
+
+          <!-- Subtle gesture strip under the Live Text pin (balances the Beautify swatch strip on right) -->
+          <g transform="translate(72, 372)" filter="url(#pill-shadow)">
+            <rect width="340" height="40" rx="14" fill="#1e1f23" stroke="#ffffff" stroke-opacity="0.12"/>
+            <rect x="12" y="10" width="54" height="20" rx="6" fill="#ffffff" fill-opacity="0.12"/>
+            <text x="39" y="24" text-anchor="middle" class="t-mono" font-size="10.5" font-weight="600" fill="#eceef2">Ctrl+O</text>
+            <text x="78" y="24" font-size="11.5" fill="#d0d4dc" data-l="zh">拖选划词 · 双击选词 · 三击选行 · Ctrl+A/C</text>
+            <text x="78" y="24" font-size="11.5" fill="#d0d4dc" data-l="en">Drag select · 2x word · 3x line · Ctrl+A/C</text>
+          </g>
         </g>
 
         <!-- Right: Beautified Screenshot (B) -->
-        <g transform="translate(574, 68)" filter="url(#ocr-shadow)">
-          <rect width="482" height="352" rx="18" fill="url(#beauty-grad)"/>
+        <g transform="translate(580, 68)" filter="url(#ocr-shadow)">
+          <rect width="484" height="352" rx="18" fill="url(#beauty-grad)"/>
           <g transform="translate(42, 42)" filter="url(#ocr-shadow)">
-            <rect width="398" height="268" rx="12" fill="#ffffff"/>
+            <rect width="400" height="268" rx="12" fill="#ffffff"/>
             <circle cx="20" cy="20" r="4.5" fill="#ef4444" fill-opacity="0.75"/>
             <circle cx="35" cy="20" r="4.5" fill="#f59e0b" fill-opacity="0.75"/>
             <circle cx="50" cy="20" r="4.5" fill="#22c55e" fill-opacity="0.75"/>
-            <line x1="0" y1="38" x2="398" y2="38" stroke="#111214" stroke-opacity="0.07"/>
-            <text x="24" y="72" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="15" font-weight="650" fill="#111214" data-l="zh">一键美化背景 · B</text>
-            <text x="24" y="72" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="15" font-weight="650" fill="#111214" data-l="en">One-Click Background Beautify · B</text>
-            <rect x="24" y="92" width="350" height="8" rx="4" fill="#111214" fill-opacity="0.14"/>
+            <line x1="0" y1="38" x2="400" y2="38" stroke="#111214" stroke-opacity="0.07"/>
+            <text x="24" y="72" font-size="15" font-weight="600" fill="#111214" data-l="zh">一键美化背景 · B</text>
+            <text x="24" y="72" font-size="15" font-weight="600" fill="#111214" data-l="en">One-Click Background Beautify · B</text>
+            <rect x="24" y="92" width="352" height="8" rx="4" fill="#111214" fill-opacity="0.14"/>
             <rect x="24" y="110" width="286" height="8" rx="4" fill="#111214" fill-opacity="0.10"/>
             <rect x="24" y="138" width="166" height="98" rx="8" fill="#fafaf9" stroke="#111214" stroke-opacity="0.08"/>
-            <rect x="206" y="138" width="168" height="98" rx="8" fill="#fafaf9" stroke="#111214" stroke-opacity="0.08"/>
-            <text x="40" y="168" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#686b72">PADDING</text>
-            <text x="40" y="202" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="22" font-weight="650" fill="#111214">48 px</text>
-            <text x="222" y="168" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#686b72">RADIUS</text>
-            <text x="222" y="202" font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace" font-size="22" font-weight="650" fill="#111214">16 pt</text>
+            <rect x="208" y="138" width="168" height="98" rx="8" fill="#fafaf9" stroke="#111214" stroke-opacity="0.08"/>
+            <text x="40" y="168" class="t-mono" font-size="11" fill="#686b72">PADDING</text>
+            <text x="40" y="202" class="t-mono" font-size="22" font-weight="700" fill="#111214">48 px</text>
+            <text x="224" y="168" class="t-mono" font-size="11" fill="#686b72">RADIUS</text>
+            <text x="224" y="202" class="t-mono" font-size="22" font-weight="700" fill="#111214">16 pt</text>
           </g>
 
           <!-- Swatch strip under beautified card -->
-          <g transform="translate(86, 372)" filter="url(#ocr-shadow)">
+          <g transform="translate(87, 372)" filter="url(#pill-shadow)">
             <rect width="310" height="40" rx="14" fill="#1e1f23" stroke="#ffffff" stroke-opacity="0.12"/>
             <rect x="14" y="11" width="18" height="18" rx="6" fill="#fb7185"/>
             <rect x="40" y="11" width="18" height="18" rx="6" fill="#38bdf8" stroke="#ffffff" stroke-width="1.6"/>
@@ -906,8 +1050,8 @@
             <rect x="92" y="11" width="18" height="18" rx="6" fill="#334155"/>
             <rect x="118" y="11" width="18" height="18" rx="6" fill="#e2e8f0"/>
             <line x1="150" y1="12" x2="150" y2="28" stroke="#ffffff" stroke-opacity="0.16"/>
-            <text x="166" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#d0d4dc" data-l="zh">圆角 · 留白 · 阴影 · 壁纸</text>
-            <text x="166" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'PingFang SC', sans-serif" font-size="11.5" fill="#d0d4dc" data-l="en">Radius · Pad · Shadow</text>
+            <text x="166" y="24" font-size="11.5" fill="#d0d4dc" data-l="zh">圆角 · 留白 · 阴影 · 壁纸</text>
+            <text x="166" y="24" font-size="11.5" fill="#d0d4dc" data-l="en">Radius · Pad · Shadow</text>
           </g>
         </g>
       </svg>
@@ -916,24 +1060,24 @@
 
   <section class="specs" aria-label="Highlights">
     <div class="spec">
-      <div class="spec-k">5.5 MB · D3D11 / Metal</div>
-      <p class="spec-t"><span data-l="zh">原生轻量，秒开无臃肿</span><span data-l="en">Native &amp; instant</span></p>
-      <p class="spec-d"><span data-l="zh">MoonBit + 原生图形管线写成，无需 Electron、无需捆绑 ffmpeg，4K HDR 色彩准确还原。</span><span data-l="en">Built with MoonBit &amp; native GPU pipelines. No Electron, no bundled ffmpeg, accurate 4K HDR color.</span></p>
+      <div class="spec-k">D3D11 / Metal · Native</div>
+      <p class="spec-t"><span data-l="zh">双端原生，秒开无臃肿</span><span data-l="en">Native &amp; instant</span></p>
+      <p class="spec-d"><span data-l="zh">MoonBit + 原生图形管线写成，无 Electron、无捆绑 ffmpeg；Windows 准确还原 4K HDR 色彩，macOS 基于 ScreenCaptureKit。</span><span data-l="en">Built with MoonBit &amp; native GPU pipelines. No Electron or ffmpeg; 4K HDR tone-mapping on Windows, ScreenCaptureKit on macOS.</span></p>
     </div>
     <div class="spec">
       <div class="spec-k">0 MB Idle Overhead</div>
       <p class="spec-t"><span data-l="zh">按需加载，不用零开销</span><span data-l="en">Zero idle overhead</span></p>
-      <p class="spec-d"><span data-l="zh">录屏、长截图与离线 OCR 均按需启动、用完即释放显存与线程，可选低显存模式。</span><span data-l="en">Recording, scrolling capture, and OCR allocate only while active and trim GPU pools immediately on close.</span></p>
+      <p class="spec-d"><span data-l="zh">录屏、长截图与原位 Live Text OCR 均按需启动、用完即释放显存与线程，可选低显存模式。</span><span data-l="en">Recording, scrolling capture, and Live Text OCR allocate only while active and trim GPU pools immediately on close.</span></p>
     </div>
     <div class="spec">
-      <div class="spec-k">HEVC · H.264 · GIF</div>
-      <p class="spec-t"><span data-l="zh">硬件加速录屏与压缩</span><span data-l="en">Hardware H.265 &amp; GIF</span></p>
-      <p class="spec-d"><span data-l="zh">默认硬件 H.265 + WASAPI 系统声音，录后按格式/画质/尺寸一键 GPU 压缩，每档实时预估体积。</span><span data-l="en">Hardware HEVC/H.264 with optional system audio and fast post-recording GPU compression with size estimates.</span></p>
+      <div class="spec-k">120fps · AV1 / HEVC / GIF</div>
+      <p class="spec-t"><span data-l="zh">高帧率硬件录屏与压制</span><span data-l="en">120fps GPU recording</span></p>
+      <p class="spec-d"><span data-l="zh">支持系统内录与按键/点击浮层；录后横向 Studio HUD 一键切 H.265/AV1/H.264/GIF、画质与比例缩放，同参数秒级复用。</span><span data-l="en">System audio &amp; click/keycap HUD; post-recording Studio HUD switches H.265/AV1/H.264/GIF, quality &amp; scale with instant preset reuse.</span></p>
     </div>
     <div class="spec">
-      <div class="spec-k">Local-Only · MIT</div>
+      <div class="spec-k">Live Text · MIT</div>
       <p class="spec-t"><span data-l="zh">纯本地运行，开源透明</span><span data-l="en">Private &amp; open source</span></p>
-      <p class="spec-d"><span data-l="zh">无账号、无云端、无遥测，快捷键完全自定义；Windows 支持 ECDSA 签名自动更新。</span><span data-l="en">No accounts, no cloud, no telemetry. Customizable shortcuts and ECDSA-signed auto-updates on Windows.</span></p>
+      <p class="spec-d"><span data-l="zh">无账号、无云端、无遥测；贴图原位离线选字（Windows OCR / Apple Vision），Windows 支持 ECDSA 签名自动更新。</span><span data-l="en">No accounts, cloud, or telemetry. On-device Live Text (Windows OCR / Apple Vision) and ECDSA-signed Windows updates.</span></p>
     </div>
   </section>
 

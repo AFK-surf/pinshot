@@ -11,9 +11,9 @@ Fast, PixPin-style screenshot, annotation, pinning, and screen recording for Win
 - **Instant capture**: smart window detection, area drag & edge/corner resize, pixel nudging, magnifier, and color picker (`C`); HDR-aware on Windows (WGC FP16 tone-mapped back to SDR on the GPU).
 - **Markup & beautify**: shapes (rectangle, ellipse, focus spotlight), arrows & lines (`Shift` snaps to 0°/45°/90°), pen & eraser, redaction (pixel mosaic, brush mosaic, blur), numbered markers, text, and one-click **background beautify** (`B`, gradients / solid / desktop wallpaper with rounded corners & shadow).
 - **Screen pins**: pin any capture or clipboard image (`Ctrl+2` / `⌃2`) as a floating window with zoom, opacity, rotation, flip, always-on-top, and OCR.
-- **Offline OCR**: read text from any selection or pin (`Ctrl+O`) on the device: Windows' built-in OCR engine, Apple's Vision framework on macOS.
+- **Offline Live Text OCR**: read text from any selection or pin (`Ctrl+O` / `⌘O`) on the device (Windows built-in OCR / Apple Vision), with in-place drag selection, double-click word, triple-click line, and `Ctrl+A/C` copy — no modal window.
 - **Scrolling screenshot**: capture tall pages or chats (`Ctrl+L` / `⌘L`) in either direction.
-- **Area screen recording**: record any region (`Ctrl+R` / `⌘R`) to hardware-accelerated **MP4 (H.265 / H.264, plus AV1 on Windows)** or **GIF**, with optional system audio, click/keycap overlay, and a compact post-recording Studio HUD for format, quality/FPS, and proportional scaling (`100% / 75% / 50%`).
+- **Area screen recording**: record any region (`Ctrl+R` / `⌘R`) at **30 / 60 / 90 / 120 fps** to hardware-accelerated **MP4 (H.265 / H.264, plus AV1 on Windows)** or **GIF**, with optional system audio, click/keycap overlay, and a compact post-recording Studio HUD for format, quality/FPS, and proportional scaling (`100% / 75% / 50%`).
 - **Verified updates**: opt-in background updates on Windows signed with ECDSA P-256 and verified before download.
 
 ## Installation
@@ -65,7 +65,7 @@ Settings and logs live in `~/Library/Application Support/PinShot/`. macOS builds
 
 - **Move & resize**: drag to move; drag any edge or corner to resize keeping aspect ratio (`Shift` to stretch freely); scroll wheel to zoom.
 - **Opacity**: `Ctrl+wheel` to adjust transparency.
-- **Close**: double-click or `Esc`.
+- **Close**: press `Esc` or choose Close from the context menu.
 - **Context menu**: copy, save as, extract text, always on top, rotate 90° left/right (`Ctrl+Shift+R` / `Ctrl+R`), flip horizontally/vertically, reset (`Ctrl+0`), opacity, close all.
 
 ### Tray / Menu Bar & Command Line
