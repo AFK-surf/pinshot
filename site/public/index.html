@@ -689,24 +689,21 @@
             <path d="M-2 15V-2h17 M471 -2h17v17 M-2 339v17h17 M471 356h17v-17"/>
           </g>
 
-          <!-- Floating 15pt Superellipse Morphing Recording Pill under the frame -->
-          <g transform="translate(97, 384)" filter="url(#rec-bar-shadow)">
-            <rect width="292" height="42" rx="15" fill="#18191d" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1"/>
+          <!-- Floating 15pt Superellipse Morphing Recording Pill under the frame (icon-only red stop button) -->
+          <g transform="translate(112, 384)" filter="url(#rec-bar-shadow)">
+            <rect width="261" height="42" rx="15" fill="#18191d" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1"/>
             <circle cx="19" cy="21" r="4.5" fill="#ef4444"/>
             <text x="32" y="25.5" class="t-mono" font-size="13" font-weight="600" fill="#ffffff">00:05</text>
             <!-- FPS pill (120fps) -->
             <rect x="82" y="8" width="56" height="26" rx="8" fill="#ffffff" fill-opacity="0.10"/>
             <text x="110" y="25" text-anchor="middle" class="t-mono" font-size="11.5" font-weight="600" fill="#d0d5df">120fps</text>
             <line x1="147" y1="12" x2="147" y2="30" stroke="#ffffff" stroke-opacity="0.16"/>
-            <!-- Pause & Cancel -->
-            <g transform="translate(155, 12)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 4.2v9.6M11.5 4.2v9.6"/></g>
-            <rect x="182" y="5" width="32" height="32" rx="10" fill="#ffffff" fill-opacity="0.08"/>
-            <path d="M193 16l10 10M203 16l-10 10" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round"/>
-            <!-- Stop pill -->
-            <rect x="220" y="5" width="67" height="32" rx="11" fill="#d43339"/>
-            <rect x="232" y="17" width="8" height="8" rx="1.5" fill="#ffffff"/>
-            <text x="246" y="25" font-size="12.5" font-weight="600" fill="#ffffff" data-l="zh">停止</text>
-            <text x="246" y="25" font-size="12.5" font-weight="600" fill="#ffffff" data-l="en">Stop</text>
+            <!-- Pause & Discard (32x32 icon slots, transparent at rest) -->
+            <g transform="translate(161, 12)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 4.2v9.6M11.5 4.2v9.6"/></g>
+            <g transform="translate(195, 12)" fill="none" stroke="#eaecef" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l9 9M13.5 4.5l-9 9"/></g>
+            <!-- Concentric 32x32 red superellipse Stop icon button -->
+            <rect x="224" y="5" width="32" height="32" rx="11" fill="#d43339"/>
+            <rect x="235" y="16" width="10" height="10" rx="2.4" fill="#ffffff"/>
           </g>
         </g>
 
