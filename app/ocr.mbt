@@ -483,7 +483,7 @@ fn ocr_overlay_picture(p : Pin, pointed : Bool) -> @pixels.Vector? {
       let ry1 = clamp(ly1 + py, ry0, vh)
       let r = clamp(lh * 0.22, 2.0, 5.0)
       if rx1 - rx0 > 1.0 && ry1 - ry0 > 1.0 {
-        layers.push(fill_layer(round_rect_path(rx0, ry0, rx1 - rx0, ry1 - ry0, r), 0x2F9BFF18L))
+        layers.push(fill_layer(superellipse_rect_path(rx0, ry0, rx1 - rx0, ry1 - ry0, r), 0x2F9BFF18L))
       }
       let hw = words[hover]
       let wx0 = clamp(hw.x * vw - 1.5, 0.0, vw)
@@ -492,7 +492,7 @@ fn ocr_overlay_picture(p : Pin, pointed : Bool) -> @pixels.Vector? {
       let wy1 = clamp((hw.y + hw.h) * vh + 1.0, wy0, vh)
       let wr = clamp((wy1 - wy0) * 0.22, 2.0, 5.0)
       if wx1 - wx0 > 1.0 && wy1 - wy0 > 1.0 {
-        layers.push(fill_layer(round_rect_path(wx0, wy0, wx1 - wx0, wy1 - wy0, wr), 0x2F9BFF2EL))
+        layers.push(fill_layer(superellipse_rect_path(wx0, wy0, wx1 - wx0, wy1 - wy0, wr), 0x2F9BFF2EL))
       }
     }
   }
@@ -524,7 +524,7 @@ fn ocr_overlay_picture(p : Pin, pointed : Bool) -> @pixels.Vector? {
         let ry1 = clamp(y1 + py, ry0, vh)
         let r = clamp(lh * 0.24, 2.0, 5.0)
         if rx1 - rx0 > 1.0 && ry1 - ry0 > 1.0 {
-          sb.write_string(round_rect_path(rx0, ry0, rx1 - rx0, ry1 - ry0, r))
+          sb.write_string(superellipse_rect_path(rx0, ry0, rx1 - rx0, ry1 - ry0, r))
         }
       }
       let d = sb.to_string()

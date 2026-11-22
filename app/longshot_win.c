@@ -727,14 +727,17 @@ void ps_long_stop(void) {
   work_let_go();
 }
 
-// Window `wid` of the app (the long screenshot's panel): its corners round, kept out of what is taken, should it stand
-// over the part.
+// Window `wid` of the app (the long screenshot's panel): transparent DirectComposition superellipse card (no DWM round
+// clip or grey border), kept out of what is taken should it stand over the part.
 extern void *mb_app_hwnd_of(int wid);
 void ps_long_exclude(int32_t wid) {
   HWND h = (HWND)mb_app_hwnd_of(wid);
   if (!h) return;
-  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+  SetPropW(h, L"PinShot.Clear", (HANDLE)1);
+  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
   DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
+  COLORREF no_border = 0xFFFFFFFEu;  // DWMWA_COLOR_NONE
+  DwmSetWindowAttribute(h, 34 /* DWMWA_BORDER_COLOR */, &no_border, sizeof no_border);
   exclude(h);
 }
 

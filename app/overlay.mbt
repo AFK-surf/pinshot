@@ -153,7 +153,7 @@ fn chrome_picture(c : @view.View) -> @pixels.Vector? {
       let fw = dmax(1.0, fx1 - fx0)
       let fh = dmax(1.0, fy1 - fy0)
       let cr = if picked && beauty_on.get() { dmin(beauty_corner * k + half, dmin(fw, fh) / 2.0) } else { 0.0 }
-      let frame_r = if cr > 0.5 { round_rect_path(fx0, fy0, fw, fh, cr) } else { rect_path(fx0, fy0, fw, fh) }
+      let frame_r = if cr > 0.5 { superellipse_rect_path(fx0, fy0, fw, fh, cr) } else { rect_path(fx0, fy0, fw, fh) }
       let casing_w = line + dmax(2.0, (2.0 * k).round())
       if !picked {
         // Hover auto-detect window: airy dual-contrast PinShot blue viewfinder outline + crisp corner accents
@@ -176,19 +176,19 @@ fn chrome_picture(c : @view.View) -> @pixels.Vector? {
           let bl = clamp(dmin(fw, fh) * 0.16, 8.0 * k, 15.0 * k)
           let bw = dmax(2.5, (3.2 * k).round())
           let b_case = bw + dmax(2.0, (2.4 * k).round())
-          let ext = if cr > 0.5 { clamp(dmax(bl, cr + 5.0 * k), cr, dmin(fw, fh) * 0.42) } else { bl }
-          let crn = if cr > 0.5 {
-            let rc = num(cr)
-            if ext > cr + 0.25 {
-              "M\{num(fx0)} \{num(fy0 + ext)}V\{num(fy0 + cr)}A\{rc} \{rc} 0 0 1 \{num(fx0 + cr)} \{num(fy0)}H\{num(fx0 + ext)}" +
-              "M\{num(fx1 - ext)} \{num(fy0)}H\{num(fx1 - cr)}A\{rc} \{rc} 0 0 1 \{num(fx1)} \{num(fy0 + cr)}V\{num(fy0 + ext)}" +
-              "M\{num(fx1)} \{num(fy1 - ext)}V\{num(fy1 - cr)}A\{rc} \{rc} 0 0 1 \{num(fx1 - cr)} \{num(fy1)}H\{num(fx1 - ext)}" +
-              "M\{num(fx0 + ext)} \{num(fy1)}H\{num(fx0 + cr)}A\{rc} \{rc} 0 0 1 \{num(fx0)} \{num(fy1 - cr)}V\{num(fy1 - ext)}"
+          let (rr, cc) = if cr > 0.5 { superellipse_params(fw, fh, cr) } else { (0.0, 0.0) }
+          let ext = if rr > 0.5 { clamp(dmax(bl, rr + 5.0 * k), rr, dmin(fw, fh) * 0.42) } else { bl }
+          let crn = if rr > 0.5 {
+            if ext > rr + 0.25 {
+              "M\{num(fx0)} \{num(fy0 + ext)}V\{num(fy0 + rr)}C\{num(fx0)} \{num(fy0 + cc)} \{num(fx0 + cc)} \{num(fy0)} \{num(fx0 + rr)} \{num(fy0)}H\{num(fx0 + ext)}" +
+              "M\{num(fx1 - ext)} \{num(fy0)}H\{num(fx1 - rr)}C\{num(fx1 - cc)} \{num(fy0)} \{num(fx1)} \{num(fy0 + cc)} \{num(fx1)} \{num(fy0 + rr)}V\{num(fy0 + ext)}" +
+              "M\{num(fx1)} \{num(fy1 - ext)}V\{num(fy1 - rr)}C\{num(fx1)} \{num(fy1 - cc)} \{num(fx1 - cc)} \{num(fy1)} \{num(fx1 - rr)} \{num(fy1)}H\{num(fx1 - ext)}" +
+              "M\{num(fx0 + ext)} \{num(fy1)}H\{num(fx0 + rr)}C\{num(fx0 + cc)} \{num(fy1)} \{num(fx0)} \{num(fy1 - cc)} \{num(fx0)} \{num(fy1 - rr)}V\{num(fy1 - ext)}"
             } else {
-              "M\{num(fx0)} \{num(fy0 + cr)}A\{rc} \{rc} 0 0 1 \{num(fx0 + cr)} \{num(fy0)}" +
-              "M\{num(fx1 - cr)} \{num(fy0)}A\{rc} \{rc} 0 0 1 \{num(fx1)} \{num(fy0 + cr)}" +
-              "M\{num(fx1)} \{num(fy1 - cr)}A\{rc} \{rc} 0 0 1 \{num(fx1 - cr)} \{num(fy1)}" +
-              "M\{num(fx0 + cr)} \{num(fy1)}A\{rc} \{rc} 0 0 1 \{num(fx0)} \{num(fy1 - cr)}"
+              "M\{num(fx0)} \{num(fy0 + rr)}C\{num(fx0)} \{num(fy0 + cc)} \{num(fx0 + cc)} \{num(fy0)} \{num(fx0 + rr)} \{num(fy0)}" +
+              "M\{num(fx1 - rr)} \{num(fy0)}C\{num(fx1 - cc)} \{num(fy0)} \{num(fx1)} \{num(fy0 + cc)} \{num(fx1)} \{num(fy0 + rr)}" +
+              "M\{num(fx1)} \{num(fy1 - rr)}C\{num(fx1)} \{num(fy1 - cc)} \{num(fx1 - cc)} \{num(fy1)} \{num(fx1 - rr)} \{num(fy1)}" +
+              "M\{num(fx0 + rr)} \{num(fy1)}C\{num(fx0 + cc)} \{num(fy1)} \{num(fx0)} \{num(fy1 - cc)} \{num(fx0)} \{num(fy1 - rr)}"
             }
           } else {
             "M\{num(fx0)} \{num(fy0 + bl)}L\{num(fx0)} \{num(fy0)}L\{num(fx0 + bl)} \{num(fy0)}" +

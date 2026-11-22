@@ -12,10 +12,22 @@ let toast_text : @signals.Signal[String] = @signals.signal("")
 let toast_generation : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
-let toast_w : Double = 200.0
+let toast_pad_x : Double = 18.0
 
 ///|
-let toast_h : Double = 36.0
+let toast_pad_t : Double = 12.0
+
+///|
+let toast_pad_b : Double = 22.0
+
+///|
+let toast_pill_h : Double = 34.0
+
+///|
+let toast_w : Double = 340.0
+
+///|
+let toast_h : Double = toast_pill_h + toast_pad_t + toast_pad_b
 
 ///|
 /// `text` said by the pointer for a moment.
@@ -23,6 +35,7 @@ fn toast(text : String) -> Unit {
   toast_text.set(text)
   toast_generation.set(toast_generation.untracked() + 1)
   if toast_wid.val == 0 {
+    ps_next_win_clear()
     let wid = @ui.window_open_here("toast")
     if wid <= 0 {
       log("toast: no window")
@@ -30,7 +43,6 @@ fn toast(text : String) -> Unit {
     }
     toast_wid.val = wid
     ps_own(wid, 1) |> ignore
-    ps_shadow(wid)
   }
   ps_toast_place(toast_wid.val, toast_w.to_int(), toast_h.to_int())
   log("toast \{toast_wid.val}: \{text}")
@@ -48,13 +60,31 @@ fn toast_window(root : @view.View) -> Unit {
     }, later=true) |> ignore
   })
   root.presses(Is(false)) |> ignore
-  // (the window's own ground is not drawn: a layer over all of it, the words in its middle)
+  // Transparent DirectComposition window carrying an mbui superellipse pill + soft shadow (zero DWM grey border).
   root.box(fn(g) {
-    g.over(Is(true)).ground(Is(0x26282DFFL)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
-    g.box(fn(t) {
-      t
-      .words(By(fn() { toast_text.get() }), look={ ..@view.words_plain, size: 13.0, weight: 500, line: 18.0, wrap: false })
-      .ink(Is(0xECEEF2FFL))
+    g
+    .over(Is(true))
+    .padding(Is((toast_pad_x, toast_pad_t, toast_pad_x, toast_pad_b)))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Start))
+    |> ignore
+    g.box(fn(pill) {
+      pill
+      .height(Is(Some(toast_pill_h)))
+      .padding(Is((16.0, 0.0, 16.0, 0.0)))
+      .radius(Is(11.0))
+      .ground(Is(0x1E2026F2L))
+      .edge(Is((1.0, 0xFFFFFF22L)))
+      .shadow(Is((16.0, 5.0, 0x00000072L)))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      |> ignore
+      pill.box(fn(t) {
+        t
+        .words(By(fn() { toast_text.get() }), look={ ..@view.words_plain, size: 13.0, weight: 500, line: 18.0, wrap: false })
+        .ink(Is(0xF3F5F8FFL))
+        |> ignore
+      })
       |> ignore
     })
     |> ignore

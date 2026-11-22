@@ -282,6 +282,39 @@ static void framePlace(void) {
   frameView.needsDisplay = YES;
 }
 
+static NSBezierPath *ps_superellipse_path(NSRect r, CGFloat rad) {
+  CGFloat w = NSWidth(r), h = NSHeight(r);
+  CGFloat room = MIN(w, h) * 0.5;
+  CGFloat rc = MAX(0.0, MIN(rad, room));
+  if (rc <= 0.01)
+    return [NSBezierPath bezierPathWithRect:r];
+  CGFloat s = MAX(0.0, MIN(1.0, (room - rc) / (0.25 * rc)));
+  CGFloat rr = MIN(rc * (1.0 + 0.25 * s), room);
+  CGFloat kappa = 0.55228475 + (0.7621 - 0.55228475) * s;
+  CGFloat c = rr * (1.0 - kappa);
+  CGFloat x0 = NSMinX(r), y0 = NSMinY(r), x1 = NSMaxX(r), y1 = NSMaxY(r);
+  NSBezierPath *p = [NSBezierPath bezierPath];
+  [p moveToPoint:NSMakePoint(x0 + rr, y0)];
+  [p lineToPoint:NSMakePoint(x1 - rr, y0)];
+  [p curveToPoint:NSMakePoint(x1, y0 + rr)
+      controlPoint1:NSMakePoint(x1 - c, y0)
+      controlPoint2:NSMakePoint(x1, y0 + c)];
+  [p lineToPoint:NSMakePoint(x1, y1 - rr)];
+  [p curveToPoint:NSMakePoint(x1 - rr, y1)
+      controlPoint1:NSMakePoint(x1, y1 - c)
+      controlPoint2:NSMakePoint(x1 - c, y1)];
+  [p lineToPoint:NSMakePoint(x0 + rr, y1)];
+  [p curveToPoint:NSMakePoint(x0, y1 - rr)
+      controlPoint1:NSMakePoint(x0 + c, y1)
+      controlPoint2:NSMakePoint(x0, y1 - c)];
+  [p lineToPoint:NSMakePoint(x0, y0 + rr)];
+  [p curveToPoint:NSMakePoint(x0 + rr, y0)
+      controlPoint1:NSMakePoint(x0, y0 + c)
+      controlPoint2:NSMakePoint(x0 + c, y0)];
+  [p closePath];
+  return p;
+}
+
 @implementation PSRecFrameView {
   int dragX, dragY;  // which edges a drag moves (-1 left/top, 1 right/bottom)
   NSPoint dragFrom;
@@ -303,7 +336,7 @@ static void framePlace(void) {
 }
 - (NSBezierPath *)roundRect:(NSRect)r {
   CGFloat rad = MIN(6, MIN(NSWidth(r), NSHeight(r)) * 0.5 * 0.35);
-  return [NSBezierPath bezierPathWithRoundedRect:r xRadius:rad yRadius:rad];
+  return ps_superellipse_path(r, rad);
 }
 - (void)drawRect:(NSRect)dirty {
   NSRect r = [self borderRect];
@@ -642,10 +675,10 @@ static BOOL drawBusy(double now) {
   CGFloat y = MAX(8, h - ch - MIN(28, h * 0.08));
   for (NSUInteger i = 0; i < caps.count; i++) {
     CGFloat w = ws[i].doubleValue;
-    NSBezierPath *shade = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x, y + 2.5, w, ch) xRadius:8 yRadius:8];
+    NSBezierPath *shade = ps_superellipse_path(NSMakeRect(x, y + 2.5, w, ch), 8);
     [[NSColor colorWithWhite:0 alpha:95 / 255.0 * alpha] setFill];
     [shade fill];
-    NSBezierPath *cap = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x, y, w, ch) xRadius:8 yRadius:8];
+    NSBezierPath *cap = ps_superellipse_path(NSMakeRect(x, y, w, ch), 8);
     [[NSColor colorWithSRGBRed:24 / 255.0 green:26 / 255.0 blue:31 / 255.0 alpha:230 / 255.0 * alpha] setFill];
     [cap fill];
     cap.lineWidth = 1.2;

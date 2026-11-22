@@ -154,6 +154,16 @@ let long_panel_w : Double = 316.0
 let long_pad : Double = 14.0
 
 ///|
+/// Transparent shadow halo around the floating superellipse panel (L/R, T, B points).
+let long_halo_x : Double = 20.0
+
+///|
+let long_halo_t : Double = 14.0
+
+///|
+let long_halo_b : Double = 28.0
+
+///|
 let long_head_h : Double = 26.0
 
 ///|
@@ -248,9 +258,10 @@ fn long_out() -> Unit {
   long_pending.set(("", 0, 0))
   @signals.end_batch()
   long_preview_due.val = false
-  // (the preview as tall as the monitor leaves room for)
+  // (the preview as tall as the monitor leaves room for, accounting for the transparent shadow halo)
   let mh = m.h.to_double() / k
-  long_box_h.val = clamp(mh - 56.0 - long_chrome_h(), 220.0, 560.0)
+  long_box_h.val = clamp(mh - 56.0 - long_halo_t - long_halo_b - long_chrome_h(), 220.0, 560.0)
+  ps_next_win_clear()
   let wid = @ui.window_open_here("long")
   if wid <= 0 {
     log("long: no window")
@@ -260,7 +271,6 @@ fn long_out() -> Unit {
   }
   long_wid.val = wid
   ps_own(wid, 1) |> ignore
-  ps_shadow(wid)
   ps_long_exclude(wid)
   long_place(m)
   log("long: begun \{part.w}x\{part.h} at \{part.x},\{part.y}")
@@ -268,22 +278,28 @@ fn long_out() -> Unit {
 
 ///|
 /// The panel put beside the part: at its right, else its left, else inside it at its right (out of what is taken
-/// whatever it stands over), its top by the part's, kept on the monitor.
+/// whatever it stands over), its top by the part's, kept on the monitor (accounting for the transparent shadow halo).
 fn long_place(m : Rect) -> Unit {
   let k = long_scale.val
   let p = long_part.val
-  let w = (long_panel_w * k).round().to_int()
-  let h = (long_panel_h() * k).round().to_int()
+  let cw = (long_panel_w * k).round().to_int()
+  let ch = (long_panel_h() * k).round().to_int()
+  let hx = (long_halo_x * k).round().to_int()
+  let ht = (long_halo_t * k).round().to_int()
+  let win_w = ((long_panel_w + long_halo_x * 2.0) * k).round().to_int()
+  let win_h = ((long_panel_h() + long_halo_t + long_halo_b) * k).round().to_int()
   let gap = (12.0 * k).round().to_int()
-  let x = if p.right() + gap + w <= m.right() {
+  let cx = if p.right() + gap + cw <= m.right() {
     p.right() + gap
-  } else if p.x - gap - w >= m.x {
-    p.x - gap - w
+  } else if p.x - gap - cw >= m.x {
+    p.x - gap - cw
   } else {
-    p.right() - gap - w
+    p.right() - gap - cw
   }
-  let y = clampi(p.y, m.y + gap, m.bottom() - gap - h)
-  ps_place(long_wid.val, x, y, w, h, 1, 0)
+  let cy = clampi(p.y, m.y + gap, m.bottom() - gap - ch)
+  let x = clampi(cx - hx, m.x, m.right() - win_w)
+  let y = clampi(cy - ht, m.y, m.bottom() - win_h)
+  ps_place(long_wid.val, x, y, win_w, win_h, 1, 0)
 }
 
 ///|
@@ -740,13 +756,24 @@ fn long_window(root : @view.View) -> Unit {
     }
   }, long_preview_shown)
   root.keymap(Is(long_keys())) |> ignore
-  root.box(fn(page) {
-    page
+  // Transparent DirectComposition window carrying an mbui superellipse card + soft shadow (zero DWM grey border).
+  root.box(fn(outer) {
+    outer
     .over(Is(true))
-    .ground(Is(0x18191DFFL))
-    .padding(Is((long_pad, long_pad, long_pad, long_pad)))
+    .padding(Is((long_halo_x, long_halo_t, long_halo_x, long_halo_b)))
     .lines_up(Is(Some(Start)))
     |> ignore
+    outer.box(fn(page) {
+      page
+      .width(Is(Some(long_panel_w)))
+      .height(Is(Some(long_panel_h())))
+      .radius(Is(16.0))
+      .ground(Is(0x18191DF8L))
+      .edge(Is((1.0, 0xFFFFFF22L)))
+      .shadow(Is((20.0, 7.0, 0x0000007AL)))
+      .padding(Is((long_pad, long_pad, long_pad, long_pad)))
+      .lines_up(Is(Some(Start)))
+      |> ignore
 
     // 1. Draggable Header: live status dot + title + tabular dimension badge
     page.box(fn(head) {
@@ -887,8 +914,9 @@ fn long_window(root : @view.View) -> Unit {
       long_copy_button(bar)
     })
     |> ignore
-
-    long_tips.mount(page)
+  })
+  |> ignore
+  long_tips.mount(outer)
   })
   |> ignore
 

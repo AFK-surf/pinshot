@@ -782,12 +782,13 @@ void ps_long_stop(void) {
   work_let_go();
 }
 
-// Window `wid` of the app (the long screenshot's panel): rounded corners (matching Windows DWMWCP_ROUND),
+// Window `wid` of the app (the long screenshot's panel): transparent superellipse card drawn by mbui,
 // kept out of what is taken, should it stand over the part.
 void ps_long_exclude(int32_t wid) {
   NSWindow *w = mb_app_window_of(wid);
   if (!w) return;
-  mb_app_window_round(wid, 10.0);
+  mb_app_window_clear(wid);
+  w.hasShadow = NO;
   if (!keptOut)
     keptOut = [NSMutableSet set];
   [keptOut addObject:@(w.windowNumber)];

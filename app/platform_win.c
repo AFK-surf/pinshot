@@ -1194,26 +1194,36 @@ void ps_shadow(int32_t wid) {
   DwmExtendFrameIntoClientArea(h, &m);
 }
 
-// Window `wid` (w by h points) under the pointer, on its monitor's work area, round-cornered, over the others, shown
-// without taking the keyboard: a word said for a moment (toast.mbt).
+// Window `wid` (w by h points) under the pointer, on its monitor's work area, transparent DirectComposition superellipse
+// pill, click-through, over the others, shown without taking the keyboard: a word said for a moment (toast.mbt).
 void ps_toast_place(int32_t wid, int32_t w, int32_t h) {
   HWND hw = own_window(wid);
   if (!hw) return;
   test_cloak(hw, wid);
+  SetPropW(hw, L"PinShot.Clear", (HANDLE)1);
+  LONG_PTR ex = GetWindowLongPtrW(hw, GWL_EXSTYLE);
+  if ((ex & (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)) != (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)) {
+    SetWindowLongPtrW(hw, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+  }
+  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
+  DwmSetWindowAttribute(hw, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
+  COLORREF no_border = 0xFFFFFFFEu;  // DWMWA_COLOR_NONE
+  DwmSetWindowAttribute(hw, 34 /* DWMWA_BORDER_COLOR */, &no_border, sizeof no_border);
   POINT p;
   GetCursorPos(&p);
   HMONITOR mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
   MONITORINFO mi = {sizeof mi};
   GetMonitorInfoW(mon, &mi);
   UINT dx = monitor_dpi(mon);
-  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-  DwmSetWindowAttribute(hw, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
   int ww = MulDiv(w, (int)dx, 96), wh = MulDiv(h, (int)dx, 96);
   RECT a = mi.rcWork;
-  int x = p.x - ww / 2, y = p.y + MulDiv(24, (int)dx, 96);
-  if (y + wh > a.bottom) y = p.y - MulDiv(16, (int)dx, 96) - wh;
+  // Pill sits 12pt inside top halo and 22pt above bottom halo, so offset by 12pt puts the pill 24pt below the pointer.
+  int x = p.x - ww / 2, y = p.y + MulDiv(12, (int)dx, 96);
+  if (y + wh > a.bottom) y = p.y - wh + MulDiv(6, (int)dx, 96);
   if (x < a.left) x = a.left;
   if (x + ww > a.right) x = a.right - ww;
+  if (y < a.top) y = a.top;
+  if (y + wh > a.bottom) y = a.bottom - wh;
   SetWindowPos(hw, HWND_TOPMOST, x, y, ww, wh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
@@ -1842,6 +1852,26 @@ static inline float rf_aa(float d, float r, float feather) {
 
 // Paints a static premultiplied-alpha rounded viewfinder frame (soft outer glow + subtle dark contrast casing +
 // sleek main stroke [optionally dashed when paused]; when `handles` is non-zero, also draws bright rounded L-corner
+// Exact mbui superellipse(1.5) (n = 2^1.5, smooth_scale = 1.25) SDF polynomials from mbui/src/paint/smooth.mbt:
+// zero powf(), sub-pixel identical to mbui's GPU shader.
+static inline float ps_smooth_a(float t) {
+  return 1.0000098f +
+         t * (-0.00106380035f +
+              t * (0.0390446602f +
+                   t * (1.21491043f +
+                        t * (-1.49650831f +
+                             t * (1.90947795f + t * (-2.77580972f + t * (2.11536546f + t * -0.591224537f)))))));
+}
+
+static inline float ps_smooth_b(float t) {
+  return 1.00001404f +
+         t * (-0.00136262193f +
+              t * (0.039570688f +
+                   t * (0.648050719f +
+                        t * (-0.725922772f +
+                             t * (0.327888394f + t * (-0.914717465f + t * (1.13728689f + t * -0.403984265f)))))));
+}
+
 // brackets, mid-edge pill grabbers, and an invisible alpha=1 border hit band while keeping the interior 100% alpha=0
 // click-through) onto a WS_EX_LAYERED HWND via UpdateLayeredWindow. Only the thin outer border band is iterated.
 void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed, int handles) {
@@ -1879,10 +1909,12 @@ void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF 
   float cx = (lx0 + lx1) * 0.5f, cy = (ly0 + ly1) * 0.5f;
   float hx = fmaxf(4.0f, (lx1 - lx0) * 0.5f);
   float hy = fmaxf(4.0f, (ly1 - ly0) * 0.5f);
-  float rad = fminf(6.0f * s, fminf(hx, hy) * 0.35f);
+  float room = fminf(hx, hy);
+  float rad = fminf(6.0f * s, room * 0.35f);
+  float rr = fminf(rad * 1.25f, room);
   float blen = fminf(fminf((float)rw, (float)rh) * 0.16f, 16.0f * s);
-  blen = fmaxf(blen, rad + 3.0f * s);
-  blen = fminf(blen, fminf(hx, hy) * 0.45f);
+  blen = fmaxf(blen, rr + 3.0f * s);
+  blen = fminf(blen, room * 0.45f);
   int show_ph = handles && (float)rw >= 54.0f * s;
   int show_pv = handles && (float)rh >= 54.0f * s;
   float plen = 7.0f * s;
@@ -1945,12 +1977,20 @@ void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF 
         continue;
       }
       float ax = fabsf((float)px + 0.5f - cx);
-      float qx = ax - (hx - rad);
-      float qy = ay - (hy - rad);
+      float qx = ax - (hx - rr);
+      float qy = ay - (hy - rr);
       float ox = qx > 0.0f ? qx : 0.0f;
       float oy = qy > 0.0f ? qy : 0.0f;
-      float mq = qx > qy ? qx : qy;
-      float sd = sqrtf(ox * ox + oy * oy) + (mq < 0.0f ? mq : 0.0f) - rad;
+      float sd;
+      if (ox > 0.0f && oy > 0.0f) {
+        float hi = ox > oy ? ox : oy;
+        float lo = ox > oy ? oy : ox;
+        float t = lo / hi;
+        sd = hi * ps_smooth_a(t) - rr * ps_smooth_b(t);
+      } else {
+        float mq = qx > qy ? qx : qy;
+        sd = sqrtf(ox * ox + oy * oy) + (mq < 0.0f ? mq : 0.0f) - rr;
+      }
       float d = fabsf(sd);
 
       float d_brk = 1e6f;

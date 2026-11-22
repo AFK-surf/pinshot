@@ -119,6 +119,45 @@ fn num(v : Double) -> String {
 }
 
 ///|
+/// Superellipse corner parameters `(rr, c)` matching `mbui`'s smooth corners (`superellipse(1.5)`, `smooth_scale = 1.25`):
+/// `rr` is how far along each edge the corner curve reaches from the vertex, and `c = rr * (1 - kappa)` is the distance
+/// from the corner vertex to each cubic Bézier control point. Smoothly degrades to a circular arc (`kappa = 0.55228475`)
+/// when `r` approaches half the shorter side (`room`).
+fn superellipse_params(w : Double, h : Double, r : Double) -> (Double, Double) {
+  let room = dmin(w, h) / 2.0
+  let rc = clamp(r, 0.0, room)
+  if rc <= 0.0 {
+    return (0.0, 0.0)
+  }
+  let s = clamp((room - rc) / (0.25 * rc), 0.0, 1.0)
+  let rr = dmin(rc * (1.0 + 0.25 * s), room)
+  let kappa = 0.55228475 + (0.7621 - 0.55228475) * s
+  (rr, rr * (1.0 - kappa))
+}
+
+///|
+/// A rectangle with superellipse corners (`r` each, matching `mbui`'s smooth corners) as an SVG path.
+fn superellipse_rect_path(x : Double, y : Double, w : Double, h : Double, r : Double) -> String {
+  if w <= 0.0 || h <= 0.0 {
+    return ""
+  }
+  let (rr, c) = superellipse_params(w, h, r)
+  if rr <= 0.01 {
+    return rect_path(x, y, w, h)
+  }
+  let x1 = x + w
+  let y1 = y + h
+  "M\{num(x + rr)} \{num(y)}H\{num(x1 - rr)}" +
+  "C\{num(x1 - c)} \{num(y)} \{num(x1)} \{num(y + c)} \{num(x1)} \{num(y + rr)}" +
+  "V\{num(y1 - rr)}" +
+  "C\{num(x1)} \{num(y1 - c)} \{num(x1 - c)} \{num(y1)} \{num(x1 - rr)} \{num(y1)}" +
+  "H\{num(x + rr)}" +
+  "C\{num(x + c)} \{num(y1)} \{num(x)} \{num(y1 - c)} \{num(x)} \{num(y1 - rr)}" +
+  "V\{num(y + rr)}" +
+  "C\{num(x)} \{num(y + c)} \{num(x + c)} \{num(y)} \{num(x + rr)} \{num(y)}Z"
+}
+
+///|
 test "rect_between and within" {
   let r = rect_between(10, 20, 4, 2)
   assert_eq(r, { x: 4, y: 2, w: 6, h: 18 })
@@ -131,4 +170,14 @@ test "mix and num" {
   assert_eq(mix(0x000000FFL, 0xFFFFFFFFL, 0.5), 0x808080FFL)
   assert_eq(num(1.0), "1")
   assert_eq(num(1.256), "1.26")
+}
+
+///|
+test "superellipse_params and superellipse_rect_path" {
+  let (rr, c) = superellipse_params(100.0, 60.0, 12.0)
+  assert_eq(num(rr), "15")
+  assert_true(c > 3.5 && c < 3.6)
+  let p = superellipse_rect_path(0.0, 0.0, 100.0, 60.0, 12.0)
+  assert_true(p.has_prefix("M15 0H85C"))
+  assert_true(p.has_suffix("Z"))
 }

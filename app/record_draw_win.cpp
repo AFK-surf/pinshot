@@ -79,11 +79,26 @@ static Gdiplus::Color gdip_color(uint32_t rgb, BYTE a) {
 }
 
 static void add_round_rect(Gdiplus::GraphicsPath &path, float x, float y, float w, float h, float r) {
-  float d = std::min(r * 2.0f, std::min(w, h));
-  path.AddArc(x, y, d, d, 180.0f, 90.0f);
-  path.AddArc(x + w - d, y, d, d, 270.0f, 90.0f);
-  path.AddArc(x + w - d, y + h - d, d, d, 0.0f, 90.0f);
-  path.AddArc(x, y + h - d, d, d, 90.0f, 90.0f);
+  float room = std::min(w, h) * 0.5f;
+  float rc = std::max(0.0f, std::min(r, room));
+  if (rc <= 0.01f) {
+    path.AddRectangle(Gdiplus::RectF(x, y, w, h));
+    return;
+  }
+  float s = std::max(0.0f, std::min(1.0f, (room - rc) / (0.25f * rc)));
+  float rr = std::min(rc * (1.0f + 0.25f * s), room);
+  float kappa = 0.55228475f + (0.7621f - 0.55228475f) * s;
+  float c = rr * (1.0f - kappa);
+  float x1 = x + w, y1 = y + h;
+  path.StartFigure();
+  path.AddLine(x + rr, y, x1 - rr, y);
+  path.AddBezier(x1 - rr, y, x1 - c, y, x1, y + c, x1, y + rr);
+  path.AddLine(x1, y + rr, x1, y1 - rr);
+  path.AddBezier(x1, y1 - rr, x1, y1 - c, x1 - c, y1, x1 - rr, y1);
+  path.AddLine(x1 - rr, y1, x + rr, y1);
+  path.AddBezier(x + rr, y1, x + c, y1, x, y1 - c, x, y1 - rr);
+  path.AddLine(x, y1 - rr, x, y + rr);
+  path.AddBezier(x, y + rr, x, y + c, x + c, y, x + rr, y);
   path.CloseFigure();
 }
 

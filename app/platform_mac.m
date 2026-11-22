@@ -422,7 +422,8 @@ void ps_toast_place(int wid, int width, int height) {
   NSWindow *w = mb_app_window_of(wid);
   NSPoint p = NSEvent.mouseLocation;
   NSRect f = ps_mouse_screen().visibleFrame;
-  mb_app_window_round(wid, 10.0);
+  mb_app_window_clear(wid);
+  w.hasShadow = NO;
   [w setFrame:NSMakeRect(MIN(MAX(NSMinX(f), p.x - width / 2), NSMaxX(f) - width),
                          MIN(MAX(NSMinY(f), p.y - height - 12), NSMaxY(f) - height), width, height)
       display:YES];
