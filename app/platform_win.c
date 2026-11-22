@@ -1217,9 +1217,9 @@ void ps_toast_place(int32_t wid, int32_t w, int32_t h) {
   UINT dx = monitor_dpi(mon);
   int ww = MulDiv(w, (int)dx, 96), wh = MulDiv(h, (int)dx, 96);
   RECT a = mi.rcWork;
-  // Pill sits 12pt inside top halo and 22pt above bottom halo, so offset by 12pt puts the pill 24pt below the pointer.
-  int x = p.x - ww / 2, y = p.y + MulDiv(12, (int)dx, 96);
-  if (y + wh > a.bottom) y = p.y - wh + MulDiv(6, (int)dx, 96);
+  // Pill sits 28pt inside top halo and 34pt above bottom halo, so offset by -4pt puts the pill 24pt below the pointer.
+  int x = p.x - ww / 2, y = p.y - MulDiv(4, (int)dx, 96);
+  if (y + wh > a.bottom) y = p.y - wh + MulDiv(18, (int)dx, 96);
   if (x < a.left) x = a.left;
   if (x + ww > a.right) x = a.right - ww;
   if (y < a.top) y = a.top;

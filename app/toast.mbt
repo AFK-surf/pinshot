@@ -12,19 +12,20 @@ let toast_text : @signals.Signal[String] = @signals.signal("")
 let toast_generation : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
-let toast_pad_x : Double = 18.0
+/// Transparent shadow halo around the floating superellipse pill (>= 3.3*sigma so alpha reaches 0 before every edge).
+let toast_pad_x : Double = 30.0
 
 ///|
-let toast_pad_t : Double = 12.0
+let toast_pad_t : Double = 28.0
 
 ///|
-let toast_pad_b : Double = 22.0
+let toast_pad_b : Double = 34.0
 
 ///|
 let toast_pill_h : Double = 34.0
 
 ///|
-let toast_w : Double = 340.0
+let toast_w : Double = 360.0
 
 ///|
 let toast_h : Double = toast_pill_h + toast_pad_t + toast_pad_b
@@ -75,7 +76,7 @@ fn toast_window(root : @view.View) -> Unit {
       .radius(Is(11.0))
       .ground(Is(0x1E2026F2L))
       .edge(Is((1.0, 0xFFFFFF22L)))
-      .shadow(Is((16.0, 5.0, 0x00000072L)))
+      .shadow(Is((9.0, 3.0, 0x00000060L)))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       |> ignore

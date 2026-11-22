@@ -154,14 +154,14 @@ let long_panel_w : Double = 316.0
 let long_pad : Double = 14.0
 
 ///|
-/// Transparent shadow halo around the floating superellipse panel (L/R, T, B points).
-let long_halo_x : Double = 20.0
+/// Transparent shadow halo around the floating superellipse panel (>= 3.3*sigma so alpha reaches 0 before every edge).
+let long_halo_x : Double = 38.0
 
 ///|
-let long_halo_t : Double = 14.0
+let long_halo_t : Double = 34.0
 
 ///|
-let long_halo_b : Double = 28.0
+let long_halo_b : Double = 42.0
 
 ///|
 let long_head_h : Double = 26.0
@@ -770,7 +770,7 @@ fn long_window(root : @view.View) -> Unit {
       .radius(Is(16.0))
       .ground(Is(0x18191DF8L))
       .edge(Is((1.0, 0xFFFFFF22L)))
-      .shadow(Is((20.0, 7.0, 0x0000007AL)))
+      .shadow(Is((11.0, 4.0, 0x0000007AL)))
       .padding(Is((long_pad, long_pad, long_pad, long_pad)))
       .lines_up(Is(Some(Start)))
       |> ignore

@@ -425,7 +425,7 @@ void ps_toast_place(int wid, int width, int height) {
   mb_app_window_clear(wid);
   w.hasShadow = NO;
   [w setFrame:NSMakeRect(MIN(MAX(NSMinX(f), p.x - width / 2), NSMaxX(f) - width),
-                         MIN(MAX(NSMinY(f), p.y - height - 12), NSMaxY(f) - height), width, height)
+                         MIN(MAX(NSMinY(f), p.y - height + 4), NSMaxY(f) - height), width, height)
       display:YES];
   w.ignoresMouseEvents = YES;
   [w orderFrontRegardless];
