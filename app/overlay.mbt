@@ -40,6 +40,20 @@ fn mon_pt() -> (Double, Double) {
 }
 
 ///|
+/// The monitor's usable work area `(x0, y0, x1, y1)` in monitor-local points (excluding Dock/taskbar and menu bar).
+fn work_pt() -> (Double, Double, Double, Double) {
+  let k = mon_scale.get()
+  ignore(frozen_key.get())
+  let w = mon_work.val
+  if w.w > 0 && w.h > 0 {
+    (w.x.to_double() / k, w.y.to_double() / k, w.right().to_double() / k, w.bottom().to_double() / k)
+  } else {
+    let (sw, sh) = mon_pt()
+    (0.0, 0.0, sw, sh)
+  }
+}
+
+///|
 /// Which handle of `r` (pixels) the point (pixels) is on: (hx, hy), -1 left/top, 1 right/bottom, 0 the middle; (0, 0)
 /// inside it, None outside. 6 points each side of an edge.
 fn handle_at(r : Rect, x : Double, y : Double) -> (Int, Int)? {
@@ -494,10 +508,14 @@ fn size_label(stage : @view.View) -> Unit {
         let k = mon_scale.get()
         match shown_whole(l) {
           Some(r) => {
-            let (sw, sh) = mon_pt()
-            let x = clamp(r.x.to_double() / k, 8.0, dmax(8.0, sw - 160.0))
+            let (wx0, wy0, wx1, wy1) = work_pt()
+            let x = clamp(r.x.to_double() / k, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - 160.0))
             let ry = r.y.to_double() / k
-            let y = if ry >= 34.0 { ry - 32.0 } else { clamp(ry + 8.0, 8.0, dmax(8.0, sh - 32.0)) }
+            let y = if ry >= wy0 + 34.0 {
+              ry - 32.0
+            } else {
+              clamp(ry + 8.0, wy0 + 8.0, dmax(wy0 + 8.0, wy1 - 32.0))
+            }
             (x, y)
           }
           None => (0.0, 0.0)

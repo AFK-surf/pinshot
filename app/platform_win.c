@@ -133,6 +133,7 @@ static Held *cap_held;          // the picture taken's, once handed over
 static volatile LONG cap_busy;  // a taking under way (its thread fills cap)
 static int cap_ok;              // the last taking's outcome
 static int cap_x, cap_y, cap_w, cap_h, cap_dpi;
+static int cap_wx, cap_wy, cap_ww, cap_wh;
 static double cap_t0, cap_ms, cap_key_lag;  // when it was asked, how long the taking took, how long WM_HOTKEY waited
 static int keep_gpu_warm = 1;               // 1: keep driver pools warm between captures (Instant mode)
 static char *win_list;  // the windows on the monitor as it was taken (ps_windows)
@@ -234,6 +235,8 @@ static int monitor_under_pointer(void) {
   int w = mi.rcMonitor.right - mi.rcMonitor.left, h = mi.rcMonitor.bottom - mi.rcMonitor.top;
   if (w <= 0 || h <= 0) return 0;
   cap_x = mi.rcMonitor.left, cap_y = mi.rcMonitor.top, cap_w = w, cap_h = h, cap_dpi = (int)monitor_dpi(mon);
+  cap_wx = mi.rcWork.left - cap_x, cap_wy = mi.rcWork.top - cap_y;
+  cap_ww = mi.rcWork.right - mi.rcWork.left, cap_wh = mi.rcWork.bottom - mi.rcWork.top;
   cap_mon = mon;
   return 1;
 }
@@ -703,9 +706,10 @@ static void capture_asked(const char *by) {
   if (strcmp(by, "key") != 0) cap_key_lag = 0.0;
   if (!cap_begin()) return;
   lstrcpynA(cap_by, by, sizeof cap_by);
-  char json[192];
-  snprintf(json, sizeof json, "{\"do\":\"prepare\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"dpi\":%d,\"t\":%.3f}", cap_x, cap_y, cap_w, cap_h,
-           cap_dpi, cap_t0);
+  char json[256];
+  snprintf(json, sizeof json,
+           "{\"do\":\"prepare\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"wx\":%d,\"wy\":%d,\"ww\":%d,\"wh\":%d,\"dpi\":%d,\"t\":%.3f}",
+           cap_x, cap_y, cap_w, cap_h, cap_wx, cap_wy, cap_ww, cap_wh, cap_dpi, cap_t0);
   ps_tell(json);
 }
 

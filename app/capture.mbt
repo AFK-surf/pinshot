@@ -8,6 +8,10 @@
 let mon : Ref[Rect] = Ref({ x: 0, y: 0, w: 0, h: 0 })
 
 ///|
+/// The monitor's usable work area in monitor-local pixels (excluding Dock/taskbar and menu bar).
+let mon_work : Ref[Rect] = Ref({ x: 0, y: 0, w: 0, h: 0 })
+
+///|
 let mon_scale : @signals.Signal[Double] = @signals.signal(1.0)
 
 ///|
@@ -147,9 +151,20 @@ fn parse_windows(s : String) -> Array[Rect] {
 ///|
 /// A capture begun as the shortcut is pressed (the native side taking the screen meanwhile): the overlay put up at the
 /// monitor's size, out of sight, so its first frame there is drawn while the picture is taken.
-fn prepare_capture(x : Int, y : Int, w : Int, h : Int, dpi : Double) -> Unit {
+fn prepare_capture(
+  x : Int,
+  y : Int,
+  w : Int,
+  h : Int,
+  dpi : Double,
+  wx? : Int = 0,
+  wy? : Int = 0,
+  ww? : Int = 0,
+  wh? : Int = 0,
+) -> Unit {
   let was = frozen_key.untracked()
   mon.val = { x, y, w, h }
+  mon_work.val = if ww > 0 && wh > 0 { { x: wx, y: wy, w: ww, h: wh } } else { { x: 0, y: 0, w, h } }
   @signals.start_batch()
   mon_scale.set(dmax(1.0, dpi / 96.0))
   reset_marks()

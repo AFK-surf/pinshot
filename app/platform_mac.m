@@ -143,6 +143,7 @@ void ps_tray_note(moonbit_bytes_t title, moonbit_bytes_t message) {
   alert.informativeText = str(message);
   [alert addButtonWithTitle:@"OK"];
   dispatch_async(dispatch_get_main_queue(), ^{
+    [NSApp activateIgnoringOtherApps:YES];
     [alert runModal];
     ps_post(@{@"do" : @"menu", @"item" : @"settings"});
   });
@@ -325,6 +326,13 @@ extern void mb_app_manage_window(int wid);
 extern void mb_host_window_drag(void);
 static NSRunningApplication *previousApp;
 static NSMapTable<NSWindow *, NSScreen *> *windowScreens;
+static NSView *mbViewOf(NSWindow *w) {
+  for (NSView *sub in w.contentView.subviews) {
+    if (sub.acceptsFirstResponder)
+      return sub;
+  }
+  return w.contentView;
+}
 int ps_own(int wid, int top) {
   NSWindow *w = mb_app_window_of(wid);
   if (!w)
@@ -338,6 +346,8 @@ int ps_own(int wid, int top) {
     windowScreens = [NSMapTable weakToStrongObjectsMapTable];
   [windowScreens setObject:(ps_capture_screen() ?: ps_mouse_screen()) forKey:w];
   w.styleMask = NSWindowStyleMaskBorderless;
+  // Changing styleMask resets firstResponder back to NSWindow, dropping keyboard events (like Esc) until clicked.
+  [w makeFirstResponder:mbViewOf(w)];
   w.minSize = NSMakeSize(1, 1);
   w.hasShadow = NO;
   w.level = top ? (wid ? NSFloatingWindowLevel : NSScreenSaverWindowLevel) : NSNormalWindowLevel;
@@ -381,6 +391,7 @@ void ps_place(int wid, int x, int y, int width, int height, int show, int focus)
       previousApp = nil;
     [NSApp activateIgnoringOtherApps:YES];
     [w makeKeyAndOrderFront:nil];
+    [w makeFirstResponder:mbViewOf(w)];
   } else if (show)
     [w orderFrontRegardless];
 }
@@ -395,6 +406,7 @@ void ps_center(int wid, int width, int height) {
   [w setFrame:NSMakeRect(NSMidX(f) - width / 2, NSMidY(f) - height / 2, width, height) display:YES];
   [NSApp activateIgnoringOtherApps:YES];
   [w makeKeyAndOrderFront:nil];
+  [w makeFirstResponder:mbViewOf(w)];
 }
 void ps_move_window(int wid) { mb_host_window_drag(); }
 void ps_hide(int wid) {
@@ -411,6 +423,11 @@ void ps_cloak(int wid, int on) {
   NSWindow *w = mb_app_window_of(wid);
   w.alphaValue = on ? 0 : 1;
   w.ignoresMouseEvents = on;
+  if (!on && !wid && w.visible) {
+    [NSApp activateIgnoringOtherApps:YES];
+    [w makeKeyAndOrderFront:nil];
+    [w makeFirstResponder:mbViewOf(w)];
+  }
 }
 void ps_topmost(int wid, int on, int front) {
   NSWindow *w = mb_app_window_of(wid);
@@ -458,7 +475,8 @@ moonbit_bytes_t ps_memory(void) {
 moonbit_bytes_t ps_data_dir(void) { return ps_string(appData().path); }
 moonbit_bytes_t ps_pictures_dir(void) { return ps_string(directory(NSPicturesDirectory).path); }
 moonbit_bytes_t ps_wallpaper(void) {
-  NSURL *url = [NSWorkspace.sharedWorkspace desktopImageURLForScreen:NSScreen.mainScreen];
+  NSScreen *s = ps_capture_screen() ?: ps_mouse_screen();
+  NSURL *url = [NSWorkspace.sharedWorkspace desktopImageURLForScreen:s ?: NSScreen.mainScreen];
   return ps_string(url.path ?: @"");
 }
 moonbit_bytes_t ps_read_file(moonbit_bytes_t path) {
@@ -473,9 +491,12 @@ int ps_write_file(moonbit_bytes_t path, moonbit_bytes_t bytes) {
   return [[NSData dataWithBytes:bytes length:Moonbit_array_length(bytes)] writeToFile:dest atomically:YES];
 }
 moonbit_bytes_t ps_save_dialog(int wid, moonbit_bytes_t dir, moonbit_bytes_t name) {
+  (void)wid;
   NSSavePanel *panel = [NSSavePanel savePanel];
   panel.directoryURL = [NSURL fileURLWithPath:str(dir) isDirectory:YES];
   panel.nameFieldStringValue = str(name);
+  panel.level = NSModalPanelWindowLevel;
+  [NSApp activateIgnoringOtherApps:YES];
   return ps_string([panel runModal] == NSModalResponseOK ? panel.URL.path : nil);
 }
 moonbit_bytes_t ps_pick_folder(int wid, moonbit_bytes_t dir) {
@@ -486,6 +507,8 @@ moonbit_bytes_t ps_pick_folder(int wid, moonbit_bytes_t dir) {
   panel.allowsMultipleSelection = NO;
   panel.canCreateDirectories = YES;
   panel.directoryURL = [NSURL fileURLWithPath:str(dir) isDirectory:YES];
+  panel.level = NSModalPanelWindowLevel;
+  [NSApp activateIgnoringOtherApps:YES];
   return ps_string([panel runModal] == NSModalResponseOK ? panel.URL.path : nil);
 }
 // A web page opened in the person's browser (https only).

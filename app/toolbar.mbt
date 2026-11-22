@@ -149,7 +149,7 @@ let bar_sub_max_h : Double = (style_height + 4.0) * 2.0
 /// and flips sub-rows upward whenever there is not enough room below (or when the bar sits above the selection).
 fn bar_anchor(n : @view.View) -> (Double, Double, Bool) {
   let k = mon_scale.get()
-  let (sw, sh) = mon_pt()
+  let (wx0, wy0, wx1, wy1) = work_pt()
   // (under the picture as it will be copied, where it shows on its way: the part, or the background it is laid on)
   guard sel.get() is Some(_) else { return (0.0, 0.0, false) }
   match shown_whole(n) {
@@ -158,20 +158,20 @@ fn bar_anchor(n : @view.View) -> (Double, Double, Bool) {
       let ry0 = r.y.to_double() / k
       let ry1 = r.bottom().to_double() / k
       let w = bar_width()
-      let x = clamp(rx1 - w, 8.0, sw - w - 8.0)
-      let my = if ry1 + 8.0 + bar_height <= sh - 4.0 {
+      let x = clamp(rx1 - w, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - w - 8.0))
+      let my = if ry1 + 8.0 + bar_height <= wy1 - 4.0 {
         ry1 + 8.0
-      } else if ry0 - 8.0 - bar_height >= 4.0 {
+      } else if ry0 - 8.0 - bar_height >= wy0 + 4.0 {
         ry0 - 8.0 - bar_height
       } else {
-        clamp(ry1 - bar_height - 8.0, 8.0, sh - bar_height - 8.0)
+        clamp(ry1 - bar_height - 8.0, wy0 + 8.0, dmax(wy0 + 8.0, wy1 - bar_height - 8.0))
       }
       let open_sub = (if styling() { style_height + 4.0 } else { 0.0 }) +
         (if beauty_on.get() { style_height + 4.0 } else { 0.0 })
       let need = dmax(style_height + 4.0, open_sub)
-      let no_room_below = my + bar_height + need > sh - 4.0
+      let no_room_below = my + bar_height + need > wy1 - 4.0
       let bar_is_above_sel = my + bar_height <= ry0
-      let up = (no_room_below || bar_is_above_sel) && my >= need + 4.0
+      let up = (no_room_below || bar_is_above_sel) && my >= wy0 + need + 4.0
       (x, my, up)
     }
     None => (0.0, 0.0, false)

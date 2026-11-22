@@ -118,7 +118,17 @@ fn told(json : String, bytes : Bytes?) -> Unit {
         }
       }
       asked_at.val = n("t")
-      prepare_capture(n("x").to_int(), n("y").to_int(), n("w").to_int(), n("h").to_int(), n("dpi"))
+      prepare_capture(
+        n("x").to_int(),
+        n("y").to_int(),
+        n("w").to_int(),
+        n("h").to_int(),
+        n("dpi"),
+        wx=n("wx").to_int(),
+        wy=n("wy").to_int(),
+        ww=n("ww").to_int(),
+        wh=n("wh").to_int(),
+      )
     }
     "capture" =>
       if capturing.untracked() {

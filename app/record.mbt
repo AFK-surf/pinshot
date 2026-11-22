@@ -92,6 +92,9 @@ let rec_part : Ref[Rect] = Ref({ x: 0, y: 0, w: 0, h: 0 })
 let rec_mon : Ref[Rect] = Ref({ x: 0, y: 0, w: 0, h: 0 })
 
 ///|
+let rec_work : Ref[Rect] = Ref({ x: 0, y: 0, w: 0, h: 0 })
+
+///|
 let rec_scale : Ref[Double] = Ref(1.0)
 
 ///|
@@ -226,7 +229,7 @@ fn rec_fps_should_open_up() -> Bool {
   if r.length() < 4 || r[3] <= 0.0 {
     return false
   }
-  let m = rec_mon.val
+  let m = rec_work.val
   let k = rec_scale.val
   let bar_bot = r[1] + r[3] - rec_pad_b * k
   let room_below = m.bottom().to_double() - bar_bot
@@ -466,6 +469,12 @@ fn rec_out() -> Unit {
   }
   rec_part.val = part
   rec_mon.val = m
+  let mw = mon_work.val
+  rec_work.val = if mw.w > 0 && mw.h > 0 {
+    { x: m.x + mw.x, y: m.y + mw.y, w: mw.w, h: mw.h }
+  } else {
+    m
+  }
   rec_scale.val = k
   rec_from_bar.val = from_bar
   rec_closing_overlay.val = true
@@ -527,19 +536,20 @@ fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
       (xx, yy, ww, hh)
     }
     None => {
+      let wk = rec_work.val
       let p = rec_part.val
       let ww = (pt_w * k).round().to_int()
       let hh = (pt_h * k).round().to_int()
       let gap = (8.0 * k).round().to_int()
       let pad_t = (rec_pad_t * k).round().to_int()
       let pad_b = (rec_pad_b * k).round().to_int()
-      let xx = clampi(p.x + (p.w - ww) / 2, m.x, m.right() - ww)
-      let yy = if p.bottom() + gap - pad_t + hh <= m.bottom() {
+      let xx = clampi(p.x + (p.w - ww) / 2, wk.x, wk.right() - ww)
+      let yy = if p.bottom() + gap - pad_t + hh <= wk.bottom() {
         p.bottom() + gap - pad_t
-      } else if p.y - gap + pad_b - hh >= m.y {
+      } else if p.y - gap + pad_b - hh >= wk.y {
         p.y - gap + pad_b - hh
       } else {
-        clampi(p.y + (p.h - hh) / 2, m.y, m.bottom() - hh)
+        clampi(p.y + (p.h - hh) / 2, wk.y, wk.bottom() - hh)
       }
       (xx, yy, ww, hh)
     }
@@ -565,7 +575,7 @@ fn rec_fit_window(focus : Bool, allow_shrink? : Bool = false) -> Unit {
   if cw < 20.0 || ch < 20.0 {
     return
   }
-  let m = rec_mon.val
+  let m = rec_work.val
   let k = rec_scale.val
   let w = (cw * k).ceil().to_int()
   let h = (ch * k).ceil().to_int()

@@ -57,6 +57,7 @@ static int width, height, pitch;
 static double elapsed;
 static NSScreen *capturedScreen;
 static NSRect bounds;
+static NSRect workBounds;
 static CGFloat scale;
 static NSString *windows;
 
@@ -102,17 +103,44 @@ void ps_capture_release(void) {
 }
 void ps_capture_open(int on) { captureOpen = on != 0; }
 
-static NSString *windowList(SCDisplay *display, NSArray<SCWindow *> *items, CGFloat k) {
+static NSString *windowList(CGDirectDisplayID displayID, CGFloat k) {
   NSMutableString *list = [NSMutableString string];
-  for (SCWindow *w in items) {
-    if (w.windowLayer != 0 || !w.isOnScreen ||
-        w.owningApplication.processID == NSProcessInfo.processInfo.processIdentifier)
+  CGRect displayBounds = CGDisplayBounds(displayID);
+  pid_t ownPID = NSProcessInfo.processInfo.processIdentifier;
+  // CGWindowListCopyWindowInfo returns windows in strict WindowServer front-to-back Z-order with alpha & layer,
+  // unlike SCShareableContent.windows which is not guaranteed Z-ordered and lacks alpha filtering.
+  CFArrayRef raw = CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+  if (!raw)
+    return list;
+  NSArray<NSDictionary *> *items = CFBridgingRelease(raw);
+  for (NSDictionary *info in items) {
+    NSNumber *layerNum = info[(id)kCGWindowLayer];
+    if (!layerNum)
       continue;
-    CGRect r = CGRectIntersection(display.frame, w.frame);
-    if (CGRectIsNull(r) || r.size.width < 1 || r.size.height < 1)
+    int layer = layerNum.intValue;
+    // Normal app windows (0) and floating/modal panels (< 20); skip desktop (< 0), Dock (20), menu bar (24+).
+    if (layer < 0 || layer >= 20)
       continue;
-    [list appendFormat:@"%.0f,%.0f,%.0f,%.0f\n", (r.origin.x - display.frame.origin.x) * k,
-                       (r.origin.y - display.frame.origin.y) * k, r.size.width * k, r.size.height * k];
+    NSNumber *pidNum = info[(id)kCGWindowOwnerPID];
+    if (pidNum && pidNum.intValue == ownPID)
+      continue;
+    NSNumber *alphaNum = info[(id)kCGWindowAlpha];
+    if (alphaNum && alphaNum.doubleValue <= 0.01)
+      continue;
+    NSDictionary *boundsDict = info[(id)kCGWindowBounds];
+    CGRect wf = CGRectZero;
+    if (!boundsDict || !CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)boundsDict, &wf))
+      continue;
+    if (wf.size.width < 8 || wf.size.height < 8)
+      continue;
+    CGRect r = CGRectIntersection(displayBounds, wf);
+    if (CGRectIsNull(r) || r.size.width < 8 || r.size.height < 8)
+      continue;
+    [list appendFormat:@"%.0f,%.0f,%.0f,%.0f\n",
+                       (r.origin.x - displayBounds.origin.x) * k,
+                       (r.origin.y - displayBounds.origin.y) * k,
+                       r.size.width * k, r.size.height * k];
   }
   return list;
 }
@@ -190,6 +218,11 @@ static void capture(BOOL interactive, void (^done)(BOOL)) {
   CGDirectDisplayID displayID = ps_display_id(s);
   bounds = ps_screen_pixels(s, s.frame);
   scale = s.backingScaleFactor;
+  NSRect vf = s.visibleFrame;
+  workBounds = NSMakeRect((NSMinX(vf) - NSMinX(s.frame)) * scale,
+                          (NSMaxY(s.frame) - NSMaxY(vf)) * scale,
+                          NSWidth(vf) * scale, NSHeight(vf) * scale);
+  NSString *snapWindows = windowList(displayID, scale);
   void (^finish)(CGImageRef, NSString *, NSError *) = ^(CGImageRef image, NSString *list, NSError *error) {
     if (image)
       CGImageRetain(image);
@@ -209,6 +242,10 @@ static void capture(BOOL interactive, void (^done)(BOOL)) {
             @"y" : @(bounds.origin.y),
             @"w" : @(width),
             @"h" : @(height),
+            @"wx" : @(lrint(workBounds.origin.x)),
+            @"wy" : @(lrint(workBounds.origin.y)),
+            @"ww" : @(lrint(workBounds.size.width)),
+            @"wh" : @(lrint(workBounds.size.height)),
             @"dpi" : @(scale * 96),
             @"t" : @(start)
           });
@@ -230,14 +267,13 @@ static void capture(BOOL interactive, void (^done)(BOOL)) {
       cfg.width = (size_t)NSWidth(bounds);
       cfg.height = (size_t)NSHeight(bounds);
       cfg.showsCursor = NO;
-      NSString *list = windowList(display, content.windows, scale);
       [SCScreenshotManager captureImageWithFilter:filter configuration:cfg
-          completionHandler:^(CGImageRef image, NSError *err) { finish(image, list, err); }];
+          completionHandler:^(CGImageRef image, NSError *err) { finish(image, snapWindows, err); }];
       return;
     }
     finish(NULL, nil, error);
   };
-  [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:YES completionHandler:available];
+  [SCShareableContent getShareableContentExcludingDesktopWindows:YES onScreenWindowsOnly:YES completionHandler:available];
 }
 
 void ps_capture_ask(void) { capture(YES, ^(BOOL ok) { (void)ok; }); }

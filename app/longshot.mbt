@@ -229,6 +229,12 @@ fn long_out() -> Unit {
   }
   guard sel.untracked() is Some(r) else { return }
   let m = mon.val
+  let mw = mon_work.val
+  let work : Rect = if mw.w > 0 && mw.h > 0 {
+    { x: m.x + mw.x, y: m.y + mw.y, w: mw.w, h: mw.h }
+  } else {
+    m
+  }
   let k = mon_scale.untracked()
   let part : Rect = { x: m.x + r.x, y: m.y + r.y, w: r.w, h: r.h }
   close_capture()
@@ -240,7 +246,7 @@ fn long_out() -> Unit {
   ps_capture_open(1)
   long_part.val = part
   long_scale.val = k
-  long_mon.val = m
+  long_mon.val = work
   @signals.start_batch()
   long_h.set(0)
   long_lost.set(false)
@@ -258,8 +264,8 @@ fn long_out() -> Unit {
   long_pending.set(("", 0, 0))
   @signals.end_batch()
   long_preview_due.val = false
-  // (the preview as tall as the monitor leaves room for, accounting for the transparent shadow halo)
-  let mh = m.h.to_double() / k
+  // (the preview as tall as the monitor's usable work area leaves room for, accounting for the transparent shadow halo)
+  let mh = work.h.to_double() / k
   long_box_h.val = clamp(mh - 56.0 - long_halo_t - long_halo_b - long_chrome_h(), 220.0, 560.0)
   ps_next_win_clear()
   let wid = @ui.window_open_here("long")
@@ -272,7 +278,7 @@ fn long_out() -> Unit {
   long_wid.val = wid
   ps_own(wid, 1) |> ignore
   ps_long_exclude(wid)
-  long_place(m)
+  long_place(work)
   log("long: begun \{part.w}x\{part.h} at \{part.x},\{part.y}")
 }
 
