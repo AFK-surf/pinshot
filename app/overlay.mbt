@@ -273,6 +273,8 @@ fn overlay_first_frame() -> Unit {
   }
   if started_with_settings.val {
     open_settings()
+  } else if started_with_welcome.val {
+    open_welcome()
   } else if @hostapi.platform() != 0 && !capturing.untracked() && settings.untracked().capture_keep {
     // (none when the person's own is open already: a shortcut pressed as the run started, shown as its first frame)
     // (one capture taken out of sight as it starts, all of it as one is (the screen taken, the overlay at the

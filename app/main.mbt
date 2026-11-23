@@ -55,6 +55,8 @@ fn main {
   @ui.set_window_tree(fn(wid, what) {
     let build = if what == "settings" {
       settings_window
+    } else if what == "welcome" {
+      welcome_window
     } else if what == "toast" {
       toast_window
     } else if what == "long" {
@@ -80,6 +82,10 @@ fn main {
       }
       trim_soon()
     }
+    if wid == welcome_wid.val {
+      welcome_wid.val = 0
+      trim_soon()
+    }
     if wid == toast_wid.val {
       toast_wid.val = 0
     }
@@ -98,6 +104,8 @@ fn main {
   @hostapi.window_setup(100.0, 100.0, 320.0, 200.0)
   if again == 1 {
     started_with_settings.val = true
+  } else if installed || (@ui.env("PINSHOT_TEST") != "" && @ui.env("PINSHOT_TEST_WELCOME") != "") {
+    started_with_welcome.val = true
   }
   @ui.run_legacy_ctx("PinShot", fn(c) {
     c.set_clear(0x000000L)
@@ -296,6 +304,10 @@ fn bench() -> Unit {
 ///|
 /// Whether the run was started to open its settings (they open once its window is there).
 let started_with_settings : Ref[Bool] = Ref(false)
+
+///|
+/// Whether the run was just installed interactively (opens the minimal installed welcome card once its window is there).
+let started_with_welcome : Ref[Bool] = Ref(false)
 
 ///|
 /// The theme every window's words are in: dark, as PinShot is, and digits all one width (the user, 2026-11-17: 「有的数字需要用等宽模式」:

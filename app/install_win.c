@@ -404,7 +404,8 @@ static int do_install(
   if (want_autostart && !is_update) set_run_autostart(target, 1);
 
   if (!no_launch) {
-    launch_exe(target, is_update ? L"--updated" : L"--installed");
+    const wchar_t *arg = is_update ? L"--updated" : (silent ? L"--start" : L"--installed");
+    launch_exe(target, arg);
   }
   return 1;
 }
@@ -539,7 +540,7 @@ int32_t ps_install_cli(moonbit_bytes_t version_bytes) {
     _snwprintf(target, INST_PATH_CAP + 31, L"%ls\\pinshot.exe", dir);
     target[INST_PATH_CAP + 31] = 0;
     if (should_auto_install(self_exe, target)) {
-      return do_install(self_exe, version, 0, 1, 0, 0, no_launch);
+      return do_install(self_exe, version, 0, 0, 0, 0, no_launch);
     }
   }
   return 0;

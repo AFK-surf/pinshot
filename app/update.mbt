@@ -233,7 +233,6 @@ fn start_updates(updated : Bool, installed? : Bool = false) -> Unit {
   ps_install_sync_meta(cstr(app_version))
   if installed {
     log("installed: now \{app_version}")
-    ps_tray_note(cstr(tr("PinShot 已安装")), cstr(tr("已添加到开始菜单，按快捷键即可开始截图。")))
   }
   // (a test run updates only from a release served here: PINSHOT_UPDATE_URL)
   if !updates_here() || (test_run() && @ui.env("PINSHOT_UPDATE_URL") == "") {
