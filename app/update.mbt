@@ -220,10 +220,21 @@ fn update_busy() -> Bool {
 }
 
 ///|
-/// As PinShot starts: what an earlier update left removed, the ticks begun (a minute after the start, then every ten
-/// minutes: each asks again where a day has gone by since the last time, and puts a downloaded release in place once
-/// nobody uses PinShot), and the person told where this run is the update.
-fn start_updates(updated : Bool) -> Unit {
+/// Handle Windows single-file self-install / uninstall / legacy `/UPDATE` CLI flags before starting the UI.
+/// Returns true if handled (the process should exit immediately).
+fn handle_install_cli() -> Bool {
+  ps_install_cli(cstr(app_version)) != 0
+}
+
+///|
+/// As PinShot starts: what an earlier update left removed, install metadata refreshed (Settings > Apps version),
+/// the ticks begun, and the person told where this run was just installed or updated.
+fn start_updates(updated : Bool, installed? : Bool = false) -> Unit {
+  ps_install_sync_meta(cstr(app_version))
+  if installed {
+    log("installed: now \{app_version}")
+    ps_tray_note(cstr(tr("PinShot 已安装")), cstr(tr("已添加到开始菜单，按快捷键即可开始截图。")))
+  }
   // (a test run updates only from a release served here: PINSHOT_UPDATE_URL)
   if !updates_here() || (test_run() && @ui.env("PINSHOT_UPDATE_URL") == "") {
     return
@@ -409,19 +420,14 @@ fn latest_read(body : Bytes?) -> Unit {
 }
 
 ///|
-/// The release found downloaded (the installer, or the portable exe), checked as it comes.
+/// The release found downloaded (`pinshot.exe`), checked as it comes.
 fn download_update() -> Unit {
   guard release.val is Some(r) else { return }
-  let (url, name, sha) = if update_kind() == 1 {
-    let name = "PinShot-Setup-\{r.version}.exe"
-    (download_base() + "v\{r.version}/" + name, name, r.setup_sha)
-  } else {
-    (download_base() + "v\{r.version}/pinshot.exe", "pinshot.exe", r.exe_sha)
-  }
-  let path = text_of(ps_update_path(cstr(name)))
+  let url = download_base() + "v\{r.version}/pinshot.exe"
+  let path = text_of(ps_update_path(cstr("pinshot.exe")))
   update_file.val = path
   if path != "" &&
-    ps_fetch(cstr(url), cstr(path), cstr(sha), agent()) == 1 {
+    ps_fetch(cstr(url), cstr(path), cstr(r.exe_sha), agent()) == 1 {
     log("update: downloading \{url}")
     update.set(Fetching(r.version, -1))
   } else {
@@ -436,12 +442,7 @@ fn install_update() -> Unit {
   guard release.val is Some(r) else { return }
   log("update: installing \{v}")
   update.set(Installing)
-  let done = if update_kind() == 1 {
-    // (the installer quits this run itself: pinshot.exe --quit)
-    ps_run_setup(cstr(update_file.val), cstr(r.setup_sha))
-  } else {
-    ps_swap_exe(cstr(update_file.val), cstr(r.exe_sha))
-  }
+  let done = ps_swap_exe(cstr(update_file.val), cstr(r.exe_sha))
   if done == -1 {
     log("update: \{v} is not the file signed")
     update.set(Failed("下载的文件校验失败"))
@@ -594,14 +595,17 @@ extern "C" fn ps_fetch(url : Bytes, path : Bytes, sha256 : Bytes, agent : Bytes)
 extern "C" fn ps_release_signed(version : Bytes, setup_sha : Bytes, exe_sha : Bytes, sig : Bytes) -> Int = "ps_release_signed"
 
 ///|
-/// The installer downloaded, checked once more to be of `sha256`, run silently as an update (it quits this run and
-/// starts the new one; where it ends and this run is still here, {"do":"setup-ended","code":N} is told): 1 it was
-/// started, -1 it is not that file, 0 it could not be started.
-#borrow(path, sha256)
-extern "C" fn ps_run_setup(path : Bytes, sha256 : Bytes) -> Int = "ps_run_setup"
+/// Handle single-file self-install / uninstall / legacy `/UPDATE` flags (install_win.c): 1 handled (exit), 0 normal run.
+#borrow(version)
+extern "C" fn ps_install_cli(version : Bytes) -> Int = "ps_install_cli"
 
 ///|
-/// The portable exe swapped for the one downloaded (checked once more to be of `sha256`) and that started (this run
+/// Refresh Settings > Apps DisplayVersion / EstimatedSize & Start menu shortcut when running from the installed folder.
+#borrow(version)
+extern "C" fn ps_install_sync_meta(version : Bytes) -> Unit = "ps_install_sync_meta"
+
+///|
+/// The exe swapped for the one downloaded (checked once more to be of `sha256`) and that started (this run
 /// ends); 0 it could not be (this run goes on), -1 it is not that file.
 #borrow(path, sha256)
 extern "C" fn ps_swap_exe(path : Bytes, sha256 : Bytes) -> Int = "ps_swap_exe"

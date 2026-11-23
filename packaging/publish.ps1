@@ -1,19 +1,16 @@
 param([string]$Version = "")
 # Puts a release's downloads in the R2 bucket `pinshot` (Cloudflare account hisenxpress@gmail.com, wrangler logged in)
-# and the download page (site/) on Cloudflare Pages: https://pin-shot.pages.dev. The files: out/setup/
-# PinShot-Setup-<Version>.exe (packaging/pack-setup.ps1) and out/build/pinshot.exe, each at v<Version>/ and as the
-# latest (PinShot-Setup.exe, pinshot.exe), and latest.json: the version and sizes the page shows, and each file's
-# SHA-256 and their signature (packaging/sign-release.ps1, the key from the vault in $env:PINSHOT_SIGN_KEY), which
-# PinShot's updates check what they download against (app/update.mbt). The version is app/main.mbt's
-# app_version unless given. latest.json goes last, once the files it names are there.
+# and the download page (site/) on Cloudflare Pages: https://pin-shot.pages.dev. PinShot on Windows is a single
+# self-installing executable (out/build/pinshot.exe); it is uploaded as pinshot.exe (and mirrored as PinShot-Setup*.exe
+# with matching setup_sha256 so existing <= 1.0.24 Inno Setup installs upgrade seamlessly via /UPDATE into the
+# single-file install), along with signed latest.json (packaging/sign-release.ps1, key in $env:PINSHOT_SIGN_KEY).
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path
 $appVersion = (Select-String -Path "$repo\app\main.mbt" -Pattern '^let app_version : String = "([^"]+)"').Matches[0].Groups[1].Value
 if (-not $Version) { $Version = $appVersion }
 if ($Version -ne $appVersion) { throw "version $Version is not app_version $appVersion (app/main.mbt)" }
-$setup = "$repo\out\setup\PinShot-Setup-$Version.exe"
 $exe = "$repo\out\build\pinshot.exe"
-foreach ($f in $setup, $exe) { if (-not (Test-Path $f)) { throw "missing $f" } }
+if (-not (Test-Path $exe)) { throw "missing $exe" }
 
 function Put([string]$file, [string]$key, [string]$type) {
   npx wrangler r2 object put "pinshot/$key" --file $file --content-type $type --remote
@@ -21,21 +18,22 @@ function Put([string]$file, [string]$key, [string]$type) {
 }
 # (signed first: with no key at hand, nothing is put anywhere)
 $json = Join-Path $env:TEMP "pinshot-latest.json"
-$setupSha = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower()
+$exeSize = (Get-Item $exe).Length
 $exeSha = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
 @{
   version = $Version
-  setup = (Get-Item $setup).Length
-  exe = (Get-Item $exe).Length
-  setup_sha256 = $setupSha
+  setup = $exeSize
+  exe = $exeSize
+  setup_sha256 = $exeSha
   exe_sha256 = $exeSha
-  signature = & "$PSScriptRoot\sign-release.ps1" -Version $Version -SetupSha $setupSha -ExeSha $exeSha
+  signature = & "$PSScriptRoot\sign-release.ps1" -Version $Version -SetupSha $exeSha -ExeSha $exeSha
 } | ConvertTo-Json -Compress |
   Set-Content -NoNewline -Encoding ascii $json
-Put $setup "v$Version/PinShot-Setup-$Version.exe" "application/octet-stream"
 Put $exe "v$Version/pinshot.exe" "application/octet-stream"
-Put $setup "PinShot-Setup.exe" "application/octet-stream"
 Put $exe "pinshot.exe" "application/octet-stream"
+# Keep legacy PinShot-Setup paths pointing to the same self-installing exe for seamless upgrade from <= 1.0.24
+Put $exe "v$Version/PinShot-Setup-$Version.exe" "application/octet-stream"
+Put $exe "PinShot-Setup.exe" "application/octet-stream"
 Put $json "latest.json" "application/json"
 
 Push-Location "$repo\site"

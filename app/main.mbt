@@ -3,17 +3,23 @@
 // notification area: its shortcut (Ctrl+Alt+A, as PixPin is set here) or its icon freezes the screen into the overlay (window 0, made as the run starts
 // and kept hidden between captures), and each pin is a window of the same run beside it.
 //
-//   pinshot.exe            the run (started again: the one running takes the screen, as its shortcut)
+//   pinshot.exe            the run (started again: the one running takes the screen, as its shortcut; from Downloads/TEMP: installs itself)
+//   pinshot.exe --install  installs to %LOCALAPPDATA%\Programs\PinShot, adds Start menu & Settings > Apps entry
+//   pinshot.exe --uninstall removes the installed copy, shortcuts, autostart and Settings > Apps entry
+//   pinshot.exe --portable runs in place without self-installing
 //   pinshot.exe --settings the settings opened (in the one running, or in this one as it starts)
 //   pinshot.exe --quit     the one running ended
 //   pinshot.exe --bench    the screen taken 10 times and the windows listed, timed; no window
 //   pinshot.exe --updated  the run, started by an update in place (update.mbt): it says so
-//   pinshot.exe --start    the run, started again by an update that did not go through (packaging/PinShot.iss);
-//                          with --updated, nothing where one is running already
+//   pinshot.exe --installed the run, started by a fresh self-install (install_win.c): it says so
+//   pinshot.exe --start    the run, started again by an update that did not go through; with --updated/--installed, nothing where one is running already
 //   pinshot.exe --ocr <f>  the words in picture file f read and printed; no window
 
 ///|
 fn main {
+  if handle_install_cli() {
+    return
+  }
   let args = text_of(ps_args()).split("\n").map(fn(s) { s.to_owned() }).collect()
   if args.length() > 0 && args[0] == "--bench" {
     bench()
@@ -29,7 +35,7 @@ fn main {
     1
   } else if args.length() > 0 && args[0] == "--quit" {
     2
-  } else if args.length() > 0 && (args[0] == "--updated" || args[0] == "--start") {
+  } else if args.length() > 0 && (args[0] == "--updated" || args[0] == "--installed" || args[0] == "--start") {
     // (the one running, if it is still here, takes nothing from it: no capture)
     3
   } else {
@@ -40,6 +46,7 @@ fn main {
   }
   load_settings()
   let updated = args.length() > 0 && args[0] == "--updated"
+  let installed = args.length() > 0 && args[0] == "--installed"
   log("started \{app_version}: icon \{if ps_tray_on() == 1 { "shown" } else { "not shown" }}")
   @ui.on_message_said("ps", fn(json, bytes) {
     told(json, bytes)
@@ -85,7 +92,7 @@ fn main {
     pin_gone(wid)
   })
   apply_keys()
-  start_updates(updated)
+  start_updates(updated, installed~)
   // (the overlay made out of sight: it shows only as a capture opens)
   @hostapi.window_hold()
   @hostapi.window_setup(100.0, 100.0, 320.0, 200.0)
@@ -299,6 +306,6 @@ let app_theme : () -> @ui.Theme = fn() { theme_kept }
 let theme_kept : @ui.Theme = { ..@ui.Theme::dark(), tabular: true }
 
 ///|
-/// PinShot's version: the settings' About, what updates compare with latest.json (update.mbt), and the installer's
-/// and the release's (packaging/pack-setup.ps1 and publish.ps1 read it here). Raised with each release.
+/// PinShot's version: the settings' About, what updates compare with latest.json (update.mbt), and what publish.ps1
+/// reads. Raised with each release.
 let app_version : String = "1.0.24"

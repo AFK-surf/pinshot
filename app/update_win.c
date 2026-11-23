@@ -58,9 +58,6 @@ static moonbit_bytes_t up_utf8(const wchar_t *w) {
 
 // ---- how this copy was installed ----
 
-// PinShot-Setup's entry in Settings > Apps (packaging/PinShot.iss: AppId, as Inno Setup names it)
-#define UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{6B0F3C2E-8A41-4F7D-9C55-2E1B7D3A9F10}_is1"
-
 // The folder of the running exe, no backslash at its end.
 static void exe_dir(wchar_t *out, DWORD n) {
   GetModuleFileNameW(NULL, out, n);
@@ -68,49 +65,20 @@ static void exe_dir(wchar_t *out, DWORD n) {
   if (slash) *slash = 0;
 }
 
-// 2 a Store package (the Store updates it), 1 installed by PinShot-Setup (its installer updates it), 0 the portable
-// exe (swapped for the new one).
+// 2 a Store package (the Store updates it), 0 the single-file exe (both self-installed and portable copies update
+// atomically in place by swapping pinshot.exe).
 int32_t ps_install_kind(void) {
-  if (ps_packaged()) return 2;
-  HKEY k;
-  // (a test run (PINSHOT_TEST) is never the person's installed copy: it goes by a test installer's entry, AppId
-  // PinShot-Test, so trying updates out never installs over theirs)
-  const char *test = getenv("PINSHOT_TEST");
-  const wchar_t *key = test && test[0] ? L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PinShot-Test_is1"
-                                       : UNINSTALL_KEY;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
-  wchar_t at[MAX_PATH * 2] = {0};
-  DWORD size = sizeof at - sizeof(wchar_t), type = 0;
-  LONG r = RegQueryValueExW(k, L"InstallLocation", NULL, &type, (BYTE *)at, &size);
-  RegCloseKey(k);
-  if (r != ERROR_SUCCESS || type != REG_SZ) return 0;
-  size_t n = wcslen(at);
-  while (n > 0 && at[n - 1] == L'\\') at[--n] = 0;
-  wchar_t mine[MAX_PATH * 2] = {0};
-  exe_dir(mine, MAX_PATH * 2);
-  // (the portable exe run from elsewhere while PinShot is also installed is still the portable one)
-  return CompareStringOrdinal(at, -1, mine, -1, TRUE) == CSTR_EQUAL ? 1 : 0;
+  return ps_packaged() ? 2 : 0;
 }
 
-// Where an update is downloaded to: the installer in %TEMP%\PinShot-update (made); the portable exe beside itself
-// (pinshot.exe.download: the same folder, so it can be moved over it, and a folder it cannot write is found before
-// anything is fetched). A name that is not a plain file name (a separator, "..") gets "" (nothing downloaded).
+// Where an update is downloaded to: beside the running exe (pinshot.exe.download: same folder so MoveFileExW is atomic
+// and a non-writable folder is caught before anything is fetched).
 moonbit_bytes_t ps_update_path(moonbit_bytes_t name) {
   const char *n = (const char *)name;
   if (!n[0] || strpbrk(n, "\\/:*?\"<>|") || strstr(n, "..")) return moonbit_make_bytes(0, 0);
   wchar_t p[MAX_PATH * 2] = {0};
-  if (ps_install_kind() == 0) {
-    GetModuleFileNameW(NULL, p, MAX_PATH * 2);
-    wcscat_s(p, MAX_PATH * 2, L".download");
-    return up_utf8(p);
-  }
-  GetTempPathW(MAX_PATH, p);
-  wcscat_s(p, MAX_PATH * 2, L"PinShot-update");
-  CreateDirectoryW(p, NULL);
-  wchar_t *w = up_wide((const char *)name);
-  wcscat_s(p, MAX_PATH * 2, L"\\");
-  wcscat_s(p, MAX_PATH * 2, w);
-  free(w);
+  GetModuleFileNameW(NULL, p, MAX_PATH * 2);
+  wcscat_s(p, MAX_PATH * 2, L".download");
   return up_utf8(p);
 }
 
@@ -458,72 +426,7 @@ int32_t ps_fetch(moonbit_bytes_t url, moonbit_bytes_t path, moonbit_bytes_t sha2
 
 // ---- the new version put in place ----
 
-// The installer downloaded (`path`) run silently, as an update: it quits this run (pinshot.exe --quit), replaces the
-// exe, keeps the choices made as it was installed (start with Windows, the desktop icon) and starts PinShot again
-// (packaging/PinShot.iss: /UPDATE). It is checked once more to be of `sha256` as it is started, and kept from being
-// written until it ends. Where it ends and this run is still here (it failed, or could not quit this run), that is
-// told: {"do":"setup-ended","code":N}. 1 it was started, -1 it is not that file, 0 it could not be started.
-typedef struct {
-  HANDLE process, file;
-} SetupRun;
-
-// (a thread of its own waits for the installer, then lets go of all it held: no wait handle registered that the
-// installer's end could race, as RegisterWaitForSingleObject's could, firing before its handle was even kept)
-static DWORD WINAPI setup_watch(void *arg) {
-  SetupRun *s = (SetupRun *)arg;
-  WaitForSingleObject(s->process, INFINITE);
-  DWORD code = 1;
-  GetExitCodeProcess(s->process, &code);
-  CloseHandle(s->process);
-  CloseHandle(s->file);
-  free(s);
-  char json[64];
-  snprintf(json, sizeof json, "{\"do\":\"setup-ended\",\"code\":%lu}", (unsigned long)code);
-  up_tell(json, NULL, 0);
-  return 0;
-}
-
-int32_t ps_run_setup(moonbit_bytes_t path, moonbit_bytes_t sha256) {
-  wchar_t *w = up_wide((const char *)path);
-  HANDLE file = open_sealed(w);
-  if (file == INVALID_HANDLE_VALUE || !file_is(file, (const char *)sha256)) {
-    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
-    free(w);
-    return -1;
-  }
-  SHELLEXECUTEINFOW e;
-  memset(&e, 0, sizeof e);
-  e.cbSize = sizeof e;
-  e.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
-  e.lpVerb = L"open";
-  e.lpFile = w;
-  e.lpParameters = L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /UPDATE";
-  e.nShow = SW_HIDE;
-  BOOL ok = ShellExecuteExW(&e) && e.hProcess;
-  free(w);
-  if (!ok) {
-    CloseHandle(file);
-    return 0;
-  }
-  SetupRun *s = (SetupRun *)calloc(1, sizeof(SetupRun));
-  HANDLE t = NULL;
-  if (s) {
-    s->process = e.hProcess;
-    s->file = file;
-    t = CreateThread(NULL, 64 * 1024, setup_watch, s, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
-  }
-  if (t) {
-    CloseHandle(t);
-  } else {
-    // (not watched: the file let go of; the installer goes on all the same)
-    CloseHandle(e.hProcess);
-    CloseHandle(file);
-    free(s);
-  }
-  return 1;
-}
-
-// The portable exe swapped for the one downloaded (`path`, beside it) and started in its place: the running exe moved
+// The exe swapped for the one downloaded (`path`, beside it) and started in its place: the running exe moved
 // aside to pinshot.exe.old (Windows lets a running exe be renamed, not written; the new run deletes it), the new one
 // moved in, this run's mutex and icon let go and the new one started with --updated, this one ended. Where any of that
 // fails, what was moved is put back and 0 is answered (this run goes on). The new exe is checked once more to be of

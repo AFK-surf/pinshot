@@ -22,10 +22,10 @@ Fast, PixPin-style screenshot, annotation, pinning, and screen recording for Win
 
 Requires Windows 10 (2004+) or Windows 11, x64.
 
-- **Installer**: download `PinShot-Setup.exe` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/motion-space/pinshot/releases/latest)). Installs per-user (no administrator needed), adds a Start menu entry and Settings › Apps uninstaller, and optionally starts with Windows.
-- **Portable**: download `pinshot.exe` from the same page — a single self-contained executable that runs from anywhere.
+- **Single-file self-installer**: download `pinshot.exe` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/motion-space/pinshot/releases/latest)). Double-clicking it from **Downloads** automatically installs per-user into `%LOCALAPPDATA%\Programs\PinShot` (no administrator needed), adds a Start menu entry and a **Settings › Apps** uninstaller, and launches PinShot.
+- **Portable**: move `pinshot.exe` to any folder of your choice (or pass `--portable`) to run in place without installing.
 
-> The installer is not code-signed yet. If Windows SmartScreen warns *"Windows protected your PC"*, click **More info › Run anyway**.
+> The executable is not code-signed yet. If Windows SmartScreen warns *"Windows protected your PC"*, click **More info › Run anyway**.
 
 Settings live in `%APPDATA%\PinShot\settings.json`; logs (including per-capture timings) live in `%APPDATA%\PinShot\pinshot.log`.
 
@@ -72,6 +72,9 @@ Settings and logs live in `~/Library/Application Support/PinShot/`. macOS builds
 
 - **Tray / menu bar**: capture, pin clipboard, show/hide all pins, settings, open screenshots folder, check for updates, quit.
 - **Windows CLI**:
+  - `pinshot.exe --install` — install to `%LOCALAPPDATA%\Programs\PinShot` (optional: `--silent`, `--autostart`, `--desktop`, `--no-launch`)
+  - `pinshot.exe --uninstall` — remove installed copy, Start menu shortcut, autostart, and Settings › Apps entry (optional: `--silent`)
+  - `pinshot.exe --portable` — run in place without self-installing
   - `pinshot.exe --settings` — open Settings
   - `pinshot.exe --quit` — exit the running instance
   - `pinshot.exe --bench` — benchmark capture & window enumeration timings
@@ -95,9 +98,8 @@ Settings and logs live in `~/Library/Application Support/PinShot/`. macOS builds
 Requires Visual Studio 2022 (C++ Desktop workload), Git for Windows (Git Bash), and [MoonBit](https://www.moonbitlang.com/) (`moon` on `PATH`).
 
 ```powershell
-scripts/build.ps1                # out/build/pinshot.exe (warnings are errors)
+scripts/build.ps1                # out/build/pinshot.exe (warnings are errors; self-installing single file)
 scripts/install.ps1              # installs to %LOCALAPPDATA%\Programs\PinShot and launches it
-packaging/pack-setup.ps1         # out/setup/PinShot-Setup-<version>.exe (requires Inno Setup 6)
 packaging/pack-msix.ps1          # Microsoft Store MSIX package
 ```
 

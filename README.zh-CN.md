@@ -22,10 +22,10 @@
 
 需要 Windows 10（2004 及以上）或 Windows 11，x64。
 
-- **安装包**：前往 [pin-shot.pages.dev](https://pin-shot.pages.dev)（或 [Releases](https://github.com/motion-space/pinshot/releases/latest)）下载 `PinShot-Setup.exe` 运行。安装到当前用户目录，无需管理员权限，自动添加开始菜单入口与「设置 › 应用」卸载项，可选开机自启。
-- **免安装便携版**：同页下载 `pinshot.exe`，单文件放任意位置即可直接运行。
+- **单文件自安装**：前往 [pin-shot.pages.dev](https://pin-shot.pages.dev)（或 [Releases](https://github.com/motion-space/pinshot/releases/latest)）下载 `pinshot.exe`。在「下载」文件夹直接双击即自动安装到 `%LOCALAPPDATA%\Programs\PinShot`（无需管理员权限），自动添加开始菜单入口与「设置 › 应用」卸载项并立即启动。
+- **绿色便携运行**：将 `pinshot.exe` 放到任意自定义目录（或带 `--portable` 参数）即可原地运行，不写入系统安装项。
 
-> 安装包目前未做商业代码签名，首次运行若触发 Windows SmartScreen 提示「Windows 已保护你的电脑」，点击**更多信息 › 仍要运行**即可。
+> 程序目前未做商业代码签名，首次运行若触发 Windows SmartScreen 提示「Windows 已保护你的电脑」，点击**更多信息 › 仍要运行**即可。
 
 配置文件位于 `%APPDATA%\PinShot\settings.json`，运行日志（含每次截图耗时）位于 `%APPDATA%\PinShot\pinshot.log`。
 
@@ -72,6 +72,9 @@
 
 - **托盘 / 菜单栏右键**：截图、贴剪贴板图片、显示 / 隐藏全部贴图、设置、打开截图文件夹、检查更新、退出。
 - **Windows 命令行**：
+  - `pinshot.exe --install` — 安装到 `%LOCALAPPDATA%\Programs\PinShot`（可选 `--silent`、`--autostart`、`--desktop`、`--no-launch`）
+  - `pinshot.exe --uninstall` — 卸载已安装副本并清理开始菜单、开机自启与「设置 › 应用」项（可选 `--silent`）
+  - `pinshot.exe --portable` — 原地绿色运行，不触发自动安装
   - `pinshot.exe --settings` — 打开设置窗口
   - `pinshot.exe --quit` — 退出正在运行的实例
   - `pinshot.exe --bench` — 测试截屏与窗口枚举耗时
@@ -95,9 +98,8 @@
 需要 Visual Studio 2022（C++ 桌面开发组件）、Git for Windows（Git Bash）以及 [MoonBit](https://www.moonbitlang.com/)（`moon` 在 `PATH` 中）。
 
 ```powershell
-scripts/build.ps1                # 生成 out/build/pinshot.exe（警告即错误）
+scripts/build.ps1                # 生成 out/build/pinshot.exe（警告即错误，单文件自带安装与卸载）
 scripts/install.ps1              # 安装到 %LOCALAPPDATA%\Programs\PinShot 并启动
-packaging/pack-setup.ps1         # 打包 out/setup/PinShot-Setup-<版本>.exe（需要 Inno Setup 6）
 packaging/pack-msix.ps1          # 打包 Microsoft Store MSIX
 ```
 

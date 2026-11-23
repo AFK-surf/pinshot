@@ -11,7 +11,12 @@ let site_url : String = "https://pin-shot.pages.dev"
 extern "C" fn ps_open_url(url : Bytes) -> Unit = "ps_open_url"
 
 ///|
-fn start_updates(_updated : Bool) -> Unit { () }
+fn handle_install_cli() -> Bool { false }
+
+///|
+fn start_updates(_updated : Bool, installed? : Bool = false) -> Unit {
+  ignore(installed)
+}
 
 ///|
 fn update_tick() -> Unit { () }

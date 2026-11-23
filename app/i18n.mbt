@@ -262,6 +262,8 @@ let en_words : Map[String, String] = {
   "无法写入程序所在的文件夹": "Can't write to app folder",
   "无法安装更新": "Couldn't install update",
   "正在下载，请稍后再试": "Download in progress",
+  "PinShot 已安装": "PinShot installed",
+  "已添加到开始菜单，按快捷键即可开始截图。": "Added to Start Menu. Press your shortcut to capture.",
   "PinShot 已更新到 ": "PinShot updated to ",
   "点这里打开设置。": "Click here to open the settings.",
   "PinShot 有新版本：": "A new version of PinShot: ",

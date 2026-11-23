@@ -19,5 +19,5 @@ options(
       "cc-link-flags": "",
     },
   },
-  "native-stub": [ "platform_win.c", "capture_wgc.cpp", "startup_task.cpp", "update_win.c", "ocr_win.cpp", "longshot_win.c", "record_win.cpp", "record_draw_win.cpp", "picture_win.c" ],
+  "native-stub": [ "platform_win.c", "capture_wgc.cpp", "startup_task.cpp", "install_win.c", "update_win.c", "ocr_win.cpp", "longshot_win.c", "record_win.cpp", "record_draw_win.cpp", "picture_win.c" ],
 )
