@@ -320,4 +320,4 @@ let theme_kept : @ui.Theme = { ..@ui.Theme::dark(), tabular: true }
 ///|
 /// PinShot's version: the settings' About, what updates compare with latest.json (update.mbt), and what publish.ps1
 /// reads. Raised with each release.
-let app_version : String = "1.0.29"
+let app_version : String = "1.0.30"
