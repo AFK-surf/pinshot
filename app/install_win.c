@@ -492,9 +492,13 @@ static int do_uninstall(const wchar_t *self_exe, int silent) {
   return 1;
 }
 
+// (capture_wgc.cpp)
+int ps_wgc_shot_cli(void);
+
 // Handle self-install, legacy `/UPDATE`, `--uninstall`, or automatic first-run install from Downloads/%TEMP%.
 // Returns 1 if handled (caller should exit), 0 to continue starting PinShot normally.
 int32_t ps_install_cli(moonbit_bytes_t version_bytes) {
+  if (ps_wgc_shot_cli()) return 1;
   if (ps_packaged()) return 0;
 
   wchar_t version[64] = {0};

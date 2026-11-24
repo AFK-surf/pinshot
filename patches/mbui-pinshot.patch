@@ -439,7 +439,7 @@ index c37f4f6c..62c1b519 100644
  }
  
 diff --git a/libs/mbui/src/host/win_render.cpp b/libs/mbui/src/host/win_render.cpp
-index 563ab7cb..0c175a11 100644
+index 563ab7cb..2395779b 100644
 --- a/libs/mbui/src/host/win_render.cpp
 +++ b/libs/mbui/src/host/win_render.cpp
 @@ -19,6 +19,7 @@
@@ -638,6 +638,19 @@ index 563ab7cb..0c175a11 100644
              ReadFile(f, blob->GetBufferPointer(), head.size, &got, NULL) && got == head.size &&
              shader_fnv(blob->GetBufferPointer(), head.size, shader_fnv_start) == head.hash;
    CloseHandle(f);
+@@ -941,9 +1066,9 @@ static int make_own_chain(HWND hwnd) {
+ static void make_pipeline(void);
+ 
+ int mb_render_init(void *hwnd) {
+-  // (with its video side where the GPU has one: a remote screen decoded and shown by the GPU, win_stream.cpp)
+-  if (FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) &&
+-      FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, 0)) && FAILED(make_device(D3D_DRIVER_TYPE_WARP, 0))) {
++  // PinShot does not use mbui's remote video stream decoder (record_win.cpp creates its own device),
++  // so skip D3D11_CREATE_DEVICE_VIDEO_SUPPORT to avoid loading MFPlat/video decoder pools at startup.
++  if (FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, 0)) && FAILED(make_device(D3D_DRIVER_TYPE_WARP, 0))) {
+     fprintf(stderr, "no Direct3D 11 device\n");
+     return 0;
+   }
 @@ -954,6 +1079,7 @@ int mb_render_init(void *hwnd) {
    xdev->GetAdapter(&adapter);
    adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&dxgi_factory);
@@ -687,7 +700,72 @@ index 563ab7cb..0c175a11 100644
  }
  
  // The shaders, buffers, atlas and states every target is drawn with (the window's, the offscreen one).
-@@ -1584,8 +1718,9 @@ static void draw_banded(const float *f, int32_t start, int32_t end, int32_t coun
+@@ -1187,6 +1321,7 @@ void mb_render_set_size(int pw, int ph, double w, double h, double scale) {
+   }
+   fb_w = pw;
+   fb_h = ph;
++  if (dcomp) commit_after_present = true;
+ }
+ 
+ void mb_atlas_upload(int x, int y, int w, int h, const void *rgba) {
+@@ -1266,11 +1401,42 @@ static void glass_idle_tick(void) {
+   glass_drawn = 0;
+ }
+ 
+-// What drawing holds beyond the frames given back (a window minimized or hidden: win_app.c): glass's levels, made
+-// again as a frame with glass is drawn.
++// What drawing holds beyond the frames given back (a window minimized or hidden: win_app.c): glass's levels,
++// hidden overlay canvas/swapchain and transient segment buffer, made again as the next frame draws.
++static ID3D11Buffer *segs_buf;
++static ID3D11ShaderResourceView *segs_srv;
++static size_t segs_cap;
++
+ void mb_render_trim(void) {
+   glass_free();
+   glass_idle_frames = 0;
++  if (segs_srv) segs_srv->Release(), segs_srv = NULL;
++  if (segs_buf) segs_buf->Release(), segs_buf = NULL;
++  segs_cap = 0;
++  RenderWin *back = rw;
++  rw = &render_wins[0];
++  if (target_hwnd && !IsWindowVisible(target_hwnd)) {
++    if (ctx) ctx->OMSetRenderTargets(0, NULL, NULL);
++    ensure_canvas(0, 0);
++    if (chain && (fb_w > 16 || fb_h > 16)) {
++      if (rtv) rtv->Release(), rtv = NULL;
++      chain->ResizeBuffers(0, 16, 16, DXGI_FORMAT_UNKNOWN, 0);
++      ID3D11Texture2D *back_tex = NULL;
++      if (SUCCEEDED(chain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&back_tex))) {
++        dev->CreateRenderTargetView(back_tex, NULL, &rtv);
++        back_tex->Release();
++      }
++      fb_w = 16;
++      fb_h = 16;
++      if (rtv && ctx) {
++        float clear[4] = {0, 0, 0, 0};
++        ctx->ClearRenderTargetView(rtv, clear);
++        chain->Present(0, 0);
++      }
++    }
++    if (dcomp) dcomp->Commit();
++  }
++  rw = back;
+ }
+ 
+ static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int mode, float sg, float dx, float dy) {
+@@ -1497,10 +1663,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
+ }
+ 
+ // The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), for the pixel
+-// shader to read (segs, t3): as they are, 15 fours an instance.
+-static ID3D11Buffer *segs_buf;
+-static ID3D11ShaderResourceView *segs_srv;
+-static size_t segs_cap;
++// shader to read (segs, t3): as they are, 15 fours an instance. (segs_buf/segs_srv/segs_cap declared above mb_render_trim)
+ 
+ static void segs_upload(const float *f, int32_t count) {
+   int32_t d = count;
+@@ -1584,8 +1747,9 @@ static void draw_banded(const float *f, int32_t start, int32_t end, int32_t coun
  // `part`: only that part of the target drawn again, over what it holds (the frame's ground first: the instance after
  // the frame's in the vertex buffer, submit's); NULL, all of it, cleared to the ground.
  static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count, const float *bg,
@@ -699,7 +777,7 @@ index 563ab7cb..0c175a11 100644
    encode_missing = 0;
    ctx->OMSetRenderTargets(1, &target, NULL);
    cut_on = part != NULL;
-@@ -1689,8 +1824,9 @@ static int submit(const double *inst, int32_t count, double r, double g, double
+@@ -1689,8 +1853,9 @@ static int submit(const double *inst, int32_t count, double r, double g, double
    memcpy(f, last_inst, (size_t)n * sizeof(float));
    float *gr = f + n;
    memset(gr, 0, MB_INST * sizeof(float));
@@ -710,7 +788,7 @@ index 563ab7cb..0c175a11 100644
    gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
    ctx->Unmap(vbuf, 0);
    last_count = count;
-@@ -1918,7 +2054,7 @@ static int write_png(const wchar_t *path, const uint8_t *bgra, int w, int h, int
+@@ -1918,7 +2083,7 @@ static int write_png(const wchar_t *path, const uint8_t *bgra, int w, int h, int
  // Instances `f` (`count` of them) drawn on the ground `bg` into a texture of their own, `w` × `h`, and copied where the
  // CPU reads it (a staging texture, to Map; NULL where it could not be made). What the vertex buffer holds is drawn: the
  // caller has put `f` there.
@@ -719,7 +797,7 @@ index 563ab7cb..0c175a11 100644
    D3D11_TEXTURE2D_DESC td = {};
    td.Width = (UINT)w;
    td.Height = (UINT)h;
-@@ -1934,7 +2070,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
+@@ -1934,7 +2099,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
      tex->Release();
      return NULL;
    }
@@ -728,7 +806,7 @@ index 563ab7cb..0c175a11 100644
    td.Usage = D3D11_USAGE_STAGING;
    td.BindFlags = 0;
    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-@@ -1947,7 +2083,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
+@@ -1947,7 +2112,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
  
  // The last presented frame drawn again (its instances are what the vertex buffer holds), as redrawn_of draws.
  static ID3D11Texture2D *redrawn(int w, int h) {
@@ -737,7 +815,7 @@ index 563ab7cb..0c175a11 100644
  }
  
  // `count` instances of `f` into the vertex buffer, grown to hold them: 0 where it could not be written.
-@@ -2063,6 +2199,28 @@ int mb_render_snapshot(const wchar_t *path) {
+@@ -2063,6 +2228,28 @@ int mb_render_snapshot(const wchar_t *path) {
        }
        px = out;
        stride = w * 4;
@@ -766,7 +844,7 @@ index 563ab7cb..0c175a11 100644
      }
      ok = write_png(path, px, w, h, stride);
      free(out);
-@@ -2072,6 +2230,19 @@ int mb_render_snapshot(const wchar_t *path) {
+@@ -2072,6 +2259,19 @@ int mb_render_snapshot(const wchar_t *path) {
    return ok;
  }
  
@@ -786,7 +864,7 @@ index 563ab7cb..0c175a11 100644
  // The offscreen target as its frames left it (not the last frame drawn again: what drawing only the parts that differ
  // made of it, mbui-render's MBUI_DL_FROM), as a PNG.
  extern "C" int mb_render_snapshot_drawn(const wchar_t *path) {
-@@ -2133,3 +2304,28 @@ int mb_screen_snapshot(void *hwnd, const wchar_t *path) {
+@@ -2133,3 +2333,28 @@ int mb_screen_snapshot(void *hwnd, const wchar_t *path) {
  extern "C" double mb_host_gpu_ms(void) { return -1; }
  // Each frame drawn as it is made, on the window's thread: none dropped.
  extern "C" int32_t mb_host_frames_dropped(void) { return 0; }

@@ -105,17 +105,32 @@ static const GUID display_state_guid = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24,
 
 typedef struct {
   HBITMAP dib;    // GDI's section, or
-  void *staging;  // the system capture's texture (capture_wgc.cpp), mapped
+  void *staging;  // the system capture's texture (capture_wgc.cpp), mapped, or
+  HANDLE shm;     // one-shot WGC helper's shared memory mapping (Low-VRAM mode: 0 MB VRAM leaked)
+  void *shm_view;
   uint8_t *bits;
   int w, h, pitch;
 } Shot;
 
 // (capture_wgc.cpp)
+typedef struct {
+  int32_t ok;
+  int32_t w, h, pitch;
+  double take_ms;
+  double white;
+  int32_t said_half;
+  int32_t pad;
+} WgcShmHeader;
 int ps_wgc_restart(void);
+int ps_wgc_borderless_ok(void);
+int ps_wgc_mon_hdr(HMONITOR mon, float *white);
 void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch);
 void ps_wgc_release(void *taken);
 void ps_wgc_trim(void);
 static HMONITOR cap_mon;
+static int cap_used_helper;
+static double helper_ms, helper_white;
+static int helper_said_half;
 
 static Shot cap;               // the picture being taken or taken
 
@@ -167,6 +182,8 @@ static UINT monitor_dpi(HMONITOR mon) {
 static void shot_free(Shot *s) {
   if (s->dib) DeleteObject(s->dib);
   if (s->staging) ps_wgc_release(s->staging);
+  if (s->shm_view) UnmapViewOfFile(s->shm_view);
+  if (s->shm) CloseHandle(s->shm);
   memset(s, 0, sizeof *s);
 }
 
@@ -305,6 +322,133 @@ static DWORD WINAPI cap_work(void *arg) {
 // to its thread. 0 where one is under way already or there is no monitor.
 static int gdi_begin(void);
 
+// Out-of-process one-shot WGC capture (Low-VRAM mode): runs on a worker thread while the UI thread puts up the
+// cloaked overlay in parallel, copies the 16-bit-HDR-to-sRGB frame through shared memory, and falls back to GDI if the
+// helper fails. Because the helper exits right after signalling, Windows reclaims 100% of WGC's VRAM immediately.
+typedef struct {
+  wchar_t shm_name[80];
+  wchar_t ev_name[80];
+  HANDLE ev;
+  int x, y, w, h;
+} WgcHelperArgs;
+
+static DWORD WINAPI wgc_helper_work(void *arg) {
+  WgcHelperArgs *a = (WgcHelperArgs *)arg;
+  int ok = 0;
+  wchar_t exe[MAX_PATH * 2] = {0};
+  if (GetModuleFileNameW(NULL, exe, MAX_PATH * 2) > 0) {
+    wchar_t cmd[MAX_PATH * 2 + 256];
+    _snwprintf(cmd, MAX_PATH * 2 + 255, L"\"%ls\" --wgc-shot %ls %ls %d %d %d %d", exe, a->shm_name, a->ev_name, a->x,
+               a->y, a->w, a->h);
+    cmd[MAX_PATH * 2 + 255] = 0;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si);
+    memset(&pi, 0, sizeof pi);
+    si.cb = sizeof si;
+    if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+      HANDLE waits[2] = {a->ev, pi.hProcess};
+      WaitForMultipleObjects(2, waits, FALSE, 800);
+      WgcShmHeader *hdr = (WgcShmHeader *)cap.shm_view;
+      if (hdr && hdr->ok == 1 && hdr->w == a->w && hdr->h == a->h && hdr->pitch >= a->w * 4) {
+        cap.bits = (uint8_t *)hdr + sizeof(WgcShmHeader);
+        cap.w = hdr->w;
+        cap.h = hdr->h;
+        cap.pitch = hdr->pitch;
+        helper_ms = hdr->take_ms;
+        helper_white = hdr->white;
+        helper_said_half = hdr->said_half;
+        cap_used_helper = 1;
+        ok = 1;
+      }
+      CloseHandle(pi.hThread);
+      CloseHandle(pi.hProcess);
+    }
+  }
+  CloseHandle(a->ev);
+  free(a);
+  if (!ok) {
+    // Fallback to GDI right on this worker thread so capture never fails.
+    if (cap.shm_view) UnmapViewOfFile(cap.shm_view), cap.shm_view = NULL;
+    if (cap.shm) CloseHandle(cap.shm), cap.shm = NULL;
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = cap_w;
+    bi.bmiHeader.biHeight = -cap_h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = NULL;
+    cap.dib = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (cap.dib && bits) {
+      cap.bits = (uint8_t *)bits;
+      cap.w = cap_w, cap.h = cap_h, cap.pitch = cap_w * 4;
+      HDC screen = GetDC(NULL);
+      HDC mem = CreateCompatibleDC(screen);
+      HGDIOBJ old = SelectObject(mem, cap.dib);
+      ok = BitBlt(mem, 0, 0, cap_w, cap_h, screen, cap_x, cap_y, SRCCOPY) != 0;
+      SelectObject(mem, old);
+      GdiFlush();
+      DeleteDC(mem);
+      ReleaseDC(NULL, screen);
+    }
+  }
+  cap_ok = ok;
+  cap_ms = ps_ms() - cap_t0;
+  InterlockedExchange(&cap_busy, 0);
+  if (tray_hwnd) PostMessageW(tray_hwnd, WM_PS_TAKEN, (WPARAM)ok, 0);
+  return 0;
+}
+
+static int wgc_helper_begin(void) {
+  static volatile LONG seq;
+  LONG id = InterlockedIncrement(&seq);
+  WgcHelperArgs *a = (WgcHelperArgs *)calloc(1, sizeof *a);
+  if (!a) return 0;
+  DWORD pid = GetCurrentProcessId();
+  _snwprintf(a->shm_name, 79, L"Local\\PinShot.Shot.%lu.%ld", pid, id);
+  _snwprintf(a->ev_name, 79, L"Local\\PinShot.Shot.%lu.%ld.ev", pid, id);
+  a->x = cap_x, a->y = cap_y, a->w = cap_w, a->h = cap_h;
+  size_t total = sizeof(WgcShmHeader) + (size_t)cap_w * (size_t)cap_h * 4;
+  cap.shm = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, (DWORD)(total >> 32), (DWORD)total, a->shm_name);
+  if (!cap.shm) {
+    free(a);
+    return 0;
+  }
+  cap.shm_view = MapViewOfFile(cap.shm, FILE_MAP_ALL_ACCESS, 0, 0, total);
+  if (!cap.shm_view) {
+    CloseHandle(cap.shm);
+    cap.shm = NULL;
+    free(a);
+    return 0;
+  }
+  memset(cap.shm_view, 0, sizeof(WgcShmHeader));
+  a->ev = CreateEventW(NULL, TRUE, FALSE, a->ev_name);
+  if (!a->ev) {
+    UnmapViewOfFile(cap.shm_view);
+    CloseHandle(cap.shm);
+    cap.shm_view = NULL;
+    cap.shm = NULL;
+    free(a);
+    return 0;
+  }
+  InterlockedExchange(&cap_busy, 1);
+  HANDLE t = CreateThread(NULL, 0, wgc_helper_work, a, 0, NULL);
+  if (!t) {
+    InterlockedExchange(&cap_busy, 0);
+    CloseHandle(a->ev);
+    UnmapViewOfFile(cap.shm_view);
+    CloseHandle(cap.shm);
+    cap.shm_view = NULL;
+    cap.shm = NULL;
+    free(a);
+    return 0;
+  }
+  CloseHandle(t);
+  return 1;
+}
+
 static int cap_begin(void) {
   if (cap_busy) return 0;
   cap_t0 = ps_ms();
@@ -313,10 +457,18 @@ static int cap_begin(void) {
   cap_drop();
   windows_listed();
   cap_ok = 0;
+  cap_used_helper = 0;
+  int test_screen = getenv("PINSHOT_TEST") && getenv("PINSHOT_TEST_SCREEN");
+  // Low-VRAM mode: on SDR monitors take GDI directly (~20-30 ms, 0 MB WGC VRAM); on HDR monitors capture via a
+  // short-lived helper process so 16-bit HDR tone-mapping stays exact and Windows reclaims 100% of WGC VRAM on exit.
+  if (!wgc_off && !keep_gpu_warm && !test_screen && tray_hwnd && ps_wgc_borderless_ok()) {
+    float hdr_white = 1.0f;
+    if (!ps_wgc_mon_hdr(cap_mon, &hdr_white)) return gdi_begin();
+    if (wgc_helper_begin()) return 1;
+  }
   // (the system's capture kept on: the monitor's last frame, there already; GDI's where it has had none yet)
   uint8_t *bits = NULL;
   int pitch = 0;
-  int test_screen = getenv("PINSHOT_TEST") && getenv("PINSHOT_TEST_SCREEN");
   void *t = wgc_off || test_screen ? NULL : ps_wgc_take_now(cap_mon, cap_w, cap_h, &bits, &pitch);
   if (t && tray_hwnd) {
     cap.staging = t;
@@ -388,7 +540,10 @@ moonbit_bytes_t ps_capture_info(void) {
   if (!cap.bits || cap_busy) return moonbit_make_bytes(0, 0);
   char s[320], lag[48] = {0};
   if (cap_key_lag >= 10.0) snprintf(lag, sizeof lag, "; key lag %.0f ms", cap_key_lag);
-  if (cap.staging) {
+  if (cap_used_helper) {
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc helper %.1f; hdr white %.2f%s%s", cap_x, cap_y, cap_w, cap_h, cap_dpi,
+             cap_ms, helper_ms, helper_white, helper_said_half > 0 ? " (copied first)" : "", lag);
+  } else if (cap.staging) {
     double t[5];
     ps_wgc_timing(t);
     snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f; hdr white %.2f%s; frame %.1f s old%s%s", cap_x, cap_y, cap_w,
@@ -416,7 +571,7 @@ moonbit_bytes_t ps_capture_take(void) {
 
 // The picture taken let go: freed now, or as the last decode reading it is through.
 void ps_capture_release(void) {
-  if ((!cap.dib && !cap.staging) || cap_busy) return;
+  if ((!cap.dib && !cap.staging && !cap.shm) || cap_busy) return;
   cap_drop();
   // (the idle trim's clock begun a moment later, as before)
   if (tray_hwnd) SetTimer(tray_hwnd, PS_FREE_TIMER, 1500, NULL);
@@ -887,7 +1042,11 @@ int32_t ps_start(int32_t again) {
   return 1;
 }
 
+extern void *mb_render_context(void);
+extern void *mb_render_device(void);
+extern void mb_render_trim(void);
 void ps_wgc_set_keep(int keep);
+void ps_gpu_flush(void);
 void ps_set_capture_keep(int32_t keep) {
   keep_gpu_warm = keep ? 1 : 0;
   if (!wgc_off) ps_wgc_set_keep(keep);
@@ -1184,6 +1343,7 @@ int32_t ps_own(int32_t wid, int32_t topmost) {
   SetWindowSubclass(h, own_proc, 1, (DWORD_PTR)wid);
   SetWindowPos(h, topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  if (wid == 0 && !keep_gpu_warm) ps_gpu_flush();
   return 1;
 }
 
@@ -1353,9 +1513,8 @@ moonbit_bytes_t ps_pointer(void) {
 // let go trimmed (a 4K overlay's ~140 MB). The working set is kept (the user, 2026-11-17: given back, the next capture took ~8 ms more,
 // ~20 after a while idle, paging it in again). The renderer binds all it draws with each
 // frame, so nothing of it is lost.
-extern void *mb_render_context(void);
-extern void *mb_render_device(void);
 static void gpu_trim_now(int force_trim) {
+  mb_render_trim();
   ID3D11DeviceContext *ctx = (ID3D11DeviceContext *)mb_render_context();
   if (ctx) {
     ID3D11DeviceContext_ClearState(ctx);
@@ -1368,8 +1527,8 @@ static void gpu_trim_now(int force_trim) {
       IDXGIDevice3_Trim(xd);
       IDXGIDevice3_Release(xd);
     }
+    if (!wgc_off) ps_wgc_trim();
   }
-  if (force_trim && !wgc_off) ps_wgc_trim();
 }
 
 // What closed windows held given back 300 ms from now (their last frame and decodes done by then), on the tray

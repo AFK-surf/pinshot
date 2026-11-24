@@ -14,6 +14,7 @@
 // compute shader) before it is read: SDR windows exactly as they were, HDR ones as they look, what is brighter than
 // SDR white clipped.
 #include <windows.h>
+#include <shellapi.h>
 #include <d3d11.h>
 #include <dxgi1_3.h>
 #include <roapi.h>
@@ -28,13 +29,83 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <d3dcompiler.h>
 #include <windows.security.authorization.appcapabilityaccess.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "runtimeobject.lib")
-#pragma comment(lib, "d3dcompiler.lib")
+
+// Precompiled cs_5_0 bytecode for to_srgb (compiled with fxc /T cs_5_0 /O3 /E main):
+//   Texture2D<float4> src : register(t0);
+//   RWTexture2D<unorm float4> dst : register(u0);
+//   cbuffer K : register(b0) { float inv_white; uint ox; uint oy; uint pad; };
+//   float enc(float v) { v = saturate(v); return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0 / 2.4) - 0.055; }
+//   [numthreads(16, 16, 1)] void main(uint3 id : SV_DispatchThreadID) {
+//     uint dw, dh; dst.GetDimensions(dw, dh); if (id.x >= dw || id.y >= dh) return;
+//     float3 c = src[uint2(id.x + ox, id.y + oy)].rgb * inv_white;
+//     dst[id.xy] = float4(enc(c.b), enc(c.g), enc(c.r), 1.0);
+//   }
+// Embedded so HDR capture never loads d3dcompiler_47.dll at runtime.
+static const uint8_t to_srgb_bc[] = {
+  68,88,66,67,117,38,71,212,153,44,226,219,84,135,113,200,56,178,202,255,1,0,0,0,
+  108,5,0,0,5,0,0,0,52,0,0,0,48,2,0,0,64,2,0,0,80,2,0,0,
+  208,4,0,0,82,68,69,70,244,1,0,0,1,0,0,0,168,0,0,0,3,0,0,0,
+  60,0,0,0,0,5,83,67,0,129,0,0,203,1,0,0,82,68,49,49,60,0,0,0,
+  24,0,0,0,32,0,0,0,40,0,0,0,36,0,0,0,12,0,0,0,0,0,0,0,
+  156,0,0,0,2,0,0,0,5,0,0,0,4,0,0,0,255,255,255,255,0,0,0,0,
+  1,0,0,0,13,0,0,0,160,0,0,0,4,0,0,0,1,0,0,0,4,0,0,0,
+  255,255,255,255,0,0,0,0,1,0,0,0,13,0,0,0,164,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,
+  115,114,99,0,100,115,116,0,75,0,171,171,164,0,0,0,4,0,0,0,192,0,0,0,
+  16,0,0,0,0,0,0,0,0,0,0,0,96,1,0,0,0,0,0,0,4,0,0,0,
+  2,0,0,0,112,1,0,0,0,0,0,0,255,255,255,255,0,0,0,0,255,255,255,255,
+  0,0,0,0,148,1,0,0,4,0,0,0,4,0,0,0,2,0,0,0,160,1,0,0,
+  0,0,0,0,255,255,255,255,0,0,0,0,255,255,255,255,0,0,0,0,196,1,0,0,
+  8,0,0,0,4,0,0,0,2,0,0,0,160,1,0,0,0,0,0,0,255,255,255,255,
+  0,0,0,0,255,255,255,255,0,0,0,0,199,1,0,0,12,0,0,0,4,0,0,0,
+  0,0,0,0,160,1,0,0,0,0,0,0,255,255,255,255,0,0,0,0,255,255,255,255,
+  0,0,0,0,105,110,118,95,119,104,105,116,101,0,102,108,111,97,116,0,0,0,3,0,
+  1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,106,1,0,0,111,120,0,100,119,111,114,100,0,171,171,171,0,0,19,0,
+  1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,151,1,0,0,111,121,0,112,97,100,0,77,105,99,114,111,115,111,102,116,
+  32,40,82,41,32,72,76,83,76,32,83,104,97,100,101,114,32,67,111,109,112,105,108,101,
+  114,32,49,48,46,49,0,171,73,83,71,78,8,0,0,0,0,0,0,0,8,0,0,0,
+  79,83,71,78,8,0,0,0,0,0,0,0,8,0,0,0,83,72,69,88,120,2,0,0,
+  80,0,5,0,158,0,0,0,106,8,0,1,89,0,0,4,70,142,32,0,0,0,0,0,
+  1,0,0,0,88,24,0,4,0,112,16,0,0,0,0,0,85,85,0,0,156,24,0,4,
+  0,224,17,0,0,0,0,0,17,17,0,0,95,0,0,2,50,0,2,0,104,0,0,2,
+  3,0,0,0,155,0,0,4,16,0,0,0,16,0,0,0,1,0,0,0,61,16,0,137,
+  194,0,0,128,67,68,4,0,50,0,16,0,0,0,0,0,1,64,0,0,0,0,0,0,
+  70,238,17,0,0,0,0,0,80,0,0,6,50,0,16,0,0,0,0,0,70,0,2,0,
+  70,0,16,0,0,0,0,0,60,0,0,7,18,0,16,0,0,0,0,0,26,0,16,0,
+  0,0,0,0,10,0,16,0,0,0,0,0,31,0,4,3,10,0,16,0,0,0,0,0,
+  62,0,0,1,21,0,0,1,30,0,0,7,50,0,16,0,0,0,0,0,70,0,2,0,
+  150,133,32,0,0,0,0,0,0,0,0,0,54,0,0,8,194,0,16,0,0,0,0,0,
+  2,64,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,45,0,0,137,
+  194,0,0,128,67,85,21,0,114,0,16,0,0,0,0,0,70,14,16,0,0,0,0,0,
+  70,126,16,0,0,0,0,0,56,32,0,8,114,0,16,0,0,0,0,0,102,8,16,0,
+  0,0,0,0,6,128,32,0,0,0,0,0,0,0,0,0,29,0,0,10,114,0,16,0,
+  1,0,0,0,2,64,0,0,28,46,77,59,28,46,77,59,28,46,77,59,0,0,0,0,
+  70,2,16,0,0,0,0,0,56,0,0,10,114,0,16,0,2,0,0,0,70,2,16,0,
+  0,0,0,0,2,64,0,0,82,184,78,65,82,184,78,65,82,184,78,65,0,0,0,0,
+  47,0,0,5,114,0,16,0,0,0,0,0,70,2,16,0,0,0,0,0,56,0,0,10,
+  114,0,16,0,0,0,0,0,70,2,16,0,0,0,0,0,2,64,0,0,85,85,213,62,
+  85,85,213,62,85,85,213,62,0,0,0,0,25,0,0,5,114,0,16,0,0,0,0,0,
+  70,2,16,0,0,0,0,0,50,0,0,15,114,0,16,0,0,0,0,0,70,2,16,0,
+  0,0,0,0,2,64,0,0,61,10,135,63,61,10,135,63,61,10,135,63,0,0,0,0,
+  2,64,0,0,174,71,97,189,174,71,97,189,174,71,97,189,0,0,0,0,55,0,0,9,
+  114,0,16,0,0,0,0,0,70,2,16,0,1,0,0,0,70,2,16,0,2,0,0,0,
+  70,2,16,0,0,0,0,0,54,0,0,5,130,0,16,0,0,0,0,0,1,64,0,0,
+  0,0,128,63,164,0,0,6,242,224,17,0,0,0,0,0,70,5,2,0,70,14,16,0,
+  0,0,0,0,62,0,0,1,83,84,65,84,148,0,0,0,20,0,0,0,3,0,0,0,
+  0,0,0,0,1,0,0,0,7,0,0,0,1,0,0,0,2,0,0,0,2,0,0,0,
+  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,
+  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0
+};
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -133,21 +204,7 @@ extern "C" int ps_wgc_ready(void) {
   if (FAILED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Graphics_Capture_Direct3D11CaptureFramePool).Get(),
                                     IID_PPV_ARGS(&pool_statics))))
     return 0;
-  // (the shader: scRGB over the SDR white back to sRGB, its bytes in BGRA order as GDI's are; ox/oy let a partial
-  // capture convert only its region instead of the full 4K frame)
-  static const char hlsl[] =
-      "Texture2D<float4> src : register(t0);"
-      "RWTexture2D<unorm float4> dst : register(u0);"
-      "cbuffer K : register(b0) { float inv_white; uint ox; uint oy; uint pad; };"
-      "float enc(float v) { v = saturate(v); return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0 / 2.4) - 0.055; }"
-      "[numthreads(16, 16, 1)] void main(uint3 id : SV_DispatchThreadID) {"
-      "  uint dw, dh; dst.GetDimensions(dw, dh); if (id.x >= dw || id.y >= dh) return;"
-      "  float3 c = src[uint2(id.x + ox, id.y + oy)].rgb * inv_white;"
-      "  dst[id.xy] = float4(enc(c.b), enc(c.g), enc(c.r), 1.0); }";
-  ComPtr<ID3DBlob> code, errs;
-  if (SUCCEEDED(D3DCompile(hlsl, sizeof hlsl - 1, "to_srgb", NULL, NULL, "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
-                           &code, &errs)))
-    dev->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &to_srgb);
+  dev->CreateComputeShader(to_srgb_bc, sizeof to_srgb_bc, NULL, &to_srgb);
   D3D11_BUFFER_DESC bd = {16, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
   dev->CreateBuffer(&bd, NULL, &to_srgb_k);
   ready = 1;
@@ -323,11 +380,12 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h, int hdr = -1) {
   ComPtr<WGC::IGraphicsCaptureItem> item;
   if (FAILED(last_hr = item_interop->CreateForMonitor(mon, IID_PPV_ARGS(&item)))) return 0;
   ABI::Windows::Graphics::SizeInt32 size = {w, h};
+  int nbufs = (keep_sessions || long_holds) ? 2 : 1;
   if (FAILED(last_hr = pool_statics->CreateFreeThreaded(
                      rt_dev.Get(),
                      m->hdr ? ABI::Windows::Graphics::DirectX::DirectXPixelFormat_R16G16B16A16Float
                             : ABI::Windows::Graphics::DirectX::DirectXPixelFormat_B8G8R8A8UIntNormalized,
-                     2, size, &m->pool)))
+                     nbufs, size, &m->pool)))
     return 0;
   // (agile, as a free-threaded pool's handler must be: called on its threads, not the one that made it)
   auto arrived = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
@@ -445,19 +503,44 @@ extern "C" int ps_wgc_restart(void) {
   return nmons;
 }
 
+// Completely tear down the standalone WGC D3D11 device and WinRT factories when idle in Low-VRAM mode so WGC holds
+// 0 MB of VRAM/RAM between captures (recreated on demand in ~15 ms on the next capture).
+static void wgc_teardown(void) {
+  for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
+  nmons = 0;
+  kept_let_go();
+  to_srgb.Reset();
+  to_srgb_k.Reset();
+  pool_statics.Reset();
+  item_interop.Reset();
+  if (rt_dev) {
+    ComPtr<ABI::Windows::Foundation::IClosable> c;
+    if (SUCCEEDED(rt_dev.As(&c))) c->Close();
+  }
+  rt_dev.Reset();
+  if (ctx) {
+    ctx->ClearState();
+    ctx->Flush();
+  }
+  if (dev) {
+    ComPtr<IDXGIDevice3> d3;
+    if (SUCCEEDED(dev.As(&d3))) d3->Trim();
+  }
+  ctx.Reset();
+  dev.Reset();
+  ready = 0;
+}
+
 extern "C" void ps_wgc_set_keep(int keep) {
   keep = keep ? 1 : 0;
   keep_sessions = keep;
   if (keep) {
     if (nmons == 0) ps_wgc_restart();
   } else {
-    for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
-    nmons = 0;
-    if (ready > 0 && dev && ctx) {
-      ctx->ClearState();
-      ctx->Flush();
-      ComPtr<IDXGIDevice3> d3;
-      if (SUCCEEDED(dev.As(&d3))) d3->Trim();
+    if (!long_holds) wgc_teardown();
+    else {
+      for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
+      nmons = 0;
     }
   }
 }
@@ -465,11 +548,7 @@ extern "C" void ps_wgc_set_keep(int keep) {
 // The device gone (the driver reset or updated, the GPU lost: its sessions give no frame again and their last stays
 // as it was): everything made again from the device up, at the tray window (ps_wgc_wake).
 static void device_lost(void) {
-  for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
-  nmons = 0;
-  kept_let_go();
-  to_srgb.Reset(), to_srgb_k.Reset(), pool_statics.Reset(), item_interop.Reset(), rt_dev.Reset(), ctx.Reset(), dev.Reset();
-  ready = 0;
+  wgc_teardown();
   ps_wgc_wake();
 }
 
@@ -494,14 +573,7 @@ extern "C" void ps_wgc_long_hold(int on) {
   long_holds = on;
   if (!on) kept_let_go();
   if (on || keep_sessions) return;
-  for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
-  nmons = 0;
-  if (ready > 0) {
-    ctx->ClearState();
-    ctx->Flush();
-    ComPtr<IDXGIDevice3> d3;
-    if (SUCCEEDED(dev.As(&d3))) d3->Trim();
-  }
+  wgc_teardown();
 }
 
 // A part of monitor `mon` (rx, ry, rw by rh of its w by h pixels) as it is now, for a long screenshot: its last frame
@@ -731,6 +803,12 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   // (sessions made only as needed: let go once taken, but while a long screenshot holds them, every 33 ms)
   if (!keep_sessions && !long_holds) {
     tex.Reset();
+    {
+      ComPtr<ABI::Windows::Foundation::IClosable> c;
+      if (surface && SUCCEEDED(surface.As(&c))) c->Close();
+      c.Reset();
+      if (fr && SUCCEEDED(fr.As(&c))) c->Close();
+    }
     surface.Reset();
     access.Reset();
     fr.Reset();
@@ -779,6 +857,11 @@ extern "C" void ps_wgc_release(void *taken) {
   if (!keep_sessions && !long_holds) {
     ComPtr<IDXGIDevice3> d3;
     if (SUCCEEDED(d.As(&d3))) d3->Trim();
+    int same = (d.Get() == dev.Get());
+    d3.Reset();
+    c.Reset();
+    d.Reset();
+    if (same) wgc_teardown();
   }
 }
 
@@ -787,4 +870,86 @@ extern "C" void ps_wgc_state(char *out, int n) {
   int k = snprintf(out, n, "sessions %d; frames", nmons);
   for (int i = 0; i < nmons && k < n; i++) k += snprintf(out + k, n - k, " %d%s", mons[i].frames, mons[i].hdr ? " hdr" : "");
   if (k < n) snprintf(out + k, n - k, "; hr 0x%08lx; ready %d", (unsigned long)last_hr, ready);
+}
+
+// One-shot out-of-process WGC capture (`pinshot.exe --wgc-shot <shm> <ev> <x> <y> <w> <h>`):
+// Windows 11's WGC frame pool retains one full 4K surface (~64 MB VRAM) per session/pool creation inside the calling
+// process even after IClosable::Close() and full D3D11 device destruction. Running on-demand captures in a short-lived
+// helper process that copies the 16-bit-HDR-to-sRGB pixels into shared memory, signals the event, and exits immediately
+// lets the OS reclaim 100% of WGC VRAM on exit (0 MB leaked across unlimited captures).
+typedef struct {
+  int32_t ok;
+  int32_t w, h, pitch;
+  double take_ms;
+  double white;
+  int32_t said_half;
+  int32_t pad;
+} WgcShmHeader;
+
+extern "C" int ps_wgc_shot_cli(void) {
+  const wchar_t *cmd = GetCommandLineW();
+  if (!cmd || !wcsstr(cmd, L"--wgc-shot")) return 0;
+  int argc = 0;
+  LPWSTR *argv = CommandLineToArgvW(cmd, &argc);
+  if (!argv) return 0;
+  int idx = -1;
+  for (int i = 1; i + 6 < argc; i++) {
+    if (!wcscmp(argv[i], L"--wgc-shot")) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) {
+    LocalFree(argv);
+    return 0;
+  }
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  const wchar_t *shm_name = argv[idx + 1];
+  const wchar_t *ev_name = argv[idx + 2];
+  int x = _wtoi(argv[idx + 3]);
+  int y = _wtoi(argv[idx + 4]);
+  int w = _wtoi(argv[idx + 5]);
+  int h = _wtoi(argv[idx + 6]);
+
+  HANDLE shm = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shm_name);
+  HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, ev_name);
+  WgcShmHeader *hdr = NULL;
+  size_t need = sizeof(WgcShmHeader) + (size_t)w * (size_t)h * 4;
+  if (shm && w > 0 && h > 0) hdr = (WgcShmHeader *)MapViewOfFile(shm, FILE_MAP_ALL_ACCESS, 0, 0, need);
+
+  if (hdr) {
+    hdr->ok = 0;
+    hdr->w = w;
+    hdr->h = h;
+    hdr->pitch = w * 4;
+    keep_sessions = 0;
+    POINT pt = {x + w / 2, y + h / 2};
+    HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    uint8_t *bits = NULL;
+    int pitch = 0;
+    void *taken = ps_wgc_take_now(mon, w, h, &bits, &pitch);
+    if (taken && bits && pitch >= w * 4) {
+      uint8_t *dst = (uint8_t *)hdr + sizeof(WgcShmHeader);
+      size_t row = (size_t)w * 4;
+      if (pitch == (int)row) {
+        memcpy(dst, bits, row * (size_t)h);
+      } else {
+        for (int r = 0; r < h; r++) memcpy(dst + (size_t)r * row, bits + (size_t)r * (size_t)pitch, row);
+      }
+      hdr->take_ms = take_ms;
+      hdr->white = take_white;
+      hdr->said_half = said_half;
+      MemoryBarrier();
+      hdr->ok = 1;
+    }
+    if (ev) SetEvent(ev);
+    if (taken) ps_wgc_release(taken);
+    UnmapViewOfFile(hdr);
+  } else if (ev) {
+    SetEvent(ev);
+  }
+  if (ev) CloseHandle(ev);
+  if (shm) CloseHandle(shm);
+  LocalFree(argv);
+  ExitProcess(0);
 }
