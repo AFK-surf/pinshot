@@ -1397,6 +1397,8 @@ int32_t ps_own(int32_t wid, int32_t topmost) {
   SetPropW(h, L"PinShot.Wid", (HANDLE)(INT_PTR)wid);
   DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
   DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
+  COLORREF no_border = 0xFFFFFFFEu;  // DWMWA_COLOR_NONE
+  DwmSetWindowAttribute(h, 34 /* DWMWA_BORDER_COLOR */, &no_border, sizeof no_border);
   // (no transition of DWM's as it shows or hides: it is there at once, and gone at once)
   BOOL no = TRUE;
   DwmSetWindowAttribute(h, DWMWA_TRANSITIONS_FORCEDISABLED, &no, sizeof no);

@@ -167,12 +167,12 @@ fn rec_fps_should_open_up() -> Bool {
   room_below < need && room_above >= need
 }
 
-/// Transparent shadow halo around the floating FPS dropdown popup window.
-let rec_fps_pad_x : Double = 24.0
+/// Transparent shadow halo around the floating FPS dropdown popup window (>= 3*sigma for blur=14pt, dy=4pt; click-through via ps_hit_inset).
+let rec_fps_pad_x : Double = 44.0
 
-let rec_fps_pad_t : Double = 20.0
+let rec_fps_pad_t : Double = 40.0
 
-let rec_fps_pad_b : Double = 30.0
+let rec_fps_pad_b : Double = 48.0
 
 let rec_fps_card_w : Double = 98.0
 
@@ -254,14 +254,14 @@ fn rec_active(wid : Int, on : Bool, other : Int) -> Unit {
   }
 }
 
-/// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma so alpha reaches 0 before every window edge).
-let rec_pad_l : Double = 30.0
+/// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma for blur=11pt, dy=4pt so alpha reaches 0 before every window edge).
+let rec_pad_l : Double = 36.0
 
-let rec_pad_t : Double = 26.0
+let rec_pad_t : Double = 32.0
 
-let rec_pad_r : Double = 30.0
+let rec_pad_r : Double = 36.0
 
-let rec_pad_b : Double = 42.0
+let rec_pad_b : Double = 44.0
 
 fn rec_combo_key(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> String {
   let (ow, oh) = rec_out_dims(max_side)
