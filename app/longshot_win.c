@@ -35,6 +35,18 @@ extern void mb_post(const char *channel, const char *json, size_t len, const uin
 void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, uint8_t **bits, int *pitch);
 void ps_wgc_release(void *taken);
 void ps_wgc_long_hold(int on);
+int ps_wgc_mon_hdr(HMONITOR mon, float *white);
+int ps_wgc_borderless_ok(void);
+int ps_capture_keep_on(void);
+
+typedef struct {
+  int32_t ok;
+  int32_t w, h, pitch;
+  double take_ms;
+  double white;
+  int32_t said_half;
+  int32_t pad;
+} LongWgcShmHeader;
 
 // (16: Windows' timer comes at its 15.6 ms steps, so 16 is about 31 ms a picture, where 33 was 47: a quicker scroll still
 // shares enough with the last picture laid in)
@@ -77,6 +89,11 @@ static struct {
   HBITMAP gdi_bmp;
   HGDIOBJ gdi_old;
   void *gdi_bits;
+  int use_gdi_only;        // Low-VRAM SDR monitor: skip in-process WGC completely (0 MB WGC VRAM)
+  int use_helper;          // Low-VRAM HDR monitor: capture via short-lived `--wgc-long` helper process
+  int helper_first;
+  HANDLE h_shm, h_req, h_rsp, h_stop, h_proc;
+  void *h_view;
   int pictures;            // how many were laid in
   int lost;                // the last taken matched none (scrolled too far at once)
   int full;                // MOST_ROWS reached
@@ -319,15 +336,122 @@ static int loose_shift(int up, int *bot, int *head) {
   return fine;
 }
 
+static LONG long_helper_seq;
+
+static void long_helper_stop(void) {
+  if (L.h_stop) SetEvent(L.h_stop);
+  if (L.h_proc) {
+    if (WaitForSingleObject(L.h_proc, 400) == WAIT_TIMEOUT) {
+      TerminateProcess(L.h_proc, 1);
+      WaitForSingleObject(L.h_proc, 100);
+    }
+    CloseHandle(L.h_proc);
+    L.h_proc = NULL;
+  }
+  if (L.h_view) UnmapViewOfFile(L.h_view), L.h_view = NULL;
+  if (L.h_shm) CloseHandle(L.h_shm), L.h_shm = NULL;
+  if (L.h_req) CloseHandle(L.h_req), L.h_req = NULL;
+  if (L.h_rsp) CloseHandle(L.h_rsp), L.h_rsp = NULL;
+  if (L.h_stop) CloseHandle(L.h_stop), L.h_stop = NULL;
+  L.use_helper = 0;
+  L.helper_first = 0;
+}
+
+static int long_helper_start(void) {
+  long_helper_stop();
+  size_t need = sizeof(LongWgcShmHeader) + (size_t)L.w * (size_t)L.h * 4;
+  DWORD pid = GetCurrentProcessId();
+  LONG seq = InterlockedIncrement(&long_helper_seq);
+  wchar_t shm_n[64], req_n[64], rsp_n[64], stop_n[64];
+  _snwprintf(shm_n, 63, L"Local\\PinShot.LongShm.%lu.%ld", pid, seq);
+  _snwprintf(req_n, 63, L"Local\\PinShot.LongReq.%lu.%ld", pid, seq);
+  _snwprintf(rsp_n, 63, L"Local\\PinShot.LongRsp.%lu.%ld", pid, seq);
+  _snwprintf(stop_n, 63, L"Local\\PinShot.LongStop.%lu.%ld", pid, seq);
+  shm_n[63] = req_n[63] = rsp_n[63] = stop_n[63] = 0;
+
+  L.h_shm = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, (DWORD)(need >> 32), (DWORD)need, shm_n);
+  if (L.h_shm) L.h_view = MapViewOfFile(L.h_shm, FILE_MAP_ALL_ACCESS, 0, 0, need);
+  L.h_req = CreateEventW(NULL, FALSE, FALSE, req_n);
+  L.h_rsp = CreateEventW(NULL, FALSE, FALSE, rsp_n);
+  L.h_stop = CreateEventW(NULL, TRUE, FALSE, stop_n);
+  wchar_t exe[MAX_PATH * 2];
+  if (!L.h_view || !L.h_req || !L.h_rsp || !L.h_stop || GetModuleFileNameW(NULL, exe, MAX_PATH * 2) == 0) {
+    long_helper_stop();
+    return 0;
+  }
+  wchar_t cmd[MAX_PATH * 2 + 320];
+  _snwprintf(cmd, MAX_PATH * 2 + 319, L"\"%ls\" --wgc-long %ls %ls %ls %ls %lu %d %d %d %d %d %d %d %d", exe, shm_n,
+             req_n, rsp_n, stop_n, (unsigned long)pid, L.mx, L.my, L.mw, L.mh, L.x - L.mx, L.y - L.my, L.w, L.h);
+  cmd[MAX_PATH * 2 + 319] = 0;
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+  memset(&si, 0, sizeof si);
+  memset(&pi, 0, sizeof pi);
+  si.cb = sizeof si;
+  if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+    long_helper_stop();
+    return 0;
+  }
+  CloseHandle(pi.hThread);
+  L.h_proc = pi.hProcess;
+  L.use_helper = 1;
+  L.helper_first = 1;
+  return 1;
+}
+
+static void long_capture_begin(void) {
+  L.use_gdi_only = 0;
+  if (ps_capture_keep_on()) {
+    ps_wgc_long_hold(1);
+    return;
+  }
+  float white = 1.0f;
+  if (ps_wgc_mon_hdr(L.mon, &white) && ps_wgc_borderless_ok()) {
+    if (long_helper_start()) return;
+  }
+  L.use_gdi_only = 1;
+}
+
+static void long_capture_end(void) {
+  if (L.use_helper) long_helper_stop();
+  else if (L.on && !L.use_gdi_only) ps_wgc_long_hold(0);
+  L.use_gdi_only = 0;
+}
+
 // The part taken now into L.now: 1 when taken.
 static int take_now(void) {
-  uint8_t *bits = NULL;
-  int pitch = 0;
-  void *t = ps_wgc_take_part(L.mon, L.mw, L.mh, L.x - L.mx, L.y - L.my, L.w, L.h, &bits, &pitch);
-  if (t) {
-    for (int y = 0; y < L.h; y++) memcpy(L.now + (size_t)y * L.w * 4, bits + (size_t)y * pitch, (size_t)L.w * 4);
-    ps_wgc_release(t);
-    return 1;
+  if (L.use_helper && L.h_view && L.h_req && L.h_rsp && L.h_proc) {
+    LongWgcShmHeader *hdr = (LongWgcShmHeader *)L.h_view;
+    hdr->ok = 0;
+    ResetEvent(L.h_rsp);
+    SetEvent(L.h_req);
+    HANDLE waits[2] = {L.h_rsp, L.h_proc};
+    DWORD ms = L.helper_first ? 900 : 250;
+    L.helper_first = 0;
+    DWORD wr = WaitForMultipleObjects(2, waits, FALSE, ms);
+    if (wr == WAIT_OBJECT_0 && hdr->ok == 1 && hdr->w == L.w && hdr->h == L.h && hdr->pitch >= L.w * 4) {
+      const uint8_t *src = (const uint8_t *)hdr + sizeof(LongWgcShmHeader);
+      if (hdr->pitch == L.w * 4) {
+        memcpy(L.now, src, (size_t)L.w * L.h * 4);
+      } else {
+        for (int y = 0; y < L.h; y++) memcpy(L.now + (size_t)y * L.w * 4, src + (size_t)y * hdr->pitch, (size_t)L.w * 4);
+      }
+      return 1;
+    }
+    if (wr != WAIT_OBJECT_0) {
+      long_helper_stop();
+      L.use_gdi_only = 1;
+    }
+  }
+  if (!L.use_gdi_only) {
+    uint8_t *bits = NULL;
+    int pitch = 0;
+    void *t = ps_wgc_take_part(L.mon, L.mw, L.mh, L.x - L.mx, L.y - L.my, L.w, L.h, &bits, &pitch);
+    if (t) {
+      for (int y = 0; y < L.h; y++) memcpy(L.now + (size_t)y * L.w * 4, bits + (size_t)y * pitch, (size_t)L.w * 4);
+      ps_wgc_release(t);
+      return 1;
+    }
   }
   // (GDI's: the system's capture has had no frame of this monitor yet, or is off; its DC and section made once)
   HDC screen = GetDC(NULL);
@@ -610,7 +734,7 @@ static void frame_show(void) {
 // ---- what the app calls ----
 
 static void let_go(void) {
-  if (L.on) ps_wgc_long_hold(0);
+  long_capture_end();
   if (dump_log) fclose(dump_log);
   dump_log = NULL, dumped = 0, dumped_hash = 0;
   if (L.timer) KillTimer(NULL, L.timer);
@@ -672,7 +796,7 @@ int32_t ps_long_begin(int32_t x, int32_t y, int32_t w, int32_t h) {
   L.on = 1;
   L.told_h = -1;
   L.frame_color = RGB(0x2F, 0x9B, 0xFF);
-  ps_wgc_long_hold(1);
+  long_capture_begin();
   L.begun = GetTickCount64();
   frame_show();
   L.timer = SetTimer(NULL, 0, TICK_MS, tick_timer);
@@ -706,7 +830,7 @@ void ps_long_reset(void) {
   L.told_h = -1;
   if (!L.on) {
     L.on = 1;
-    ps_wgc_long_hold(1);
+    long_capture_begin();
   }
   if (!L.frame) frame_show();
   L.begun = GetTickCount64() - SETTLE_MS;
@@ -717,7 +841,7 @@ void ps_long_reset(void) {
 // The taking stopped (the picture kept till ps_long_end), its frame gone.
 void ps_long_stop(void) {
   // (the session a long screenshot held let go now, if it was made only for it: nothing more is taken)
-  if (L.on) ps_wgc_long_hold(0);
+  long_capture_end();
   L.on = 0;
   if (L.timer) KillTimer(NULL, L.timer);
   L.timer = 0;

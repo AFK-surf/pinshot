@@ -325,6 +325,8 @@ static int gdi_begin(void);
 // Out-of-process one-shot WGC capture (Low-VRAM mode): runs on a worker thread while the UI thread puts up the
 // cloaked overlay in parallel, copies the 16-bit-HDR-to-sRGB frame through shared memory, and falls back to GDI if the
 // helper fails. Because the helper exits right after signalling, Windows reclaims 100% of WGC's VRAM immediately.
+static char cap_helper_fail[48];
+
 typedef struct {
   wchar_t shm_name[80];
   wchar_t ev_name[80];
@@ -348,7 +350,7 @@ static DWORD WINAPI wgc_helper_work(void *arg) {
     si.cb = sizeof si;
     if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
       HANDLE waits[2] = {a->ev, pi.hProcess};
-      WaitForMultipleObjects(2, waits, FALSE, 800);
+      DWORD wr = WaitForMultipleObjects(2, waits, FALSE, 800);
       WgcShmHeader *hdr = (WgcShmHeader *)cap.shm_view;
       if (hdr && hdr->ok == 1 && hdr->w == a->w && hdr->h == a->h && hdr->pitch >= a->w * 4) {
         cap.bits = (uint8_t *)hdr + sizeof(WgcShmHeader);
@@ -360,9 +362,17 @@ static DWORD WINAPI wgc_helper_work(void *arg) {
         helper_said_half = hdr->said_half;
         cap_used_helper = 1;
         ok = 1;
+      } else if (wr == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 100);
+        lstrcpynA(cap_helper_fail, "helper timeout 800ms", sizeof cap_helper_fail);
+      } else {
+        lstrcpynA(cap_helper_fail, "helper failed", sizeof cap_helper_fail);
       }
       CloseHandle(pi.hThread);
       CloseHandle(pi.hProcess);
+    } else {
+      lstrcpynA(cap_helper_fail, "helper spawn failed", sizeof cap_helper_fail);
     }
   }
   CloseHandle(a->ev);
@@ -458,6 +468,7 @@ static int cap_begin(void) {
   windows_listed();
   cap_ok = 0;
   cap_used_helper = 0;
+  cap_helper_fail[0] = 0;
   int test_screen = getenv("PINSHOT_TEST") && getenv("PINSHOT_TEST_SCREEN");
   // Low-VRAM mode: on SDR monitors take GDI directly (~20-30 ms, 0 MB WGC VRAM); on HDR monitors capture via a
   // short-lived helper process so 16-bit HDR tone-mapping stays exact and Windows reclaims 100% of WGC VRAM on exit.
@@ -552,7 +563,8 @@ moonbit_bytes_t ps_capture_info(void) {
   } else {
     char st[96];
     ps_wgc_state(st, sizeof st);
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,gdi (%s%s)", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms, st, lag);
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,gdi (%s%s%s%s)", cap_x, cap_y, cap_w, cap_h, cap_dpi, cap_ms,
+             cap_helper_fail[0] ? cap_helper_fail : "", cap_helper_fail[0] ? "; " : "", st, lag);
   }
   return ps_text(s);
 }
@@ -1047,6 +1059,8 @@ extern void *mb_render_device(void);
 extern void mb_render_trim(void);
 void ps_wgc_set_keep(int keep);
 void ps_gpu_flush(void);
+int ps_capture_keep_on(void) { return keep_gpu_warm; }
+
 void ps_set_capture_keep(int32_t keep) {
   keep_gpu_warm = keep ? 1 : 0;
   if (!wgc_off) ps_wgc_set_keep(keep);

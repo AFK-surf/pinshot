@@ -886,12 +886,98 @@ typedef struct {
   int32_t pad;
 } WgcShmHeader;
 
+// Long-screenshot out-of-process WGC helper (`pinshot.exe --wgc-long <shm> <req> <rsp> <stop> <ppid> <mx> <my> <mw> <mh> <rx> <ry> <rw> <rh>`):
+// Holds one WGC session for the duration of a single Low-VRAM HDR long screenshot, serves each tick's cropped region
+// over shared memory, and exits when the long screenshot ends so Windows reclaims 100% of WGC VRAM (0 MB leaked).
+static int wgc_long_cli(LPWSTR *argv, int argc) {
+  int idx = -1;
+  for (int i = 1; i + 13 < argc; i++) {
+    if (!wcscmp(argv[i], L"--wgc-long")) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return 0;
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  const wchar_t *shm_name = argv[idx + 1];
+  const wchar_t *req_name = argv[idx + 2];
+  const wchar_t *rsp_name = argv[idx + 3];
+  const wchar_t *stop_name = argv[idx + 4];
+  DWORD ppid = (DWORD)_wtoi(argv[idx + 5]);
+  int mx = _wtoi(argv[idx + 6]);
+  int my = _wtoi(argv[idx + 7]);
+  int mw = _wtoi(argv[idx + 8]);
+  int mh = _wtoi(argv[idx + 9]);
+  int rx = _wtoi(argv[idx + 10]);
+  int ry = _wtoi(argv[idx + 11]);
+  int rw = _wtoi(argv[idx + 12]);
+  int rh = _wtoi(argv[idx + 13]);
+
+  HANDLE shm = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shm_name);
+  HANDLE req = OpenEventW(SYNCHRONIZE, FALSE, req_name);
+  HANDLE rsp = OpenEventW(EVENT_MODIFY_STATE, FALSE, rsp_name);
+  HANDLE stop = OpenEventW(SYNCHRONIZE, FALSE, stop_name);
+  HANDLE parent = ppid ? OpenProcess(SYNCHRONIZE, FALSE, ppid) : NULL;
+  WgcShmHeader *hdr = NULL;
+  size_t need = sizeof(WgcShmHeader) + (size_t)rw * (size_t)rh * 4;
+  if (shm && rw > 0 && rh > 0) hdr = (WgcShmHeader *)MapViewOfFile(shm, FILE_MAP_ALL_ACCESS, 0, 0, need);
+
+  if (hdr && req && rsp && stop) {
+    keep_sessions = 0;
+    long_holds = 1;
+    POINT pt = {mx + mw / 2, my + mh / 2};
+    HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    HANDLE waits[3] = {stop, req, parent};
+    DWORD nwait = parent ? 3 : 2;
+    for (;;) {
+      DWORD w = WaitForMultipleObjects(nwait, waits, FALSE, 30000);
+      if (w == WAIT_OBJECT_0 + 1) {
+        hdr->ok = 0;
+        hdr->w = rw;
+        hdr->h = rh;
+        hdr->pitch = rw * 4;
+        uint8_t *bits = NULL;
+        int pitch = 0;
+        void *taken = ps_wgc_take_part(mon, mw, mh, rx, ry, rw, rh, &bits, &pitch);
+        if (taken && bits && pitch >= rw * 4) {
+          uint8_t *dst = (uint8_t *)hdr + sizeof(WgcShmHeader);
+          size_t row = (size_t)rw * 4;
+          if (pitch == (int)row) {
+            memcpy(dst, bits, row * (size_t)rh);
+          } else {
+            for (int r = 0; r < rh; r++) memcpy(dst + (size_t)r * row, bits + (size_t)r * (size_t)pitch, row);
+          }
+          hdr->take_ms = take_ms;
+          hdr->white = take_white;
+          hdr->said_half = said_half;
+          MemoryBarrier();
+          hdr->ok = 1;
+        }
+        SetEvent(rsp);
+        if (taken) ps_wgc_release(taken);
+      } else {
+        break;
+      }
+    }
+    ps_wgc_long_hold(0);
+  }
+  if (hdr) UnmapViewOfFile(hdr);
+  if (parent) CloseHandle(parent);
+  if (stop) CloseHandle(stop);
+  if (rsp) CloseHandle(rsp);
+  if (req) CloseHandle(req);
+  if (shm) CloseHandle(shm);
+  LocalFree(argv);
+  ExitProcess(0);
+}
+
 extern "C" int ps_wgc_shot_cli(void) {
   const wchar_t *cmd = GetCommandLineW();
-  if (!cmd || !wcsstr(cmd, L"--wgc-shot")) return 0;
+  if (!cmd || (!wcsstr(cmd, L"--wgc-shot") && !wcsstr(cmd, L"--wgc-long"))) return 0;
   int argc = 0;
   LPWSTR *argv = CommandLineToArgvW(cmd, &argc);
   if (!argv) return 0;
+  if (wcsstr(cmd, L"--wgc-long") && wgc_long_cli(argv, argc)) return 1;
   int idx = -1;
   for (int i = 1; i + 6 < argc; i++) {
     if (!wcscmp(argv[i], L"--wgc-shot")) {
