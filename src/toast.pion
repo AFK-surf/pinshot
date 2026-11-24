@@ -1,0 +1,81 @@
+// A short word by the pointer that goes by itself (the user, 2026-11-17: 「假如没有可以pin的截图，需要有个轻微提示」): a small
+// window of this run under the pointer, over the others, the keyboard left where it was, gone after a moment.
+
+import "signals"
+import "ui"
+import "view"
+
+let toast_wid : ui::Ref[Int] = ui::ref_new(0)
+
+let toast_text : signals::Signal[String] = signals::signal("")
+
+/// A repeated message extends the lifetime of the existing window.
+let toast_generation : signals::Signal[Int] = signals::signal(0)
+
+/// Transparent shadow halo around the floating superellipse pill (>= 3.3*sigma so alpha reaches 0 before every edge).
+let toast_pad_x : Double = 30.0
+
+let toast_pad_t : Double = 28.0
+
+let toast_pad_b : Double = 34.0
+
+let toast_pill_h : Double = 34.0
+
+let toast_w : Double = 360.0
+
+let toast_h : Double = toast_pill_h + toast_pad_t + toast_pad_b
+
+/// `text` said by the pointer for a moment.
+fn toast(text : String) -> Unit {
+  toast_text.set(text)
+  toast_generation.set(toast_generation.untracked() + 1)
+  if toast_wid.v == 0 {
+    ps_next_win_clear()
+    let wid = ui::window_open_here("toast")
+    if wid <= 0 {
+      log("toast: no window")
+      return
+    }
+    toast_wid.v = wid
+    let _ = ps_own(wid, 1)
+  }
+  ps_toast_place(toast_wid.v, toast_w.to_int(), toast_h.to_int())
+  log("toast \{toast_wid.v}: \{text}")
+}
+
+fn toast_window(root : view::View) -> Unit {
+  root.reacts(fn() { toast_generation.get() }, fn(generation) {
+    let _ = root.at_moment(root.cause_at() + 1600.0, fn() {
+      if toast_wid.v != 0 && generation == toast_generation.untracked() {
+        let wid = toast_wid.v
+        toast_wid.v = 0
+        close_window(wid)
+      }
+    }, later=true)
+  })
+  let _ = root.presses(view::Live::Is(false))
+  // Transparent DirectComposition window carrying an mbui superellipse pill + soft shadow (zero DWM grey border).
+  let _ = root.box(fn(g) {
+    let _ = g
+    .over(view::Live::Is(true))
+    .padding(view::Live::Is((toast_pad_x, toast_pad_t, toast_pad_x, toast_pad_b)))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Start))
+    let _ = g.box(fn(pill) {
+      let _ = pill
+      .height(view::Live::Is(Some(toast_pill_h)))
+      .padding(view::Live::Is((16.0, 0.0, 16.0, 0.0)))
+      .radius(view::Live::Is(11.0))
+      .ground(view::Live::Is(0x1E2026F2L))
+      .edge(view::Live::Is((1.0, 0xFFFFFF22L)))
+      .shadow(view::Live::Is((9.0, 3.0, 0x00000060L)))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      let _ = pill.box(fn(t) {
+        let _ = t
+        .words(view::Live::By(fn() { toast_text.get() }), look=view::WordsLook::{ ..view::words_plain, size: 13.0, weight: 500, line: 18.0, wrap: false })
+        .ink(view::Live::Is(0xF3F5F8FFL))
+      })
+    })
+  })
+}

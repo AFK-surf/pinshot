@@ -1,0 +1,2556 @@
+// Lightweight area screen recorder & post-recording exporter (Windows: record_win.cpp; Mac: record_mac.m):
+// - Captures a selected region into a temporary high-quality MP4 via WGC + optimal GPU hardware cascade
+//   (HEVC hvc1 -> H.264 HW -> H.264 SW) with optional WASAPI system audio (AAC), cursor capture, and optional
+//   mouse-click ripples + keycap overlay.
+// - True DirectComposition transparent window with PinShot's concentric mbui superellipse corners & soft shadow,
+//   content-adaptive width/height (zero dead space, zero clipping in EN or ZH).
+// - All recording & export preferences (FPS, audio, cursor, clicks/keys, format, quality, resolution, GIF fps)
+//   are persisted in settings.json across runs.
+// - Post-recording encoding panel with explicit Format (MP4 H.265 / MP4 H.264 / GIF), Quality (Original / High /
+//   Balanced / Compact with live estimated file sizes on every option), and Size (Original / 1080p / 720p / 480p).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import "hostapi"
+import "motion"
+import "signals"
+import "ui"
+import "view"
+
+fn rec_here() -> Bool {
+  hostapi::platform() == 3 || hostapi::platform() == 0
+}
+
+let rec_wid : ui::Ref[Int] = ui::ref_new(0)
+
+let rec_root : ui::Ref[Option[view::View]] = ui::ref_new(None)
+
+let rec_content : ui::Ref[Option[view::View]] = ui::ref_new(None)
+
+let rec_from_bar : ui::Ref[Option[(Double, Double, Double, Double)]] = ui::ref_new(None)
+
+/// True while the screenshot overlay is kept visible for 1 frame until the recording window presents & uncloaks over it.
+let rec_closing_overlay : ui::Ref[Bool] = ui::ref_new(false)
+
+/// True for Frame 0 when transitioning from the screenshot toolbar so `shell` starts at the exact screenshot toolbar width
+/// and smoothly morphs its length inward to the Ready bar width (with `cur_x` fixed so DWM never teleports the swapchain).
+let rec_morph_in : signals::Signal[Bool] = signals::signal(false)
+
+let rec_handoff_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+
+let rec_placed_size : ui::Ref[(Int, Int)] = ui::ref_new((0, 0))
+
+let rec_part : ui::Ref[Rect] = ui::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+
+let rec_mon : ui::Ref[Rect] = ui::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+
+let rec_work : ui::Ref[Rect] = ui::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+
+let rec_scale : ui::Ref[Double] = ui::ref_new(1.0)
+
+/// Phase: 0 Ready, 1 Recording, 2 Paused, 3 Finalizing master, 4 Export picker, 5 Exporting, 6 Exported, 7 Error.
+let rec_phase : signals::Signal[Int] = signals::signal(0)
+
+/// Recording & export preferences (persisted in settings.json via load_settings / save_settings).
+let rec_fps : signals::Signal[Int] = signals::signal(60)
+
+let rec_cursor : signals::Signal[Bool] = signals::signal(true)
+
+let rec_audio : signals::Signal[Bool] = signals::signal(false)
+
+let rec_input : signals::Signal[Bool] = signals::signal(false)
+
+/// fmt: 0 = MP4 H.265, 1 = MP4 H.264, 2 = GIF, 3 = MP4 AV1
+let rec_exp_fmt : signals::Signal[Int] = signals::signal(0)
+
+/// quality: 0 = Original, 1 = High, 2 = Balanced (default), 3 = Compact
+let rec_exp_qual : signals::Signal[Int] = signals::signal(2)
+
+/// MP4 scale: 0 = 100%, 75 = 75%, 50 = 50%
+let rec_exp_scale : signals::Signal[Int] = signals::signal(0)
+
+/// GIF max long edge: 1080 = <=1080px (default), 720 = <=720px, 0 = Original (100%)
+let rec_exp_gif_scale : signals::Signal[Int] = signals::signal(1080)
+
+fn rec_active_scale(fmt : Int) -> Int {
+  if fmt == 2 { rec_exp_gif_scale.get() } else { rec_exp_scale.get() }
+}
+
+fn rec_active_scale_now(fmt : Int) -> Int {
+  if fmt == 2 { rec_exp_gif_scale.untracked() } else { rec_exp_scale.untracked() }
+}
+
+/// GIF fps: 10, 15 (default), 20
+let rec_exp_gif_fps : signals::Signal[Int] = signals::signal(15)
+
+/// Live & master stats from native side.
+let rec_ms : signals::Signal[Int] = signals::signal(0)
+
+let rec_frames : signals::Signal[Int] = signals::signal(0)
+
+let rec_master_bytes : signals::Signal[Double] = signals::signal(0.0)
+
+let rec_master_audio : signals::Signal[Bool] = signals::signal(false)
+
+let rec_exp_bytes : signals::Signal[Double] = signals::signal(0.0)
+
+let rec_exp_pct : signals::Signal[Int] = signals::signal(0)
+
+let rec_codec : signals::Signal[String] = signals::signal("")
+
+let rec_path : signals::Signal[String] = signals::signal("")
+
+let rec_err : signals::Signal[String] = signals::signal("")
+
+/// Exported files cached for the current recording: canonical combo key -> (path, bytes).
+let rec_exports : Map[String, (String, Double)] = Map::new()
+
+let rec_exports_ver : signals::Signal[Int] = signals::signal(0)
+
+let rec_exporting_key : ui::Ref[String] = ui::ref_new("")
+
+let rec_copied_note : signals::Signal[Bool] = signals::signal(false)
+
+let rec_has_av1 : signals::Signal[Bool] = signals::signal(false)
+
+let rec_preview_key : signals::Signal[String] = signals::signal("")
+
+let rec_preview_seq : ui::Ref[Int] = ui::ref_new(0)
+
+/// Inline 2-step discard confirmation when cancelling an active recording or closing an unexported master.
+let rec_confirm_discard : signals::Signal[Bool] = signals::signal(false)
+
+let rec_discard_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+
+/// Unified Monoid-style fluid tooltip coordinator for the recording window (same delay, glide, anchor & keycap rules as toolbar.mbt).
+let rec_tips : TipScope = TipScope::new()
+
+/// Live resize dimensions readout shown inside the bottom transparent halo while dragging the recording frame.
+let rec_tip : signals::Signal[String] = signals::signal("")
+
+let rec_dim_tip_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+
+/// Whether the Ready bar's FPS dropdown (30 / 60 / 90 / 120 fps) is expanded.
+let rec_fps_open : signals::Signal[Bool] = signals::signal(false)
+
+/// Whether the Ready bar's FPS dropdown opens upward (when there is not enough room below the bar).
+let rec_fps_up : signals::Signal[Bool] = signals::signal(false)
+
+fn rec_fps_should_open_up() -> Bool {
+  if rec_wid.v == 0 {
+    return false
+  }
+  let r = numbers_of(text_of(ps_window_rect(rec_wid.v)))
+  if r.length() < 4 || r[3] <= 0.0 {
+    return false
+  }
+  let m = rec_work.v
+  let k = rec_scale.v
+  let bar_bot = r[1] + r[3] - rec_pad_b * k
+  let room_below = m.bottom().to_double() - bar_bot
+  let room_above = r[1] + rec_pad_t * k - m.y.to_double()
+  let need = 136.0 * k
+  room_below < need && room_above >= need
+}
+
+/// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma so alpha reaches 0 before every window edge).
+let rec_pad_l : Double = 30.0
+
+let rec_pad_t : Double = 26.0
+
+let rec_pad_r : Double = 30.0
+
+let rec_pad_b : Double = 42.0
+
+fn rec_combo_key(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> String {
+  let (ow, oh) = rec_out_dims(max_side)
+  if fmt == 2 {
+    "gif:\{ow}x\{oh}@\{gif_fps}"
+  } else {
+    "mp4:\{fmt}:\{qual}:\{ow}x\{oh}"
+  }
+}
+
+fn rec_current_key() -> String {
+  let fmt = rec_exp_fmt.untracked()
+  rec_combo_key(
+    fmt,
+    rec_exp_qual.untracked(),
+    rec_active_scale_now(fmt),
+    rec_exp_gif_fps.untracked(),
+  )
+}
+
+fn rec_has_exported_fmt(fmt : Int) -> Bool {
+  let _ = rec_exports_ver.get()
+  let prefix = if fmt == 2 { "gif:" } else { "mp4:\{fmt}:" }
+  for k in rec_exports.keys() {
+    if str_has_prefix(k, prefix) {
+      return true
+    }
+  }
+  false
+}
+
+fn rec_has_exported_combo(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> Bool {
+  let _ = rec_exports_ver.get()
+  rec_exports.contains(rec_combo_key(fmt, qual, max_side, gif_fps))
+}
+
+fn rec_clear_preview() -> Unit {
+  let old = rec_preview_key.untracked()
+  if old != "" {
+    ui::forget_image(old)
+    rec_preview_key.set("")
+  }
+}
+
+fn rec_load_preview() -> Unit {
+  rec_clear_preview()
+  let b = ps_rec_preview()
+  if b.length() > 54 {
+    rec_preview_seq.v += 1
+    let key = "mem:rec-prev-\{rec_preview_seq.v}"
+    ui::add_image(key, b)
+    rec_preview_key.set(key)
+  }
+}
+
+fn rec_clear_exports() -> Unit {
+  rec_exports.clear()
+  rec_exporting_key.v = ""
+  rec_copied_note.set(false)
+  rec_exports_ver.set(rec_exports_ver.untracked() + 1)
+}
+
+fn rec_sync_combo_state() -> Unit {
+  if rec_phase.untracked() == 5 {
+    return
+  }
+  let key = rec_current_key()
+  match rec_exports.get(key) {
+    Some((p, b)) => {
+      signals::start_batch()
+      rec_path.set(p)
+      rec_exp_bytes.set(b)
+      rec_copied_note.set(false)
+      rec_phase.set(6)
+      signals::end_batch()
+    }
+    None => {
+      signals::start_batch()
+      rec_copied_note.set(false)
+      if rec_phase.untracked() == 6 || rec_phase.untracked() == 7 {
+        rec_phase.set(4)
+      }
+      signals::end_batch()
+    }
+  }
+}
+
+fn rec_out_dims(scale_param : Int) -> (Int, Int) {
+  let sw = rec_part.v.w
+  let sh = rec_part.v.h
+  if scale_param <= 0 || scale_param == 100 || sw <= 0 || sh <= 0 {
+    (sw, sh)
+  } else if scale_param < 100 {
+    let k = scale_param.to_double() / 100.0
+    let ow = clampi(((sw.to_double() * k + 0.5).to_int()) & -2, 16, sw)
+    let oh = clampi(((sh.to_double() * k + 0.5).to_int()) & -2, 16, sh)
+    (ow, oh)
+  } else if sw <= scale_param && sh <= scale_param {
+    (sw, sh)
+  } else {
+    let long = if sw > sh { sw } else { sh }
+    let k = scale_param.to_double() / long.to_double()
+    let ow = clampi(((sw.to_double() * k + 0.5).to_int()) & -2, 16, sw)
+    let oh = clampi(((sh.to_double() * k + 0.5).to_int()) & -2, 16, sh)
+    (ow, oh)
+  }
+}
+
+fn rec_eff_fps(f : Int) -> Double {
+  if f > 30 {
+    30.0 + (f - 30).to_double() * 0.35
+  } else {
+    f.to_double()
+  }
+}
+
+/// codec_mode: 0 = H.265, 1 = H.264, 3 = AV1
+fn rec_target_bps(codec_mode : Int, qual : Int, w : Int, h : Int, fps : Int) -> Double {
+  let ef = rec_eff_fps(fps)
+  let px = w.to_double() * h.to_double() * ef
+  let qi = clampi(qual, 0, 3)
+  let hi_mul = if fps > 60 { 1.5 } else { 1.0 }
+  if codec_mode == 3 {
+    let bpp = [0.056, 0.036, 0.018, 0.0085][qi]
+    let lo = [650000.0, 400000.0, 200000.0, 110000.0][qi]
+    let hi = [12000000.0, 6000000.0, 2600000.0, 1100000.0][qi] * hi_mul
+    clamp(px * bpp, lo, hi)
+  } else if codec_mode == 0 {
+    let bpp = [0.075, 0.048, 0.024, 0.011][qi]
+    let lo = [900000.0, 550000.0, 280000.0, 150000.0][qi]
+    let hi = [16000000.0, 8000000.0, 3500000.0, 1500000.0][qi] * hi_mul
+    clamp(px * bpp, lo, hi)
+  } else {
+    let bpp = [0.115, 0.072, 0.038, 0.018][qi]
+    let lo = [1300000.0, 800000.0, 420000.0, 220000.0][qi]
+    let hi = [24000000.0, 12000000.0, 5200000.0, 2200000.0][qi] * hi_mul
+    clamp(px * bpp, lo, hi)
+  }
+}
+
+fn rec_is_direct_copy_for(fmt : Int, qual : Int, max_side : Int) -> Bool {
+  let (ow, oh) = rec_out_dims(max_side)
+  let same_dim = ow == rec_part.v.w && oh == rec_part.v.h
+  let master_hevc = str_has_prefix(rec_codec.get(), "HEVC")
+  (fmt == 0 || fmt == 1) && qual == 0 && same_dim && ((fmt == 0) == master_hevc)
+}
+
+/// Estimated output size (bytes) for any (fmt, quality, max_side, gif_fps), anchored to the actual recorded master's
+/// scene complexity so PeakConstrainedVBR estimates stay realistic on both static and high-motion captures.
+fn rec_est_bytes(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> Double {
+  let master = rec_master_bytes.get()
+  if master <= 0.0 {
+    return 0.0
+  }
+  if rec_is_direct_copy_for(fmt, qual, max_side) {
+    return master
+  }
+  let dur_s = dmax(0.2, rec_ms.get().to_double() / 1000.0)
+  let audio_b = if rec_master_audio.get() { dur_s * 16000.0 } else { 0.0 }
+  let master_vid = dmax(4096.0, master - audio_b)
+  let sw = if rec_part.v.w > 0 { rec_part.v.w } else { 1280 }
+  let sh = if rec_part.v.h > 0 { rec_part.v.h } else { 720 }
+  let fps = rec_fps.get()
+  let master_codec = if str_has_prefix(rec_codec.get(), "HEVC") { 0 } else { 1 }
+  let master_bps = rec_target_bps(master_codec, 0, sw, sh, fps)
+  let (ow, oh) = rec_out_dims(max_side)
+  if fmt == 2 {
+    // GIF with proper dirty-rect transparency & frame merge
+    let master_cap = dmax(1.0, master_bps * dur_s / 8.0)
+    let activity = clamp(master_vid / master_cap, 0.08, 1.0)
+    let raw_gif = ow.to_double() * oh.to_double() * gif_fps.to_double() * dur_s * (0.014 + 0.075 * activity)
+    dmax(12288.0, raw_gif)
+  } else {
+    let out_bps = rec_target_bps(fmt, qual, ow, oh, fps)
+    let ratio = out_bps / dmax(1.0, master_bps)
+    let out_cap = out_bps * dur_s / 8.0
+    let scaled = master_vid * (0.22 + 0.78 * ratio)
+    let est_vid = dmin(out_cap * 1.15, dmax(out_cap * 0.20, scaled))
+    est_vid + audio_b
+  }
+}
+
+fn rec_out() -> Unit {
+  if !rec_here() || exporting.v != "" || long_wid.v != 0 || rec_wid.v != 0 {
+    return
+  }
+  let r = match sel.untracked() {
+    Some(_v) => _v
+    None => { return }
+  }
+  let m = mon.v
+  let k = mon_scale.untracked()
+  let rx = m.x + r.x
+  let ry = m.y + r.y
+  let from_bar = toolbar_main_rect()
+  if ps_rec_prepare(rx, ry, r.w, r.h) == 0 {
+    close_capture()
+    toast(tr("选区太小，不能录屏"))
+    return
+  }
+  let nums = numbers_of(text_of(ps_rec_rect()))
+  let part : Rect = if nums.length() >= 4 {
+    Rect::{ x: nums[0].to_int(), y: nums[1].to_int(), w: nums[2].to_int(), h: nums[3].to_int() }
+  } else {
+    Rect::{ x: rx, y: ry, w: r.w, h: r.h }
+  }
+  rec_part.v = part
+  rec_mon.v = m
+  let mw = mon_work.v
+  rec_work.v = if mw.w > 0 && mw.h > 0 {
+    Rect::{ x: m.x + mw.x, y: m.y + mw.y, w: mw.w, h: mw.h }
+  } else {
+    m
+  }
+  rec_scale.v = k
+  rec_from_bar.v = from_bar
+  rec_closing_overlay.v = true
+  rec_placed_size.v = (0, 0)
+  signals::start_batch()
+  rec_morph_in.set(from_bar.is_some())
+  rec_phase.set(0)
+  rec_ms.set(0)
+  rec_frames.set(0)
+  rec_master_bytes.set(0.0)
+  rec_master_audio.set(false)
+  rec_exp_bytes.set(0.0)
+  rec_exp_pct.set(0)
+  rec_codec.set("")
+  rec_path.set("")
+  rec_err.set("")
+  rec_clear_exports()
+  rec_clear_preview()
+  signals::end_batch()
+  ps_rec_input_show(if rec_input.untracked() { 1 } else { 0 })
+  ps_next_win_clear()
+  let wid = ui::window_open_here("rec")
+  if wid <= 0 {
+    log("rec: no window")
+    rec_closing_overlay.v = false
+    close_capture()
+    ps_rec_end()
+    ps_capture_open(0)
+    return
+  }
+  rec_wid.v = wid
+  let _ = ps_own(wid, 1)
+  ps_rec_exclude(wid)
+  let cloaked = ui::env("PINSHOT_TEST_CLOAKED") != ""
+  if cloaked {
+    ps_cloak(wid, 1)
+  }
+  let est_w = if english.untracked() { 362.0 } else { 344.0 }
+  // Place without stealing focus yet while the overlay stays visible underneath; once Frame 0 uncloaks cleanly on top,
+  // rec_window closes the overlay, marks capture_open=1, and focuses & fits the recording bar with zero empty-frame blink.
+  rec_place_initial(est_w + rec_pad_l + rec_pad_r, bar_height + rec_pad_t + rec_pad_b, false)
+  log("rec: ready \{part.w}x\{part.h} at \{part.x},\{part.y}")
+}
+
+/// Initial placement reusing the screenshot toolbar's exact right edge & Y (or under/over the region as fallback),
+/// accounting for the transparent shadow halo.
+fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
+  let m = rec_mon.v
+  let k = rec_scale.v
+  let (x, y, w, h) = match rec_from_bar.v {
+    Some((bx, by, bw, bh)) => {
+      // Exact screenshot toolbar footprint (with transparent shadow halo) so Frame 0 matches pixel-for-pixel
+      // before `shell` morphs horizontally from `bw` down to the Ready bar width with `cur_x` fixed.
+      let ww = ((bw + rec_pad_l + rec_pad_r) * k).ceil().to_int()
+      let hh = ((bh + rec_pad_t + rec_pad_b) * k).ceil().to_int()
+      let xx = clampi(m.x + ((bx - rec_pad_l) * k).round().to_int(), m.x, m.right() - ww)
+      let yy = clampi(m.y + ((by - rec_pad_t) * k).round().to_int(), m.y, m.bottom() - hh)
+      (xx, yy, ww, hh)
+    }
+    None => {
+      let wk = rec_work.v
+      let p = rec_part.v
+      let ww = (pt_w * k).round().to_int()
+      let hh = (pt_h * k).round().to_int()
+      let gap = (8.0 * k).round().to_int()
+      let pad_t = (rec_pad_t * k).round().to_int()
+      let pad_b = (rec_pad_b * k).round().to_int()
+      let xx = clampi(p.x + (p.w - ww) / 2, wk.x, wk.right() - ww)
+      let yy = if p.bottom() + gap - pad_t + hh <= wk.bottom() {
+        p.bottom() + gap - pad_t
+      } else if p.y - gap + pad_b - hh >= wk.y {
+        p.y - gap + pad_b - hh
+      } else {
+        clampi(p.y + (p.h - hh) / 2, wk.y, wk.bottom() - hh)
+      }
+      (xx, yy, ww, hh)
+    }
+  }
+  rec_placed_size.v = (w, h)
+  let do_focus = focus && ui::env("PINSHOT_TEST_CLOAKED") == ""
+  ps_place(rec_wid.v, x, y, w, h, 1, if do_focus { 1 } else { 0 })
+}
+
+let rec_shrink_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+
+/// Measure the inner content box (including its transparent shadow halo) and resize snugly.
+/// When shrinking (e.g. Ready bar -> Recording bar), defer HWND tightening until after the 185ms pill morph finishes
+/// and preserve the left edge (`cur_x`) so DirectComposition never teleports the swapchain for 1 frame.
+fn rec_fit_window(focus : Bool, allow_shrink~ : Bool = false) -> Unit {
+  if rec_wid.v == 0 {
+    return
+  }
+  let content = match rec_content.v {
+    Some(_v) => _v
+    None => { return }
+  }
+  let (cw, ch) = content.laid_size()
+  if cw < 20.0 || ch < 20.0 {
+    return
+  }
+  let m = rec_work.v
+  let k = rec_scale.v
+  let w = (cw * k).ceil().to_int()
+  let h = (ch * k).ceil().to_int()
+  let (pw, ph) = rec_placed_size.v
+  if (w - pw).abs() <= 1 && (h - ph).abs() <= 1 && !focus {
+    return
+  }
+  let shrinking = pw > 0 && ph > 0 && (w < pw - 1 || h < ph - 1)
+  // Pure vertical dropdown open/close in Ready phase: tighten HWND immediately so an upward dropdown never shifts the bar.
+  let instant_dd_shrink = rec_phase.untracked() == 0 && !rec_morph_in.untracked() && (w - pw).abs() <= 4
+  if shrinking && !allow_shrink && !instant_dd_shrink {
+    if focus && ui::env("PINSHOT_TEST_CLOAKED") == "" {
+      let r = numbers_of(text_of(ps_window_rect(rec_wid.v)))
+      if r.length() >= 4 {
+        ps_place(rec_wid.v, r[0].round().to_int(), r[1].round().to_int(), pw, ph, 1, 1)
+      }
+    }
+    (rec_shrink_cancel.v)()
+    match rec_root.v {
+      Some(root) =>
+        rec_shrink_cancel.v = root.at_moment(
+          root.cause_at() + 215.0,
+          fn() {
+            rec_shrink_cancel.v = fn() {  }
+            rec_fit_window(false, allow_shrink=true)
+          },
+          later=true,
+        )
+      None => ()
+    }
+    return
+  }
+  (rec_shrink_cancel.v)()
+  rec_shrink_cancel.v = fn() {  }
+  let r = numbers_of(text_of(ps_window_rect(rec_wid.v)))
+  let anchor_bottom = rec_phase.untracked() == 0 && rec_fps_up.untracked() && ph > 0 && (h - ph).abs() > 1
+  let (x, y) = if r.length() >= 4 && r[2] > 0.0 && r[3] > 0.0 {
+    let cur_x = r[0].round().to_int()
+    let cur_y = r[1].round().to_int()
+    let next_y = if anchor_bottom {
+      clampi(cur_y + ph - h, m.y, m.bottom() - h)
+    } else {
+      clampi(cur_y, m.y, m.bottom() - h)
+    }
+    if shrinking || (w - pw).abs() <= 24 {
+      (clampi(cur_x, m.x, m.right() - w), next_y)
+    } else {
+      let cx = (r[0] + r[2] / 2.0).round().to_int()
+      (clampi(cx - w / 2, m.x, m.right() - w), next_y)
+    }
+  } else {
+    let p = rec_part.v
+    (clampi(p.x + p.w / 2 - w / 2, m.x, m.right() - w), clampi(p.bottom(), m.y, m.bottom() - h))
+  }
+  rec_placed_size.v = (w, h)
+  let do_focus = focus && ui::env("PINSHOT_TEST_CLOAKED") == ""
+  ps_place(rec_wid.v, x, y, w, h, 1, if do_focus { 1 } else { 0 })
+}
+
+fn rec_schedule_fit(focus : Bool) -> Unit {
+  match rec_root.v {
+    Some(root) => {
+      let _ = root.at_moment(root.cause_at() + 1.0, fn() { rec_fit_window(focus) }, later=true)
+    }
+    None => ()
+  }
+}
+
+fn rec_start_now() -> Unit {
+  if rec_wid.v == 0 || rec_phase.untracked() != 0 {
+    return
+  }
+  if rec_closing_overlay.v {
+    rec_closing_overlay.v = false
+    close_capture()
+    ps_capture_open(1)
+  }
+  let fps = rec_fps.untracked()
+  let cur = if rec_cursor.untracked() { 1 } else { 0 }
+  let aud = if rec_audio.untracked() { 1 } else { 0 }
+  signals::start_batch()
+  rec_ms.set(0)
+  rec_frames.set(0)
+  rec_err.set("")
+  rec_fps_open.set(false)
+  rec_clear_exports()
+  rec_phase.set(1)
+  signals::end_batch()
+  ps_rec_input_show(if rec_input.untracked() { 1 } else { 0 })
+  if ps_rec_start(fps, cur, aud) == 0 {
+    rec_err.set(tr("启动录屏失败"))
+    rec_phase.set(7)
+    log("rec: failed to start")
+    return
+  }
+  log("rec: started fps=\{fps} cursor=\{cur} audio=\{aud}")
+}
+
+fn rec_toggle_pause() -> Unit {
+  rec_disarm_discard()
+  let ph = rec_phase.untracked()
+  if ph == 1 {
+    rec_phase.set(2)
+    ps_rec_pause(1)
+  } else if ph == 2 {
+    rec_phase.set(1)
+    ps_rec_pause(0)
+  }
+}
+
+fn rec_finish_capture() -> Unit {
+  rec_disarm_discard()
+  let ph = rec_phase.untracked()
+  if ph != 1 && ph != 2 {
+    return
+  }
+  rec_phase.set(3)
+  ps_rec_stop(0)
+}
+
+fn rec_export_dest(ask_dialog : Bool) -> String {
+  let test_out = ui::env("PINSHOT_TEST_REC_OUT")
+  if test_out != "" && !ask_dialog {
+    return test_out
+  }
+  let ext = if rec_exp_fmt.untracked() == 2 { ".gif" } else { ".mp4" }
+  let name = "PinShot_" + text_of(ps_stamp()) + ext
+  let dir = settings.untracked().save_dir
+  if ask_dialog {
+    text_of(ps_save_dialog(rec_wid.v, cstr(dir), cstr(name)))
+  } else {
+    file_in(dir, name)
+  }
+}
+
+fn rec_run_export(ask_dialog : Bool) -> Unit {
+  rec_disarm_discard()
+  let ph = rec_phase.untracked()
+  if rec_wid.v == 0 || (ph != 4 && ph != 6 && ph != 7) {
+    return
+  }
+  let fmt = rec_exp_fmt.untracked()
+  let qual = rec_exp_qual.untracked()
+  let max_side = rec_active_scale_now(fmt)
+  let gif_fps = rec_exp_gif_fps.untracked()
+  let key = rec_combo_key(fmt, qual, max_side, gif_fps)
+  let mut chosen_dest = ""
+  match rec_exports.get(key) {
+    Some((cached_path, cached_bytes)) =>
+      if !ask_dialog {
+        let test_out = ui::env("PINSHOT_TEST_REC_OUT")
+        let r = ps_rec_reuse(cstr(cached_path), cstr(test_out))
+        if r == 1 {
+          let final_path = if test_out != "" { test_out } else { cached_path }
+          shutter()
+          signals::start_batch()
+          rec_path.set(final_path)
+          rec_exp_bytes.set(cached_bytes)
+          rec_copied_note.set(true)
+          rec_phase.set(6)
+          signals::end_batch()
+          log("rec: reused exported \{key} -> \{final_path}")
+          return
+        } else if r == -1 {
+          rec_err.set(tr("保存文件失败"))
+          rec_phase.set(7)
+          return
+        } else {
+          rec_exports.remove(key)
+          rec_exports_ver.set(rec_exports_ver.untracked() + 1)
+        }
+      } else {
+        chosen_dest = rec_export_dest(true)
+        if chosen_dest == "" {
+          return
+        }
+        let r = ps_rec_reuse(cstr(cached_path), cstr(chosen_dest))
+        if r == 1 {
+          shutter()
+          rec_exports[key] = (chosen_dest, cached_bytes)
+          signals::start_batch()
+          rec_exports_ver.set(rec_exports_ver.untracked() + 1)
+          rec_path.set(chosen_dest)
+          rec_exp_bytes.set(cached_bytes)
+          rec_copied_note.set(false)
+          rec_phase.set(6)
+          signals::end_batch()
+          log("rec: saved-as from cached \{key} -> \{chosen_dest}")
+          return
+        } else if r == -1 {
+          rec_err.set(tr("保存文件失败"))
+          rec_phase.set(7)
+          return
+        } else {
+          rec_exports.remove(key)
+          rec_exports_ver.set(rec_exports_ver.untracked() + 1)
+        }
+      }
+    None => ()
+  }
+  let dest = if chosen_dest != "" { chosen_dest } else { rec_export_dest(ask_dialog) }
+  if dest == "" {
+    return
+  }
+  rec_exporting_key.v = key
+  signals::start_batch()
+  rec_path.set(dest)
+  rec_exp_pct.set(0)
+  rec_err.set("")
+  rec_copied_note.set(false)
+  rec_phase.set(5)
+  signals::end_batch()
+  if ps_rec_export(cstr(dest), fmt, qual, max_side, gif_fps) == 0 {
+    rec_err.set(tr("启动导出失败"))
+    rec_phase.set(7)
+  } else {
+    log("rec: export fmt=\{fmt} q=\{qual} max=\{max_side} gfps=\{gif_fps} -> \{dest}")
+  }
+}
+
+/// Live region resize reported from the pre-recording interactive frame (`record_win.cpp`).
+fn rec_rect_told(x : Int, y : Int, w : Int, h : Int) -> Unit {
+  if rec_wid.v == 0 || w <= 0 || h <= 0 {
+    return
+  }
+  rec_part.v = Rect::{ x, y, w, h }
+  let label = "\{w} × \{h}"
+  rec_tip.set(label)
+  (rec_dim_tip_cancel.v)()
+  match rec_root.v {
+    Some(root) =>
+      rec_dim_tip_cancel.v = root.at_moment(
+        root.cause_at() + 900.0,
+        fn() {
+          rec_dim_tip_cancel.v = fn() {  }
+          if rec_tip.untracked() == label {
+            rec_tip.set("")
+          }
+        },
+        later=true,
+      )
+    None => ()
+  }
+}
+
+/// Whether a hardware AV1 encoder is here, as the native side knows it (-1: not yet, asked on its own thread: told
+/// later as {"do":"rec-av1"}); asked only once a recording is there to export, never as the panel opens.
+fn rec_av1_told(v : Int) -> Unit {
+  if v < 0 {
+    return
+  }
+  signals::start_batch()
+  rec_has_av1.set(v == 1)
+  if rec_exp_fmt.untracked() == 3 && v != 1 {
+    rec_exp_fmt.set(0)
+  }
+  signals::end_batch()
+  rec_schedule_fit(false)
+}
+
+fn rec_disarm_discard() -> Unit {
+  (rec_discard_cancel.v)()
+  rec_discard_cancel.v = fn() {  }
+  if rec_confirm_discard.untracked() {
+    rec_confirm_discard.set(false)
+  }
+}
+
+fn rec_arm_discard() -> Unit {
+  rec_confirm_discard.set(true)
+  (rec_discard_cancel.v)()
+  match rec_root.v {
+    Some(root) =>
+      rec_discard_cancel.v = root.at_moment(
+        root.cause_at() + 3000.0,
+        fn() {
+          rec_discard_cancel.v = fn() {  }
+          rec_confirm_discard.set(false)
+        },
+        later=true,
+      )
+    None => ()
+  }
+}
+
+fn rec_cancel() -> Unit {
+  let ph = rec_phase.untracked()
+  if ph == 5 {
+    // (an export under way called off alone: the recording kept, back to choosing; told "export-cancelled")
+    rec_disarm_discard()
+    ps_rec_export_cancel()
+    return
+  }
+  if ph == 3 {
+    return
+  }
+  let needs_confirm = ((ph == 1 || ph == 2) && rec_ms.untracked() >= 2000) || (ph == 4 && rec_exports.length() == 0)
+  if needs_confirm && !rec_confirm_discard.untracked() {
+    rec_arm_discard()
+    return
+  }
+  rec_disarm_discard()
+  if ph == 1 || ph == 2 {
+    rec_phase.set(3)
+    ps_rec_stop(1)
+  } else {
+    rec_close()
+  }
+}
+
+fn rec_close() -> Unit {
+  if rec_wid.v == 0 {
+    return
+  }
+  ps_rec_end()
+  ps_capture_open(0)
+  let wid = rec_wid.v
+  rec_wid.v = 0
+  close_window(wid)
+  rec_gone()
+}
+
+fn rec_gone() -> Unit {
+  if rec_wid.v != 0 {
+    rec_wid.v = 0
+    ps_rec_end()
+    ps_capture_open(0)
+  }
+  (rec_shrink_cancel.v)()
+  rec_shrink_cancel.v = fn() {  }
+  (rec_handoff_cancel.v)()
+  rec_handoff_cancel.v = fn() {  }
+  rec_disarm_discard()
+  rec_fps_open.set(false)
+  (rec_dim_tip_cancel.v)()
+  rec_dim_tip_cancel.v = fn() {  }
+  rec_tip.set("")
+  rec_tips.off()
+  if rec_closing_overlay.v {
+    rec_closing_overlay.v = false
+    close_capture()
+  }
+  rec_root.v = None
+  rec_content.v = None
+  rec_from_bar.v = None
+  rec_morph_in.set(false)
+  rec_placed_size.v = (0, 0)
+  rec_clear_exports()
+  rec_clear_preview()
+  trim_soon()
+}
+
+fn rec_told(
+  state : String,
+  ms : Int,
+  frames : Int,
+  bytes : Double,
+  orig : Double,
+  pct : Int,
+  audio : Int,
+  codec : String,
+  path : String,
+  err : String,
+) -> Unit {
+  if rec_wid.v == 0 {
+    return
+  }
+  match state {
+    "recording" => {
+      signals::start_batch()
+      if rec_phase.untracked() != 3 {
+        rec_phase.set(1)
+      }
+      rec_ms.set(ms)
+      rec_frames.set(frames)
+      rec_master_audio.set(audio != 0)
+      if codec != "" {
+        rec_codec.set(codec)
+      }
+      signals::end_batch()
+    }
+    "paused" => {
+      signals::start_batch()
+      if rec_phase.untracked() != 3 {
+        rec_phase.set(2)
+      }
+      rec_ms.set(ms)
+      rec_frames.set(frames)
+      signals::end_batch()
+    }
+    "saving" => rec_phase.set(3)
+    "cancelled" => {
+      log("rec: cancelled")
+      rec_close()
+    }
+    "recorded" => {
+      ps_capture_open(0)
+      rec_load_preview()
+      signals::start_batch()
+      rec_ms.set(ms)
+      rec_frames.set(frames)
+      rec_master_bytes.set(bytes)
+      rec_master_audio.set(audio != 0)
+      if codec != "" {
+        rec_codec.set(codec)
+      }
+      rec_phase.set(4)
+      signals::end_batch()
+      rec_schedule_fit(true)
+      rec_av1_told(ps_rec_has_av1())
+      log("rec: master ready \{codec} audio=\{audio} \{frames}f \{ms}ms \{bytes}B")
+    }
+    "export-cancelled" => {
+      signals::start_batch()
+      rec_exp_pct.set(0)
+      rec_phase.set(4)
+      signals::end_batch()
+      rec_schedule_fit(false)
+      log("rec: export cancelled, the recording kept")
+    }
+    "exporting" => {
+      signals::start_batch()
+      rec_phase.set(5)
+      rec_exp_pct.set(pct)
+      signals::end_batch()
+    }
+    "exported" => {
+      shutter()
+      let final_path = if path != "" { path } else { rec_path.untracked() }
+      let k = rec_exporting_key.v
+      signals::start_batch()
+      if k != "" && final_path != "" {
+        rec_exports[k] = (final_path, bytes)
+        rec_exports_ver.set(rec_exports_ver.untracked() + 1)
+      }
+      rec_exp_bytes.set(bytes)
+      if orig > 0.0 {
+        rec_master_bytes.set(orig)
+      }
+      rec_exp_pct.set(100)
+      if final_path != "" {
+        rec_path.set(final_path)
+      }
+      rec_copied_note.set(false)
+      rec_phase.set(6)
+      signals::end_batch()
+      rec_schedule_fit(false)
+      log("rec: exported \{codec} \{bytes}B (orig \{orig}B) -> \{final_path}")
+    }
+    "export-error" => {
+      signals::start_batch()
+      rec_err.set(if err != "" { tr(err) } else { tr("导出失败") })
+      rec_phase.set(7)
+      signals::end_batch()
+      rec_schedule_fit(false)
+      log("rec: export-error \{err}")
+    }
+    "error" => {
+      // (the recording's frame and its clicks' overlay let go: no recording runs)
+      ps_rec_stop(1)
+      ps_capture_open(0)
+      signals::start_batch()
+      rec_err.set(if err != "" { tr(err) } else { tr("录屏失败") })
+      rec_phase.set(7)
+      signals::end_batch()
+      rec_schedule_fit(false)
+      log("rec: error \{err}")
+    }
+    _ => ()
+  }
+}
+
+fn rec_fmt_time(ms : Int) -> String {
+  let total_s = ms / 1000
+  let mins = total_s / 60
+  let secs = total_s % 60
+  let m_s = if mins < 10 { "0" + mins.to_string() } else { mins.to_string() }
+  let s_s = if secs < 10 { "0" + secs.to_string() } else { secs.to_string() }
+  "\{m_s}:\{s_s}"
+}
+
+fn rec_fmt_size(bytes : Double) -> String {
+  if bytes < 1024.0 {
+    "\{bytes.to_int()} B"
+  } else if bytes < 1024.0 * 1024.0 {
+    let kb = (bytes / 1024.0).round().to_int()
+    "\{kb} KB"
+  } else {
+    let mb10 = (bytes / (1024.0 * 1024.0) * 10.0).round().to_int()
+    let whole = mb10 / 10
+    let frac = mb10 % 10
+    "\{whole}.\{frac} MB"
+  }
+}
+
+fn rec_current_est_bytes() -> Double {
+  let fmt = rec_exp_fmt.get()
+  rec_est_bytes(fmt, rec_exp_qual.get(), rec_active_scale(fmt), rec_exp_gif_fps.get())
+}
+
+fn rec_est_saved_pct() -> Int {
+  let orig = rec_master_bytes.get()
+  let est = rec_current_est_bytes()
+  if orig > 0.0 && est > 0.0 && est < orig * 0.96 {
+    let pct = ((orig - est) / orig * 100.0).round().to_int()
+    if pct > 0 { pct } else { 0 }
+  } else {
+    0
+  }
+}
+
+fn rec_keys() -> view::Keymap {
+  let k = fn(code : Int, action : String, mods : Int) -> view::Binding {
+    view::Binding::{ keys: [view::Stroke::{ code, mods }], action, when: view::KeyWhen::Always }
+  }
+  let ch = fn(c : Char, action : String, mods : Int) { k(ui::key_of_char(c), action, mods) }
+  let ctrl = shortcut_mod()
+  view::Keymap::new([
+    k(ui::key_escape, "cancel", 0),
+    k(ui::key_code_enter, "primary", 0),
+    k(ui::key_space, "space", 0),
+    ch('c', "copy", ctrl),
+    k(ui::key_code_copy, "copy", ctrl),
+    ch('s', "save", ctrl),
+  ])
+}
+
+fn rec_tip_follow(
+  v : view::View,
+  label_fn : () -> String,
+  keys~ : () -> String  = fn() { "" },
+  side~ : view::Side = view::Side::Bottom,
+  live~ : () -> Bool  = fn() { true },
+) -> Unit {
+  rec_tips.follow(
+    v,
+    label_fn,
+    side,
+    keys=keys,
+    live=fn() { live() && !rec_fps_open.get() && !rec_confirm_discard.get() },
+  )
+}
+
+/// Concentric superellipse icon button (32x32pt, r=11pt on main bar; 28x28pt, r=9pt on export header).
+fn rec_icon_btn(
+  row : view::View,
+  glyph_fn : () -> String,
+  label_fn : () -> String,
+  lit : () -> Bool,
+  press : () -> Unit,
+  keys~ : () -> String  = fn() { "" },
+  size~ : Double = bar_button,
+  rad~ : Double = bar_btn_corner,
+  dim~ : () -> Bool  = fn() { false },
+  danger~ : () -> Bool  = fn() { false },
+  tint_lit~ : Int64 = 0x88C8FFFFL,
+  bg_lit~ : Int64 = 0x2F9BFF29L,
+) -> Unit {
+  let _ = row.box(fn(b) {
+    let hov = smooth_hover(b, live=fn() { !dim() })
+    tactile_press(b, live=fn() { !dim() })
+    rec_tip_follow(b, label_fn, keys=keys, live=fn() { !dim() })
+    let _ = b
+    .width(view::Live::Is(Some(size)))
+    .height(view::Live::Is(Some(size)))
+    .shrink(view::Live::Is(0.0))
+    .radius(view::Live::Is(rad))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Middle))
+    .presses(view::Live::Is(true))
+    .cursor(view::Live::By(fn() { if dim() { None } else { Some(view::Cursor::Hand) } }))
+    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr(label_fn()))) }))
+    .on_press(fn() { if !dim() { press() } })
+    .ground(view::Live::By(fn() {
+      if dim() {
+        0L
+      } else if danger() {
+        mix_rgba(0xD4333944L, 0xD4333966L, hov())
+      } else if b.pressed() {
+        0xFFFFFF2EL
+      } else if lit() {
+        mix_rgba(bg_lit, 0x2F9BFF3DL, hov())
+      } else {
+        mix_rgba(0L, 0xFFFFFF20L, hov())
+      }
+    }))
+    let _ = b.box(fn(g) {
+      let _ = g
+      .width(view::Live::Is(Some(16.0)))
+      .height(view::Live::Is(Some(16.0)))
+      .picture(view::Live::By(fn() { Some(glyph(glyph_fn())) }))
+      .tint(view::Live::By(fn() {
+        if dim() {
+          0xFFFFFF66L
+        } else if danger() {
+          0xFCA5A5FFL
+        } else if lit() {
+          tint_lit
+        } else {
+          mix_rgba(0xEAECEFFFL, 0xFFFFFFFFL, hov())
+        }
+      }))
+    })
+  })
+}
+
+
+fn rec_action_btn(
+  row : view::View,
+  dot_color : Option[Int64],
+  glyph_name : Option[String],
+  label_fn : () -> String,
+  bg : Int64,
+  bg_hover : Int64,
+  bg_press : Int64,
+  press : () -> Unit,
+  height~ : Double = bar_button,
+  rad~ : Double = bar_btn_corner,
+  dim~ : () -> Bool  = fn() { false },
+) -> Unit {
+  let _ = row.box(fn(b) {
+    let hov = smooth_hover(b, live=fn() { !dim() })
+    tactile_press(b, live=fn() { !dim() })
+    let _ = b
+    .row(view::Live::Is(true))
+    .gap(view::Live::Is(6.0))
+    .height(view::Live::Is(Some(height)))
+    .shrink(view::Live::Is(0.0))
+    .padding(view::Live::Is((12.0, 0.0, 12.0, 0.0)))
+    .radius(view::Live::Is(rad))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Middle))
+    .presses(view::Live::Is(true))
+    .cursor(view::Live::By(fn() { if dim() { None } else { Some(view::Cursor::Hand) } }))
+    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr(label_fn()))) }))
+    .on_press(fn() { if !dim() { press() } })
+    .ground(view::Live::By(fn() {
+      if dim() {
+        0xFFFFFF14L
+      } else if b.pressed() {
+        bg_press
+      } else {
+        mix_rgba(bg, bg_hover, hov())
+      }
+    }))
+    match dot_color {
+      Some(c) => {
+        let _ = b.box(fn(d) {
+          let _ = d.width(view::Live::Is(Some(8.0))).height(view::Live::Is(Some(8.0))).shrink(view::Live::Is(0.0)).radius(view::Live::Is(4.0)).ground(view::Live::Is(c))
+        })
+      }
+      None => ()
+    }
+    match glyph_name {
+      Some(gn) => {
+        let _ = b.box(fn(g) {
+          let _ = g.width(view::Live::Is(Some(14.0))).height(view::Live::Is(Some(14.0))).shrink(view::Live::Is(0.0)).picture(view::Live::Is(Some(glyph(gn)))).tint(view::Live::Is(0xFFFFFFFFL))
+        })
+      }
+      None => ()
+    }
+    let _ = b.box(fn(t) {
+      let _ = t
+      .shrink(view::Live::Is(0.0))
+      .words(view::Live::By(label_fn), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 600, line: 16.0, wrap: false })
+      .ink(view::Live::By(fn() { if dim() { 0xFFFFFF59L } else { 0xFFFFFFFFL } }))
+    })
+  })
+}
+
+
+/// Crisp format tab inside the Studio HUD top strip (white active pill glides underneath via sliding_thumb).
+fn rec_tab_item(
+  track : view::View,
+  key : Int,
+  views : Map[Int, view::View],
+  label_fn : () -> String,
+  active : () -> Bool,
+  press : () -> Unit,
+  done_dot~ : () -> Bool  = fn() { false },
+) -> Unit {
+  let _ = track.box(fn(b) {
+    views[key] = b
+    let live = fn() { rec_phase.get() != 5 }
+    let hov = smooth_hover(b, live=live)
+    let act = motion::eased_on(b, active, motion::tween(130.0, ease=ui::Ease::Out))
+    tactile_press(b, live=live, sink_px=0.9)
+    let _ = b
+    .row(view::Live::Is(true))
+    .height(view::Live::Is(Some(24.0)))
+    .gap(view::Live::Is(4.0))
+    .padding(view::Live::Is((9.0, 0.0, 9.0, 0.0)))
+    .shrink(view::Live::Is(0.0))
+    .radius(view::Live::Is(6.5))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Middle))
+    .presses(view::Live::Is(true))
+    .cursor(view::Live::By(fn() { if rec_phase.get() == 5 { None } else { Some(view::Cursor::Hand) } }))
+    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr(label_fn()))) }))
+    .on_press(fn() {
+      if rec_phase.untracked() != 5 {
+        rec_disarm_discard()
+        press()
+        rec_sync_combo_state()
+        save_settings()
+      }
+    })
+    .ground(view::Live::By(fn() {
+      if active() {
+        0L
+      } else {
+        mix_rgba(0L, 0xFFFFFF18L, hov())
+      }
+    }))
+    let _ = b.box(fn(t) {
+      let _ = t
+      .shrink(view::Live::Is(0.0))
+      .words(view::Live::By(label_fn), look=view::WordsLook::{ ..view::words_plain, size: 11.0, weight: 600, line: 14.0, wrap: false })
+      .ink(view::Live::By(fn() {
+        let rest = mix_rgba(0xA6ADBCFFL, 0xE2E6F0FFL, hov())
+        mix_rgba(rest, 0x121317FFL, act.shown(t))
+      }))
+    })
+    b.show(done_dot, fn(d) {
+      enter_reveal(d, ms=130.0, dy=0.0, from_scale=0.4)
+      let _ = d
+      .width(view::Live::Is(Some(4.5)))
+      .height(view::Live::Is(Some(4.5)))
+      .shrink(view::Live::Is(0.0))
+      .radius(view::Live::Is(2.25))
+      .ground(view::Live::By(fn() { mix_rgba(0x34D399FFL, 0x10B981FFL, act.shown(d)) }))
+    }, at_once=true)
+  })
+}
+
+/// Borderless lightweight inline option pill (glass active pill glides smoothly underneath via sliding_thumb).
+fn rec_inline_opt(
+  row : view::View,
+  key : Int,
+  views : Map[Int, view::View],
+  label_fn : () -> String,
+  active : () -> Bool,
+  press : () -> Unit,
+  done_dot~ : () -> Bool  = fn() { false },
+) -> Unit {
+  let _ = row.box(fn(b) {
+    views[key] = b
+    let live = fn() { rec_phase.get() != 5 }
+    let hov = smooth_hover(b, live=live)
+    let act = motion::eased_on(b, active, motion::tween(130.0, ease=ui::Ease::Out))
+    tactile_press(b, live=live, sink_px=0.9)
+    let _ = b
+    .row(view::Live::Is(true))
+    .height(view::Live::Is(Some(24.0)))
+    .gap(view::Live::Is(4.0))
+    .padding(view::Live::Is((8.5, 0.0, 8.5, 0.0)))
+    .shrink(view::Live::Is(0.0))
+    .radius(view::Live::Is(6.5))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Middle))
+    .presses(view::Live::Is(true))
+    .cursor(view::Live::By(fn() { if rec_phase.get() == 5 { None } else { Some(view::Cursor::Hand) } }))
+    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr(label_fn()))) }))
+    .on_press(fn() {
+      if rec_phase.untracked() != 5 {
+        rec_disarm_discard()
+        press()
+        rec_sync_combo_state()
+        save_settings()
+      }
+    })
+    .ground(view::Live::By(fn() {
+      if active() {
+        0L
+      } else {
+        mix_rgba(0L, 0xFFFFFF16L, hov())
+      }
+    }))
+    let _ = b.box(fn(t) {
+      let _ = t
+      .shrink(view::Live::Is(0.0))
+      .words(view::Live::By(label_fn), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+      .ink(view::Live::By(fn() {
+        let rest = mix_rgba(0xA6ADBCFFL, 0xE2E6F0FFL, hov())
+        mix_rgba(rest, 0xF8F9FCFFL, act.shown(t))
+      }))
+    })
+    b.show(done_dot, fn(d) {
+      enter_reveal(d, ms=130.0, dy=0.0, from_scale=0.4)
+      let _ = d.width(view::Live::Is(Some(4.5))).height(view::Live::Is(Some(4.5))).shrink(view::Live::Is(0.0)).radius(view::Live::Is(2.25)).ground(view::Live::Is(0x34D399FFL))
+    }, at_once=true)
+  })
+}
+
+/// Airy horizontal property row: muted label left, lightweight borderless inline pills right with gliding thumb.
+fn rec_prop_row(
+  parent : view::View,
+  label_key : String,
+  active_key : () -> Int,
+  build : (view::View, Map[Int, view::View]) -> Unit,
+) -> Unit {
+  let _ = parent.box(fn(r) {
+    let _ = r.row(view::Live::Is(true)).gap(view::Live::Is(8.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).shrink(view::Live::Is(0.0))
+    let _ = r.box(fn(t) {
+      let _ = t
+      .shrink(view::Live::Is(0.0))
+      .words(view::Live::By(fn() { tr(label_key) }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 400, line: 15.0, wrap: false })
+      .ink(view::Live::Is(0xA2A9B8FFL))
+    })
+    let _ = r.box(fn(sp) { let _ = sp.grow(view::Live::Is(1.0)) })
+    let _ = r.box(fn(opts) {
+      let _ = opts.row(view::Live::Is(true)).gap(view::Live::Is(2.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).shrink(view::Live::Is(0.0))
+      let views : Map[Int, view::View] = Map::new()
+      sliding_thumb(
+        opts,
+        active_key,
+        views,
+        6.5,
+        fn() { 0xFFFFFF2EL },
+        extra_watch=fn() { rec_exports_ver.get() + (if english.get() { 1000 } else { 0 }) },
+      )
+      build(opts, views)
+    })
+  })
+}
+
+
+fn rec_window(root : view::View) -> Unit {
+  rec_root.v = Some(root)
+  root.tree.hand_over_presses(false)
+  let _ = root.keymap(view::Live::Is(rec_keys()))
+  let _ = root.on_action("cancel", fn(_) {
+    let ph = rec_phase.untracked()
+    if ph == 0 && rec_fps_open.untracked() {
+      rec_fps_open.set(false)
+      return true
+    }
+    if ph == 1 || ph == 2 {
+      return true
+    }
+    rec_cancel()
+    true
+  })
+  let _ = root.on_action("primary", fn(_) {
+    match rec_phase.untracked() {
+      0 => rec_start_now()
+      1 | 2 => rec_finish_capture()
+      4 | 6 => rec_run_export(false)
+      7 => rec_close()
+      _ => ()
+    }
+    true
+  })
+  let _ = root.on_action("space", fn(_) {
+    match rec_phase.untracked() {
+      0 => rec_start_now()
+      1 | 2 => rec_toggle_pause()
+      _ => ()
+    }
+    true
+  })
+  let _ = root.on_action("copy", fn(_) {
+    match rec_phase.untracked() {
+      4 | 6 | 7 => {
+        rec_run_export(false)
+        true
+      }
+      _ => false
+    }
+  })
+  let _ = root.on_action("save", fn(_) {
+    match rec_phase.untracked() {
+      4 | 6 | 7 => {
+        rec_run_export(true)
+        true
+      }
+      _ => false
+    }
+  })
+
+  root.reacts(fn() { rec_phase.get() }, at_start=false, fn(_) {
+    rec_tip.set("")
+    rec_tips.off()
+    rec_fps_open.set(false)
+    rec_fps_up.set(false)
+    rec_disarm_discard()
+  })
+
+  // Re-measure and adapt window dimensions cleanly whenever UI structure/labels change (never on timer ticks or late codec init).
+  root.reacts(fn() {
+    (
+      rec_phase.get(),
+      rec_morph_in.get(),
+      rec_fps_open.get(),
+      rec_fps.get(),
+      rec_exp_fmt.get(),
+      rec_exp_qual.get(),
+      rec_exp_scale.get(),
+      rec_exp_gif_scale.get(),
+      rec_exp_gif_fps.get(),
+      rec_master_audio.get(),
+      rec_exports_ver.get(),
+      rec_copied_note.get(),
+      english.get(),
+    )
+  }, fn(_) { rec_schedule_fit(false) })
+
+  // Transparent page over DirectComposition so the inner superellipse bar/panel + soft shadow float natively
+  let _ = root.box(fn(page) {
+    let _ = page.over(view::Live::Is(true)).lines_up(view::Live::Is(Some(view::Along::Start)))
+
+    // Content wrapper including transparent shadow halo whose laid_size() drives exact window size
+    let _ = page.box(fn(content) {
+      rec_content.v = Some(content)
+      let _ = content
+      .shrink(view::Live::Is(0.0))
+      .padding(view::Live::Is((rec_pad_l, rec_pad_t, rec_pad_r, rec_pad_b)))
+      .lines_up(view::Live::Is(Some(view::Along::Start)))
+
+      // Upward-unfolding FPS dropdown menu (above Ready bar when near the bottom of the monitor)
+      content.show(fn() { rec_phase.get() == 0 && rec_fps_open.get() && rec_fps_up.get() }, fn(dd_wrap) {
+        rec_fps_menu_view(dd_wrap, true)
+      }, at_once=true)
+
+      // Unified morphing superellipse shell: smoothly reshapes across Ready bar -> Recording bar -> Finalizing pill -> Studio HUD card
+      let _ = content.box(fn(shell) {
+        let is_exp = fn() { rec_phase.get() >= 4 }
+        let exp_p = motion::eased_on(shell, is_exp, motion::tween(185.0, ease=ui::Ease::Out))
+        let rec_moves_ref : ui::Ref[Option[motion::Moves]] = ui::ref_new(None)
+        let rec_parts : Array[view::View] = []
+        let track_part = fn(v : view::View) {
+          match rec_moves_ref.v {
+            Some(m) => m.moves_with(v)
+            None => rec_parts.push(v)
+          }
+        }
+        if rec_from_bar.v.is_none() {
+          enter_reveal(shell, ms=145.0, dy=4.0, from_scale=0.975)
+        }
+        let _ = shell
+        .shrink(view::Live::Is(0.0))
+        .min_width(view::Live::By(fn() {
+          if rec_morph_in.get() {
+            match rec_from_bar.v {
+              Some((_, _, bw, _)) => Some(bw)
+              None => None
+            }
+          } else {
+            None
+          }
+        }))
+        .radius(view::Live::By(fn() { if is_exp() { 18.0 } else { bar_corner } }))
+        .ground(view::Live::By(fn() { mix_rgba(0x18191DF7L, 0x141519F8L, exp_p.shown(shell)) }))
+        .edge(view::Live::By(fn() { (1.0, mix_rgba(0xFFFFFF2EL, 0xFFFFFF28L, exp_p.shown(shell))) }))
+        .shadow(view::Live::By(fn() { if is_exp() { (11.0, 4.0, 0x0000007AL) } else { (9.0, 3.0, 0x00000058L) } }))
+
+        // ---- Phases 0..3: Concentric superellipse floating recording bar (matches toolbar.mbt) ----
+        shell.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
+          let _ = bar
+          .row(view::Live::Is(true))
+          .gap(view::Live::Is(bar_gap))
+          .height(view::Live::Is(Some(bar_height)))
+          .shrink(view::Live::Is(0.0))
+          .padding(view::Live::Is((10.0, bar_pad, bar_pad, bar_pad)))
+          .lines_up(view::Live::Is(Some(view::Along::Middle)))
+
+          // Phase 3: Finalizing master
+          bar.show(fn() { rec_phase.get() == 3 }, fn(r) {
+            enter_reveal(r, ms=130.0, dy=0.0, from_scale=0.97)
+            let _ = r
+            .row(view::Live::Is(true))
+            .min_width(view::Live::Is(Some(180.0)))
+            .padding(view::Live::Is((6.0, 0.0, 10.0, 0.0)))
+            .shrink(view::Live::Is(0.0))
+            .lines_up(view::Live::Is(Some(view::Along::Middle)))
+            .lies_along(view::Live::Is(view::Lies::Middle))
+            let _ = r.box(fn(w) {
+              let _ = w
+              .shrink(view::Live::Is(0.0))
+              .words(view::Live::By(fn() { tr("正在收尾录屏…") }), look=view::WordsLook::{ ..view::words_plain,
+                size: 13.0,
+                weight: 500,
+                line: 18.0,
+                wrap: false,
+              })
+              .ink(view::Live::Is(0xD6DAE0FFL))
+            })
+          }, at_once=true)
+
+          // Phases 0, 1, 2: Ready / Recording / Paused
+          bar.show(fn() { rec_phase.get() >= 0 && rec_phase.get() <= 2 }, fn(r) {
+            if rec_from_bar.v.is_some() {
+              // Start softly visible (0.35 -> 1.0) so Frame 0 already shows controls while the pill morphs narrower.
+              let fade = motion::NodeWay::new(0.0)
+              fade.go_from(r, 0.0, 1.0, motion::tween(150.0, ease=ui::Ease::Out))
+              let _ = r.alpha(view::Live::By(fn() { 0.35 + 0.65 * fade.shown(r) }))
+            }
+            let _ = r.row(view::Live::Is(true)).grow(view::Live::Is(1.0)).gap(view::Live::Is(bar_gap)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
+
+            // Draggable left status + tabular timer
+            let _ = r.box(fn(drag) {
+              track_part(drag)
+              let _ = drag
+              .row(view::Live::Is(true))
+              .gap(view::Live::Is(7.0))
+              .height(view::Live::Is(Some(bar_button)))
+              .shrink(view::Live::Is(0.0))
+              .padding(view::Live::Is((0.0, 0.0, 4.0, 0.0)))
+              .lines_up(view::Live::Is(Some(view::Along::Middle)))
+              .presses(view::Live::Is(true))
+              .on_drag(fn(d) {
+                if d.kind == view::DragIs::Down && rec_wid.v != 0 {
+                  ps_move_window(rec_wid.v)
+                }
+              }, whole=true)
+              let _ = drag.box(fn(dot) {
+                let pulse = motion::breathe_alpha(
+                  dot,
+                  period_ms=1100.0,
+                  low=0.35,
+                  resident=true,
+                  still=fn() { rec_phase.get() != 1 },
+                )
+                let _ = dot
+                .width(view::Live::Is(Some(8.0)))
+                .height(view::Live::Is(Some(8.0)))
+                .shrink(view::Live::Is(0.0))
+                .radius(view::Live::Is(4.0))
+                .alpha(view::Live::By(pulse))
+                .ground(view::Live::By(fn() {
+                  match rec_phase.get() {
+                    1 => 0xEF4444FFL
+                    2 => 0xF5A524FFL
+                    _ => accent
+                  }
+                }))
+              })
+              // Fixed min-width + odometer rolling tabular timer
+              let _ = drag.box(fn(tm_box) {
+                let _ = tm_box.min_width(view::Live::Is(Some(40.0))).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Start)))
+                rolling_label(
+                  tm_box,
+                  fn() { (rec_ms.get() / 1000).to_double() },
+                  fn(sec) { rec_fmt_time(sec.to_int() * 1000) },
+                  13.0,
+                  18.0,
+                  600,
+                  fn() { if rec_phase.get() == 0 { 0xD0D5DFFFL } else { 0xFFFFFFFFL } },
+                )
+              })
+            })
+
+            // FPS / codec pill (dropdown in Ready for 30 / 60 / 90 / 120 fps; persisted in settings.json)
+            let _ = r.box(fn(fps_b) {
+              track_part(fps_b)
+              let hov = smooth_hover(fps_b, live=fn() { rec_phase.get() == 0 })
+              tactile_press(fps_b, live=fn() { rec_phase.get() == 0 }, sink_px=0.9)
+              rec_tip_follow(fps_b, fn() { tr("点击切换帧率") }, live=fn() { rec_phase.get() == 0 && !rec_fps_open.get() })
+              let _ = fps_b
+              .row(view::Live::Is(true))
+              .gap(view::Live::Is(3.5))
+              .min_width(view::Live::Is(Some(56.0)))
+              .height(view::Live::Is(Some(26.0)))
+              .shrink(view::Live::Is(0.0))
+              .padding(view::Live::Is((8.0, 0.0, 7.0, 0.0)))
+              .radius(view::Live::Is(style_btn_corner))
+              .lines_up(view::Live::Is(Some(view::Along::Middle)))
+              .lies_along(view::Live::Is(view::Lies::Middle))
+              .presses(view::Live::Is(true))
+              .cursor(view::Live::By(fn() { if rec_phase.get() == 0 { Some(view::Cursor::Hand) } else { None } }))
+              .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label="\{rec_fps.get()}fps")) }))
+              .on_press(fn() {
+                if rec_phase.untracked() == 0 {
+                  let next = !rec_fps_open.untracked()
+                  if next {
+                    rec_fps_up.set(rec_fps_should_open_up())
+                  }
+                  rec_fps_open.set(next)
+                }
+              })
+              .ground(view::Live::By(fn() {
+                if rec_phase.get() == 0 && rec_fps_open.get() {
+                  0xFFFFFF2EL
+                } else {
+                  mix_rgba(0xFFFFFF18L, 0xFFFFFF26L, hov())
+                }
+              }))
+              let _ = fps_b.box(fn(w) {
+                let _ = w
+                .shrink(view::Live::Is(0.0))
+                .words(
+                  view::Live::By(fn() {
+                    if rec_phase.get() == 2 {
+                      tr("已暂停")
+                    } else {
+                      "\{rec_fps.get()}fps"
+                    }
+                  }),
+                  look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false },
+                )
+                .ink(view::Live::By(fn() {
+                  if rec_phase.get() == 2 {
+                    0xF5A524FFL
+                  } else if rec_phase.get() == 0 && rec_fps_open.get() {
+                    0xFFFFFFFFL
+                  } else {
+                    0xD0D5DFFFL
+                  }
+                }))
+              })
+              fps_b.show(fn() { rec_phase.get() == 0 }, fn(ch) {
+                let _ = ch
+                .width(view::Live::Is(Some(10.0)))
+                .height(view::Live::Is(Some(10.0)))
+                .shrink(view::Live::Is(0.0))
+                .picture(view::Live::Is(Some(glyph("chevron-down"))))
+                .tint(view::Live::By(fn() { if rec_fps_open.get() { 0xFFFFFFFFL } else { mix_rgba(0xA6ADBCFFL, 0xE2E6F0FFL, hov()) } }))
+              }, at_once=true)
+            })
+
+            // Pre-recording switches (System audio, Cursor, Click & keycap overlay): hidden once recording starts
+            r.show(fn() { rec_phase.get() == 0 }, fn(opts) {
+              let _ = opts.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
+              rec_icon_btn(
+                opts,
+                fn() { if rec_audio.get() { "speaker" } else { "speaker-off" } },
+                fn() { if rec_audio.get() { tr("系统声音：开") } else { tr("系统声音：关") } },
+                fn() { rec_audio.get() },
+                fn() {
+                  rec_fps_open.set(false)
+                  rec_audio.set(!rec_audio.untracked())
+                  save_settings()
+                },
+              )
+              rec_icon_btn(
+                opts,
+                fn() { "select" },
+                fn() { if rec_cursor.get() { tr("录制光标：开") } else { tr("录制光标：关") } },
+                fn() { rec_cursor.get() },
+                fn() {
+                  rec_fps_open.set(false)
+                  rec_cursor.set(!rec_cursor.untracked())
+                  save_settings()
+                },
+              )
+              rec_icon_btn(
+                opts,
+                fn() { "keycap" },
+                fn() { if rec_input.get() { tr("按键与点击显示：开") } else { tr("按键与点击显示：关") } },
+                fn() { rec_input.get() },
+                fn() {
+                  rec_fps_open.set(false)
+                  let next = !rec_input.untracked()
+                  rec_input.set(next)
+                  ps_rec_input_show(if next { 1 } else { 0 })
+                  save_settings()
+                },
+              )
+            }, at_once=true)
+
+            bar_rule_node(r)
+            r.show(fn() { rec_morph_in.get() }, fn(sp) { let _ = sp.grow(view::Live::Is(1.0)) }, at_once=true)
+            r.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(pb) {
+              enter_reveal(pb, ms=130.0, dy=0.0, from_scale=0.92)
+              let _ = pb.shrink(view::Live::Is(0.0))
+              rec_icon_btn(
+                pb,
+                fn() { if rec_phase.get() == 2 { "play" } else { "pause" } },
+                fn() { if rec_phase.get() == 2 { "继续" } else { "暂停" } },
+                fn() { rec_phase.get() == 2 },
+                rec_toggle_pause,
+                keys=fn() { "Space" },
+                tint_lit=0xF5A524FFL,
+                bg_lit=0xF5A52426L,
+              )
+            }, at_once=true)
+            // Right-edge action pair (constant width -> rides lock-step 4pt inside the morphing pill right edge!)
+            let _ = r.box(fn(acts) {
+              track_part(acts)
+              let _ = acts.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
+              rec_icon_btn(
+                acts,
+                fn() { "close" },
+                fn() {
+                  if rec_confirm_discard.get() {
+                    "再按一次丢弃"
+                  } else if rec_phase.get() == 0 {
+                    "取消"
+                  } else {
+                    "丢弃录制"
+                  }
+                },
+                fn() { false },
+                rec_cancel,
+                keys=fn() { if rec_phase.get() == 0 && !rec_confirm_discard.get() { "Esc" } else { "" } },
+                danger=fn() { rec_confirm_discard.get() },
+              )
+              acts.show(fn() { rec_phase.get() == 0 }, fn(sb) {
+                let _ = sb.shrink(view::Live::Is(0.0))
+                rec_action_btn(
+                  sb,
+                  Some(0xFFFFFFFFL),
+                  None,
+                  fn() { tr("录制") },
+                  0xD43339FFL,
+                  0xE04046FFL,
+                  0xBC282EFFL,
+                  rec_start_now,
+                )
+              }, at_once=true)
+              acts.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(sb) {
+                let _ = sb.shrink(view::Live::Is(0.0))
+                rec_action_btn(
+                  sb,
+                  None,
+                  Some("stop"),
+                  fn() { tr("停止") },
+                  0xD43339FFL,
+                  0xE04046FFL,
+                  0xBC282EFFL,
+                  rec_finish_capture,
+                )
+              }, at_once=true)
+            })
+          }, at_once=true)
+        }, at_once=true)
+
+        // ---- Phases 4..7: Landscape Studio HUD floating export card (>= 520 x ~204pt) ----
+        shell.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
+          enter_reveal(exp, ms=165.0, dy=0.0, from_scale=0.985)
+          let _ = exp
+          .row(view::Live::Is(true))
+          .gap(view::Live::Is(12.0))
+          .min_width(view::Live::Is(Some(520.0)))
+          .shrink(view::Live::Is(0.0))
+          .padding(view::Live::Is((10.0, 10.0, 10.0, 10.0)))
+          .lines_up(view::Live::Is(Some(view::Along::Middle)))
+
+        // 1. Left: Rounded full-bleed first-frame clip card (176 x 184pt, draggable)
+        let _ = exp.box(fn(left) {
+          let _ = left
+          .width(view::Live::Is(Some(176.0)))
+          .height(view::Live::Is(Some(184.0)))
+          .shrink(view::Live::Is(0.0))
+          .radius(view::Live::Is(11.0))
+          .clips(view::Live::Is(true))
+          .ground(view::Live::Is(0x0E1015FFL))
+          .edge(view::Live::Is((1.0, 0xFFFFFF14L)))
+          .presses(view::Live::Is(true))
+          .on_drag(fn(d) {
+            if d.kind == view::DragIs::Down && rec_wid.v != 0 {
+              ps_move_window(rec_wid.v)
+            }
+          }, whole=true)
+
+          // Full-bleed cover preview (with silky bottom dark scrim composited in build_preview_bmp)
+          let _ = left.box(fn(pic) {
+            let _ = pic
+            .over(view::Live::Is(true))
+            .presses(view::Live::Is(false))
+            .image(view::Live::By(fn() {
+              let k = rec_preview_key.get()
+              if k != "" { Some((k, "", 384)) } else { None }
+            }))
+            .image_contains(view::Live::Is(false))
+            .image_fades(view::Live::Is(false))
+          })
+
+          // Crisp bottom metadata overlay: timecode + audio + source size, and live dimensions
+          let _ = left.box(fn(ov) {
+            let _ = ov
+            .over(view::Live::Is(true))
+            .lies_along(view::Live::Is(view::Lies::End))
+            .padding(view::Live::Is((10.0, 8.0, 10.0, 9.0)))
+            .gap(view::Live::Is(2.0))
+            .presses(view::Live::Is(false))
+
+            let _ = ov.box(fn(r1) {
+              let _ = r1.row(view::Live::Is(true)).gap(view::Live::Is(5.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).shrink(view::Live::Is(0.0)).presses(view::Live::Is(false))
+              let _ = r1.box(fn(tm) {
+                let _ = tm
+                .shrink(view::Live::Is(0.0))
+                .words(view::Live::By(fn() { rec_fmt_time(rec_ms.get()) }), look=view::WordsLook::{ ..view::words_plain,
+                  size: 12.0,
+                  weight: 600,
+                  line: 15.0,
+                  wrap: false,
+                })
+                .ink(view::Live::Is(0xFFFFFFFFL))
+              })
+              r1.show(fn() { rec_master_audio.get() }, fn(sp_icon) {
+                let _ = sp_icon
+                .width(view::Live::Is(Some(11.0)))
+                .height(view::Live::Is(Some(11.0)))
+                .shrink(view::Live::Is(0.0))
+                .picture(view::Live::Is(Some(glyph("speaker"))))
+                .tint(view::Live::Is(0x93C5FDFFL))
+              }, at_once=true)
+              let _ = r1.box(fn(sp) { let _ = sp.grow(view::Live::Is(1.0)).presses(view::Live::Is(false)) })
+              let _ = r1.box(fn(sz) {
+                let _ = sz
+                .shrink(view::Live::Is(0.0))
+                .words(view::Live::By(fn() { rec_fmt_size(rec_master_bytes.get()) }), look=view::WordsLook::{ ..view::words_plain,
+                  size: 10.0,
+                  weight: 500,
+                  line: 13.0,
+                  wrap: false,
+                })
+                .ink(view::Live::Is(0xFFFFFFC0L))
+              })
+            })
+
+            let _ = ov.box(fn(dm) {
+              let _ = dm
+              .shrink(view::Live::Is(0.0))
+              .words(
+                view::Live::By(fn() {
+                  let sw = rec_part.v.w
+                  let sh = rec_part.v.h
+                  let (ow, oh) = rec_out_dims(rec_active_scale(rec_exp_fmt.get()))
+                  if ow != sw || oh != sh {
+                    "\{sw}×\{sh} → \{ow}×\{oh}"
+                  } else {
+                    "\{sw}×\{sh}"
+                  }
+                }),
+                look=view::WordsLook::{ ..view::words_plain, size: 10.0, weight: 400, line: 13.0, wrap: false },
+              )
+              .ink(view::Live::Is(0xFFFFFFB8L))
+            })
+          })
+        })
+
+        // 2. Right: Airy controls column (format tabs, borderless property rows, crisp footer)
+        let _ = exp.box(fn(right) {
+          let _ = right
+          .grow(view::Live::Is(1.0))
+          .shrink(view::Live::Is(0.0))
+          .height(view::Live::Is(Some(184.0)))
+          .padding(view::Live::Is((0.0, 2.0, 2.0, 1.0)))
+          .gap(view::Live::Is(8.0))
+
+          // 2a. Top row: Format pill strip (white active thumb) + draggable gap + subtle close button
+          let _ = right.box(fn(top) {
+            let _ = top.row(view::Live::Is(true)).gap(view::Live::Is(6.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).shrink(view::Live::Is(0.0))
+
+            let _ = top.box(fn(tabs) {
+              let _ = tabs
+              .row(view::Live::Is(true))
+              .gap(view::Live::Is(2.0))
+              .padding(view::Live::Is((2.5, 2.5, 2.5, 2.5)))
+              .radius(view::Live::Is(8.5))
+              .ground(view::Live::Is(0xFFFFFF12L))
+              .edge(view::Live::Is((1.0, 0xFFFFFF18L)))
+              .lines_up(view::Live::Is(Some(view::Along::Middle)))
+              .shrink(view::Live::Is(0.0))
+              let fmt_views : Map[Int, view::View] = Map::new()
+              sliding_thumb(
+                tabs,
+                fn() { rec_exp_fmt.get() },
+                fmt_views,
+                6.5,
+                fn() { 0xF2F3F6FFL },
+                extra_watch=fn() {
+                  rec_exports_ver.get() +
+                  (if rec_has_av1.get() { 1000 } else { 0 }) +
+                  (if english.get() { 10000 } else { 0 })
+                },
+              )
+              rec_tab_item(
+                tabs,
+                0,
+                fmt_views,
+                fn() { "H.265" },
+                fn() { rec_exp_fmt.get() == 0 },
+                fn() { rec_exp_fmt.set(0) },
+                done_dot=fn() { rec_has_exported_fmt(0) },
+              )
+              rec_tab_item(
+                tabs,
+                1,
+                fmt_views,
+                fn() { "H.264" },
+                fn() { rec_exp_fmt.get() == 1 },
+                fn() { rec_exp_fmt.set(1) },
+                done_dot=fn() { rec_has_exported_fmt(1) },
+              )
+              tabs.show(fn() { rec_has_av1.get() }, fn(av1_slot) {
+                let _ = av1_slot.row(view::Live::Is(true)).shrink(view::Live::Is(0.0))
+                rec_tab_item(
+                  av1_slot,
+                  3,
+                  fmt_views,
+                  fn() { "AV1" },
+                  fn() { rec_exp_fmt.get() == 3 },
+                  fn() { rec_exp_fmt.set(3) },
+                  done_dot=fn() { rec_has_exported_fmt(3) },
+                )
+              }, at_once=true)
+              rec_tab_item(
+                tabs,
+                2,
+                fmt_views,
+                fn() { "GIF" },
+                fn() { rec_exp_fmt.get() == 2 },
+                fn() { rec_exp_fmt.set(2) },
+                done_dot=fn() { rec_has_exported_fmt(2) },
+              )
+            })
+
+            let _ = top.box(fn(sp) {
+              let _ = sp
+              .grow(view::Live::Is(1.0))
+              .height(view::Live::Is(Some(24.0)))
+              .presses(view::Live::Is(true))
+              .on_drag(fn(d) {
+                if d.kind == view::DragIs::Down && rec_wid.v != 0 {
+                  ps_move_window(rec_wid.v)
+                }
+              }, whole=true)
+            })
+
+            let _ = top.box(fn(cb) {
+              let hov = smooth_hover(cb)
+              tactile_press(cb, sink_px=0.9)
+              rec_tip_follow(
+                cb,
+                fn() { if rec_confirm_discard.get() { "再按一次丢弃" } else { "关闭" } },
+                keys=fn() { if rec_confirm_discard.get() { "" } else { "Esc" } },
+              )
+              let _ = cb
+              .width(view::Live::Is(Some(24.0)))
+              .height(view::Live::Is(Some(24.0)))
+              .shrink(view::Live::Is(0.0))
+              .radius(view::Live::Is(12.0))
+              .lines_up(view::Live::Is(Some(view::Along::Middle)))
+              .lies_along(view::Live::Is(view::Lies::Middle))
+              .presses(view::Live::Is(true))
+              .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+              .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=if rec_confirm_discard.get() { tr("再按一次丢弃") } else { tr("关闭 Esc") })) }))
+              // (while it exports: that export called off, the recording kept; unexported master asks 2-step confirm)
+              .on_press(rec_cancel)
+              .ground(view::Live::By(fn() {
+                if rec_confirm_discard.get() {
+                  mix_rgba(0xD4333944L, 0xD4333966L, hov())
+                } else if cb.pressed() {
+                  0xFFFFFF1EL
+                } else {
+                  mix_rgba(0L, 0xFFFFFF16L, hov())
+                }
+              }))
+              let _ = cb.box(fn(g) {
+                let _ = g
+                .width(view::Live::Is(Some(11.5)))
+                .height(view::Live::Is(Some(11.5)))
+                .picture(view::Live::Is(Some(glyph("close"))))
+                .tint(view::Live::By(fn() {
+                  if rec_confirm_discard.get() {
+                    0xFCA5A5FFL
+                  } else {
+                    mix_rgba(0xA2A9B8FFL, 0xFFFFFFFFL, hov())
+                  }
+                }))
+              })
+            })
+          })
+
+          // 2b. Middle: Airy borderless property rows (Quality/FPS + Percentage Size)
+          let _ = right.box(fn(rows) {
+            let _ = rows.grow(view::Live::Is(1.0)).lies_along(view::Live::Is(view::Lies::Middle)).gap(view::Live::Is(8.0))
+
+            // Quality row (MP4: H.265 / H.264 / AV1)
+            rows.show(fn() { rec_exp_fmt.get() != 2 }, fn(qwrap) {
+              enter_reveal(qwrap, ms=125.0, dy=3.0, from_scale=0.99)
+              let _ = qwrap.shrink(view::Live::Is(0.0))
+              rec_prop_row(qwrap, "画质", fn() { rec_exp_qual.get() }, fn(opts, views) {
+                rec_inline_opt(
+                  opts,
+                  0,
+                  views,
+                  fn() { tr("原画") },
+                  fn() { rec_exp_qual.get() == 0 },
+                  fn() { rec_exp_qual.set(0) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), 0, rec_exp_scale.get(), rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  1,
+                  views,
+                  fn() { tr("高") },
+                  fn() { rec_exp_qual.get() == 1 },
+                  fn() { rec_exp_qual.set(1) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), 1, rec_exp_scale.get(), rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  2,
+                  views,
+                  fn() { tr("标准") },
+                  fn() { rec_exp_qual.get() == 2 },
+                  fn() { rec_exp_qual.set(2) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), 2, rec_exp_scale.get(), rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  3,
+                  views,
+                  fn() { tr("小体积") },
+                  fn() { rec_exp_qual.get() == 3 },
+                  fn() { rec_exp_qual.set(3) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), 3, rec_exp_scale.get(), rec_exp_gif_fps.get()) },
+                )
+              })
+            }, at_once=true)
+
+            // FPS row (GIF)
+            rows.show(fn() { rec_exp_fmt.get() == 2 }, fn(fwrap) {
+              enter_reveal(fwrap, ms=125.0, dy=3.0, from_scale=0.99)
+              let _ = fwrap.shrink(view::Live::Is(0.0))
+              rec_prop_row(fwrap, "帧率", fn() { rec_exp_gif_fps.get() }, fn(opts, views) {
+                rec_inline_opt(
+                  opts,
+                  10,
+                  views,
+                  fn() { "10 fps" },
+                  fn() { rec_exp_gif_fps.get() == 10 },
+                  fn() { rec_exp_gif_fps.set(10) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_gif_scale.get(), 10) },
+                )
+                rec_inline_opt(
+                  opts,
+                  15,
+                  views,
+                  fn() { "15 fps" },
+                  fn() { rec_exp_gif_fps.get() == 15 },
+                  fn() { rec_exp_gif_fps.set(15) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_gif_scale.get(), 15) },
+                )
+                rec_inline_opt(
+                  opts,
+                  20,
+                  views,
+                  fn() { "20 fps" },
+                  fn() { rec_exp_gif_fps.get() == 20 },
+                  fn() { rec_exp_gif_fps.set(20) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, rec_exp_gif_scale.get(), 20) },
+                )
+              })
+            }, at_once=true)
+
+            // Size row (MP4): Proportional scaling (100% / 75% / 50%)
+            rows.show(fn() { rec_exp_fmt.get() != 2 }, fn(swrap) {
+              enter_reveal(swrap, ms=125.0, dy=3.0, from_scale=0.99)
+              let _ = swrap.shrink(view::Live::Is(0.0))
+              rec_prop_row(swrap, "尺寸", fn() { rec_exp_scale.get() }, fn(opts, views) {
+                rec_inline_opt(
+                  opts,
+                  0,
+                  views,
+                  fn() { "100%" },
+                  fn() { rec_exp_scale.get() == 0 },
+                  fn() { rec_exp_scale.set(0) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 0, rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  75,
+                  views,
+                  fn() { "75%" },
+                  fn() { rec_exp_scale.get() == 75 },
+                  fn() { rec_exp_scale.set(75) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 75, rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  50,
+                  views,
+                  fn() { "50%" },
+                  fn() { rec_exp_scale.get() == 50 },
+                  fn() { rec_exp_scale.set(50) },
+                  done_dot=fn() { rec_has_exported_combo(rec_exp_fmt.get(), rec_exp_qual.get(), 50, rec_exp_gif_fps.get()) },
+                )
+              })
+            }, at_once=true)
+
+            // Size row (GIF): Max long-edge cap (1080px default / 720px / Original 100%)
+            rows.show(fn() { rec_exp_fmt.get() == 2 }, fn(gswrap) {
+              enter_reveal(gswrap, ms=125.0, dy=3.0, from_scale=0.99)
+              let _ = gswrap.shrink(view::Live::Is(0.0))
+              rec_prop_row(gswrap, "尺寸", fn() { rec_exp_gif_scale.get() }, fn(opts, views) {
+                rec_inline_opt(
+                  opts,
+                  1080,
+                  views,
+                  fn() { "1080px" },
+                  fn() { rec_exp_gif_scale.get() == 1080 },
+                  fn() { rec_exp_gif_scale.set(1080) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, 1080, rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  720,
+                  views,
+                  fn() { "720px" },
+                  fn() { rec_exp_gif_scale.get() == 720 },
+                  fn() { rec_exp_gif_scale.set(720) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, 720, rec_exp_gif_fps.get()) },
+                )
+                rec_inline_opt(
+                  opts,
+                  0,
+                  views,
+                  fn() { tr("原尺寸") },
+                  fn() { rec_exp_gif_scale.get() == 0 },
+                  fn() { rec_exp_gif_scale.set(0) },
+                  done_dot=fn() { rec_has_exported_combo(2, 0, 0, rec_exp_gif_fps.get()) },
+                )
+              })
+            }, at_once=true)
+          })
+
+          // 2c. Subtle hairline + Footer (tabular size readout left, Save As icon + White/Emerald CTA right)
+          let _ = right.box(fn(ln) { let _ = ln.height(view::Live::Is(Some(1.0))).ground(view::Live::Is(0xFFFFFF1FL)) })
+
+          let _ = right.box(fn(foot) {
+            let _ = foot.row(view::Live::Is(true)).gap(view::Live::Is(8.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).padding(view::Live::Is((0.0, 2.0, 0.0, 0.0))).shrink(view::Live::Is(0.0))
+
+            // Left: Size / progress / exported status
+            let _ = foot.box(fn(st) {
+              let _ = st.grow(view::Live::Is(1.0)).shrink(view::Live::Is(0.0)).min_width(view::Live::Is(Some(148.0))).gap(view::Live::Is(1.5)).lines_up(view::Live::Is(Some(view::Along::Start)))
+
+              // Phase 4 (Ready)
+              st.show(fn() { rec_phase.get() == 4 }, fn(rdy) {
+                enter_reveal(rdy, ms=130.0, dy=3.0, from_scale=0.985)
+                let _ = rdy.gap(view::Live::Is(1.5)).lines_up(view::Live::Is(Some(view::Along::Start)))
+                rolling_label(
+                  rdy,
+                  rec_current_est_bytes,
+                  fn(b) {
+                    if b <= 0.0 {
+                      "—"
+                    } else if rec_is_direct_copy_for(
+                      rec_exp_fmt.untracked(),
+                      rec_exp_qual.untracked(),
+                      rec_exp_scale.untracked(),
+                    ) {
+                      rec_fmt_size(b)
+                    } else {
+                      "~" + rec_fmt_size(b)
+                    }
+                  },
+                  13.5,
+                  17.0,
+                  600,
+                  fn() { 0xF2F4F8FFL },
+                )
+                let _ = rdy.box(fn(sub) {
+                  let _ = sub.row(view::Live::Is(true)).gap(view::Live::Is(3.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).shrink(view::Live::Is(0.0))
+                  let _ = sub.box(fn(t1) {
+                    let _ = t1
+                    .shrink(view::Live::Is(0.0))
+                    .words(
+                      view::Live::By(fn() {
+                        let fmt = rec_exp_fmt.get()
+                        let pct = rec_est_saved_pct()
+                        if rec_is_direct_copy_for(fmt, rec_exp_qual.get(), rec_exp_scale.get()) {
+                          tr("零重编码直出")
+                        } else if pct > 0 {
+                          tr("较原文件 ")
+                        } else if fmt == 2 {
+                          tr("GIF 动画")
+                        } else if fmt == 3 {
+                          "MP4 · AV1"
+                        } else if fmt == 0 {
+                          "MP4 · H.265"
+                        } else {
+                          "MP4 · H.264"
+                        }
+                      }),
+                      look=view::WordsLook::{ ..view::words_plain, size: 10.5, weight: 400, line: 13.0, wrap: false },
+                    )
+                    .ink(view::Live::Is(0x9FA6B5FFL))
+                  })
+                  sub.show(
+                    fn() {
+                      !rec_is_direct_copy_for(rec_exp_fmt.get(), rec_exp_qual.get(), rec_exp_scale.get()) &&
+                      rec_est_saved_pct() > 0
+                    },
+                    fn(pc) {
+                      let _ = pc
+                      .shrink(view::Live::Is(0.0))
+                      .words(view::Live::By(fn() { "-\{rec_est_saved_pct()}%" }), look=view::WordsLook::{ ..view::words_plain,
+                        size: 10.5,
+                        weight: 500,
+                        line: 13.0,
+                        wrap: false,
+                      })
+                      .ink(view::Live::Is(0x34D399FFL))
+                    },
+                    at_once=true,
+                  )
+                })
+              }, at_once=true)
+
+              // Phase 5 (Encoding)
+              st.show(fn() { rec_phase.get() == 5 }, fn(enc) {
+                enter_reveal(enc, ms=130.0, dy=3.0, from_scale=0.985)
+                let _ = enc.gap(view::Live::Is(5.0)).lines_up(view::Live::Is(Some(view::Along::Start)))
+                let prog_w = motion::NodeWay::new(dmax(4.0, 132.0 * rec_exp_pct.untracked().to_double() / 100.0))
+                enc.reacts(fn() { rec_exp_pct.get() }, at_start=false, fn(p) {
+                  prog_w.go_ms(enc, dmax(4.0, 132.0 * p.to_double() / 100.0), 160.0)
+                })
+                let _ = enc.box(fn(t) {
+                  let _ = t
+                  .shrink(view::Live::Is(0.0))
+                  .words(view::Live::By(fn() { tr("正在编码 ") + rec_exp_pct.get().to_string() + "%" }), look=view::WordsLook::{ ..view::words_plain,
+                    size: 12.0,
+                    weight: 500,
+                    line: 15.0,
+                    wrap: false,
+                  })
+                  .ink(view::Live::Is(0xE8ECF4FFL))
+                })
+                let _ = enc.box(fn(bar_bg) {
+                  let _ = bar_bg.width(view::Live::Is(Some(132.0))).height(view::Live::Is(Some(3.5))).radius(view::Live::Is(1.75)).ground(view::Live::Is(0xFFFFFF16L)).clips(view::Live::Is(true))
+                  let _ = bar_bg.box(fn(bar_fg) {
+                    let _ = bar_fg
+                    .height(view::Live::Is(Some(3.5)))
+                    .width(view::Live::Is(Some(0.0)))
+                    .radius(view::Live::Is(1.75))
+                    .ground(view::Live::Is(0xF2F3F6FFL))
+                    .ground_drawn(view::Live::By(fn() {
+                      { dx: 0.0, dy: 0.0, dw: prog_w.shown(bar_fg), dh: 0.0, corners: None }
+                    }))
+                  })
+                })
+              }, at_once=true)
+
+              // Phase 6 (Exported / Reused)
+              st.show(fn() { rec_phase.get() == 6 }, fn(done_v) {
+                enter_reveal(done_v, ms=140.0, dy=3.0, from_scale=0.985)
+                let _ = done_v.gap(view::Live::Is(1.5)).lines_up(view::Live::Is(Some(view::Along::Start)))
+                rolling_label(
+                  done_v,
+                  fn() { rec_exp_bytes.get() },
+                  rec_fmt_size,
+                  13.5,
+                  17.0,
+                  600,
+                  fn() { 0x4ADE80FFL },
+                )
+                let _ = done_v.box(fn(sub) {
+                  let _ = sub.row(view::Live::Is(true)).gap(view::Live::Is(3.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).shrink(view::Live::Is(0.0))
+                  let _ = sub.box(fn(t) {
+                    let _ = t
+                    .shrink(view::Live::Is(0.0))
+                    .words(
+                      view::Live::By(fn() { if rec_copied_note.get() { tr("已复制 · ") } else { tr("已导出 · ") } }),
+                      look=view::WordsLook::{ ..view::words_plain, size: 10.5, weight: 400, line: 13.0, wrap: false },
+                    )
+                    .ink(view::Live::Is(0x9FA6B5FFL))
+                  })
+                  let _ = sub.box(fn(op) {
+                    let hov = smooth_hover(op)
+                    let _ = op
+                    .shrink(view::Live::Is(0.0))
+                    .presses(view::Live::Is(true))
+                    .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+                    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("打开位置"))) }))
+                    .on_press(fn() {
+                      let p = rec_path.untracked()
+                      if p != "" {
+                        ps_reveal(cstr(p))
+                      }
+                    })
+                    let _ = op.box(fn(t) {
+                      let _ = t
+                      .shrink(view::Live::Is(0.0))
+                      .words(view::Live::By(fn() { tr("打开位置") + " ↗" }), look=view::WordsLook::{ ..view::words_plain,
+                        size: 10.5,
+                        weight: 500,
+                        line: 13.0,
+                        wrap: false,
+                      })
+                      .ink(view::Live::By(fn() { mix_rgba(0xC4CBD9FFL, 0xFFFFFFFFL, hov()) }))
+                    })
+                  })
+                })
+              }, at_once=true)
+
+              // Phase 7 (Error)
+              st.show(fn() { rec_phase.get() == 7 }, fn(err_v) {
+                enter_reveal(err_v, ms=130.0, dy=3.0, from_scale=0.985)
+                let _ = err_v
+                .shrink(view::Live::Is(0.0))
+                .words(view::Live::By(fn() { rec_err.get() }), look=view::WordsLook::{ ..view::words_plain,
+                  size: 11.0,
+                  weight: 500,
+                  line: 15.0,
+                  wrap: false,
+                })
+                .ink(view::Live::Is(0xF87171FFL))
+              }, at_once=true)
+            })
+
+            // Right: Square icon Save As button + Crisp alabaster white (or translucent emerald) primary CTA
+            let _ = foot.box(fn(btns) {
+              let _ = btns.row(view::Live::Is(true)).gap(view::Live::Is(6.0)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
+
+              let _ = btns.box(fn(sa) {
+                let live = fn() { rec_phase.get() != 5 }
+                let hov = smooth_hover(sa, live=live)
+                tactile_press(sa, live=live)
+                rec_tip_follow(sa, fn() { "另存为" }, keys=fn() { "Ctrl+S" }, live=live)
+                let _ = sa
+                .width(view::Live::Is(Some(32.0)))
+                .height(view::Live::Is(Some(32.0)))
+                .shrink(view::Live::Is(0.0))
+                .radius(view::Live::Is(9.0))
+                .lines_up(view::Live::Is(Some(view::Along::Middle)))
+                .lies_along(view::Live::Is(view::Lies::Middle))
+                .presses(view::Live::Is(true))
+                .cursor(view::Live::By(fn() { if rec_phase.get() == 5 { None } else { Some(view::Cursor::Hand) } }))
+                .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("另存为"))) }))
+                .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(true) } })
+                .ground(view::Live::By(fn() {
+                  if rec_phase.get() == 5 {
+                    0xFFFFFF0AL
+                  } else if sa.pressed() {
+                    0xFFFFFF2CL
+                  } else {
+                    mix_rgba(0xFFFFFF18L, 0xFFFFFF26L, hov())
+                  }
+                }))
+                .edge(view::Live::Is((1.0, 0xFFFFFF24L)))
+                let _ = sa.box(fn(g) {
+                  let _ = g
+                  .width(view::Live::Is(Some(14.5)))
+                  .height(view::Live::Is(Some(14.5)))
+                  .picture(view::Live::Is(Some(glyph("save"))))
+                  .tint(view::Live::By(fn() {
+                    if rec_phase.get() == 5 {
+                      0xFFFFFF66L
+                    } else {
+                      mix_rgba(0xE2E6F0FFL, 0xFFFFFFFFL, hov())
+                    }
+                  }))
+                })
+              })
+
+              let _ = btns.box(fn(pri) {
+                let live = fn() { rec_phase.get() != 5 }
+                let hov = smooth_hover(pri, live=live)
+                let ok_p = motion::eased_on(pri, fn() { rec_phase.get() == 6 }, motion::tween(160.0, ease=ui::Ease::Out))
+                tactile_press(pri, live=live)
+                let _ = pri
+                .row(view::Live::Is(true))
+                .gap(view::Live::Is(5.5))
+                .height(view::Live::Is(Some(32.0)))
+                .shrink(view::Live::Is(0.0))
+                .padding(view::Live::Is((13.0, 0.0, 13.0, 0.0)))
+                .radius(view::Live::Is(9.0))
+                .lines_up(view::Live::Is(Some(view::Along::Middle)))
+                .lies_along(view::Live::Is(view::Lies::Middle))
+                .presses(view::Live::Is(true))
+                .cursor(view::Live::By(fn() { if rec_phase.get() == 5 { None } else { Some(view::Cursor::Hand) } }))
+                .says(view::Live::By(fn() {
+                  Some(view::said(view::Role::Button, label=if rec_phase.get() == 6 { tr("复制文件") } else { tr("保存并复制") }))
+                }))
+                .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(false) } })
+                .ground(view::Live::By(fn() {
+                  if rec_phase.get() == 5 {
+                    0x1472E055L
+                  } else {
+                    let p = ok_p.shown(pri)
+                    let rdy_bg = if pri.pressed() { 0x0E5EC0FFL } else { mix_rgba(0x1472E0FFL, 0x1E80F0FFL, hov()) }
+                    let ok_bg = if pri.pressed() { 0x34D39944L } else { mix_rgba(0x34D39926L, 0x34D39938L, hov()) }
+                    mix_rgba(rdy_bg, ok_bg, p)
+                  }
+                }))
+                .edge(view::Live::By(fn() {
+                  let p = ok_p.shown(pri)
+                  if p > 0.01 { (1.0, mix_rgba(0x34D39900L, 0x34D39952L, p)) } else { (0.0, 0L) }
+                }))
+                pri.show(fn() { rec_phase.get() != 5 }, fn(ic) {
+                  let _ = ic
+                  .width(view::Live::Is(Some(13.0)))
+                  .height(view::Live::Is(Some(13.0)))
+                  .shrink(view::Live::Is(0.0))
+                  .picture(view::Live::Is(Some(glyph("copy"))))
+                  .tint(view::Live::By(fn() { mix_rgba(0xFFFFFFFFL, 0x6EE7B7FFL, ok_p.shown(ic)) }))
+                }, at_once=true)
+                let _ = pri.box(fn(t) {
+                  let _ = t
+                  .shrink(view::Live::Is(0.0))
+                  .words(
+                    view::Live::By(fn() {
+                      match rec_phase.get() {
+                        5 => tr("编码中…")
+                        6 => tr("复制文件")
+                        _ => tr("保存并复制")
+                      }
+                    }),
+                    look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 600, line: 15.0, wrap: false },
+                  )
+                  .ink(view::Live::By(fn() {
+                    if rec_phase.get() == 5 {
+                      0xFFFFFF99L
+                    } else {
+                      mix_rgba(0xFFFFFFFFL, 0x6EE7B7FFL, ok_p.shown(t))
+                    }
+                  }))
+                })
+              })
+            })
+          })
+        })
+        }, at_once=true)
+
+        // Register moves_for LAST so all .show() structural additions/removals complete BEFORE FLIP measures the new length/size!
+        let rec_moves = motion::moves_for(
+          shell,
+          fn() { rec_phase.get() * 2 + (if rec_morph_in.get() { 1 } else { 0 }) },
+          spec=motion::tween(185.0, ease=ui::Ease::Out),
+        )
+        rec_moves_ref.v = Some(rec_moves)
+        rec_moves.reshapes(shell)
+        for p in rec_parts {
+          if p.alive() {
+            rec_moves.moves_with(p)
+          }
+        }
+        // Once Frame 0 has presented & uncloaked cleanly on top of the screenshot toolbar at its exact width,
+        // cloak the overlay underneath, release `rec_morph_in` so `shell` smoothly shrinks horizontally into the Ready bar,
+        // and focus the window immediately while deferring HWND width tightening by 215ms (keeping `cur_x` fixed -> zero DWM flash).
+        if rec_closing_overlay.v {
+          (rec_handoff_cancel.v)()
+          let cloaked = ui::env("PINSHOT_TEST_CLOAKED") != ""
+          rec_handoff_cancel.v = root.at_moment(
+            root.cause_at() + 1.0,
+            fn() {
+              rec_handoff_cancel.v = fn() {  }
+              if rec_closing_overlay.v {
+                rec_closing_overlay.v = false
+                close_capture()
+                ps_capture_open(1)
+              }
+              if rec_morph_in.untracked() {
+                rec_morph_in.set(false)
+              }
+              rec_schedule_fit(!cloaked)
+            },
+            later=true,
+          )
+        }
+      })
+
+      // Downward-unfolding FPS dropdown menu (30 / 60 / 90 / 120 fps) aligned directly under the Ready bar's FPS pill
+      content.show(fn() { rec_phase.get() == 0 && rec_fps_open.get() && !rec_fps_up.get() }, fn(dd_wrap) {
+        rec_fps_menu_view(dd_wrap, false)
+      }, at_once=true)
+
+      // Floating hover tooltip / inline discard-confirmation pill centered inside the bottom halo (`rec_pad_b = 36pt`)
+      let _ = content.box(fn(tip_row) {
+        let shown_text = fn() {
+          if rec_fps_open.get() {
+            ""
+          } else if rec_confirm_discard.get() {
+            tr("再按一次丢弃")
+          } else {
+            rec_tip.get()
+          }
+        }
+        let _ = tip_row
+        .over_at(view::Live::Is((Some(rec_pad_l), None, Some(rec_pad_r), Some(6.0))))
+        .laid_nowhere(view::Live::By(fn() { shown_text() == "" }))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::Is(false))
+        let _ = tip_row.box(fn(tp) {
+          let _ = tp
+          .height(view::Live::Is(Some(24.0)))
+          .padding(view::Live::Is((9.0, 0.0, 9.0, 0.0)))
+          .radius(view::Live::Is(7.0))
+          .ground(view::Live::By(fn() { if rec_confirm_discard.get() { 0x3B1518F5L } else { 0x141519F5L } }))
+          .edge(view::Live::By(fn() { (1.0, if rec_confirm_discard.get() { 0xF8717188L } else { 0xFFFFFF2AL }) }))
+          .shadow(view::Live::Is((8.0, 2.0, 0x00000066L)))
+          .lines_up(view::Live::Is(Some(view::Along::Middle)))
+          .lies_along(view::Live::Is(view::Lies::Middle))
+          .presses(view::Live::Is(false))
+          let _ = tp.box(fn(t) {
+            let _ = t
+            .words(view::Live::By(shown_text), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+            .ink(view::Live::By(fn() { if rec_confirm_discard.get() { 0xFECACAFFL } else { 0xF5F6F8FFL } }))
+          })
+        })
+      })
+    })
+    rec_tips.mount(page)
+  })
+}
+
+/// Shared 30 / 60 / 90 / 120 fps dropdown menu for the Ready bar; unfolds upward (`upward=true`) when near the bottom
+/// of the monitor so the Ready bar stays stationary under the pointer.
+fn rec_fps_menu_view(dd_wrap : view::View, upward : Bool) -> Unit {
+  let _ = dd_wrap
+  .padding(view::Live::Is(if upward { (62.0, 0.0, 0.0, 6.0) } else { (62.0, 6.0, 0.0, 0.0) }))
+  .shrink(view::Live::Is(0.0))
+  .lines_up(view::Live::Is(Some(view::Along::Start)))
+  let _ = dd_wrap.box(fn(menu) {
+    enter_reveal(menu, ms=135.0, dy=if upward { 8.0 } else { -8.0 }, from_scale=0.96)
+    let _ = menu
+    .width(view::Live::Is(Some(98.0)))
+    .padding(view::Live::Is((4.0, 4.0, 4.0, 4.0)))
+    .gap(view::Live::Is(2.0))
+    .radius(view::Live::Is(11.0))
+    .ground(view::Live::Is(0x18191DF7L))
+    .edge(view::Live::Is((1.0, 0xFFFFFF2EL)))
+    .shadow(view::Live::Is((14.0, 4.0, 0x00000070L)))
+    .presses(view::Live::Is(true))
+    for f in [30, 60, 90, 120] {
+      let _ = menu.box(fn(item) {
+        let hov = smooth_hover(item, ms=100.0)
+        tactile_press(item, sink_px=0.8)
+        let on = fn() { rec_fps.get() == f }
+        let _ = item
+        .row(view::Live::Is(true))
+        .height(view::Live::Is(Some(26.0)))
+        .padding(view::Live::Is((9.0, 0.0, 8.0, 0.0)))
+        .radius(view::Live::Is(7.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .presses(view::Live::Is(true))
+        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+        .says(view::Live::By(fn() { Some(view::said(view::Role::Radio, label="\{f} fps", selected=on())) }))
+        .on_press(fn() {
+          rec_fps.set(f)
+          rec_fps_open.set(false)
+          save_settings()
+        })
+        .ground(view::Live::By(fn() {
+          if item.pressed() {
+            0xFFFFFF2EL
+          } else if on() {
+            mix_rgba(0xFFFFFF22L, 0xFFFFFF2CL, hov())
+          } else {
+            mix_rgba(0L, 0xFFFFFF18L, hov())
+          }
+        }))
+        let _ = item.box(fn(lbl) {
+          let _ = lbl
+          .grow(view::Live::Is(1.0))
+          .words(view::Live::Is("\{f} fps"), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+          .ink(view::Live::By(fn() { if on() { 0xFFFFFFFFL } else { mix_rgba(0xC4CAD8FFL, 0xF5F6F8FFL, hov()) } }))
+        })
+        item.show(on, fn(ck) {
+          let _ = ck
+          .width(view::Live::Is(Some(12.0)))
+          .height(view::Live::Is(Some(12.0)))
+          .shrink(view::Live::Is(0.0))
+          .picture(view::Live::Is(Some(glyph("check"))))
+          .tint(view::Live::Is(0x5CB3FFFFL))
+        }, at_once=true)
+      })
+    }
+  })
+}

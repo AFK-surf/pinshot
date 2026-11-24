@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文** · [官网下载](https://pin-shot.pages.dev) · [Releases](https://github.com/motion-space/pinshot/releases/latest)
 
-轻量、快速、PixPin 风格的跨平台截图、标注、贴图与区域录屏工具，支持 Windows 与 macOS。使用 MoonBit 与 still.fail 的 [mbui](https://github.com/AFK-surf/still.fail) 编写：界面与核心逻辑只写一份，系统相关能力封装在 `app/` 下的薄原生层中。
+轻量、快速、PixPin 风格的跨平台截图、标注、贴图与区域录屏工具，支持 Windows 与 macOS。使用 [Pion](https://github.com/AFK-surf/pion) 与 [Invar](https://github.com/AFK-surf/invar) 编写：界面与核心逻辑只写一份放在 `src/`，系统相关能力封装在 `native/` 下的薄原生层中（零本地框架补丁）。
 
 ![PinShot](site/public/img/zh-markup.jpg)
 
@@ -86,32 +86,30 @@
 
 ## 实现原理
 
-- **单进程常驻**：冻结屏遮罩为 mbui 主窗口（非截图状态隐藏），贴图、设置页与录屏浮窗均为同进程子窗口。
+- **单进程常驻**：冻结屏遮罩为 Invar 主窗口（非截图状态隐藏），贴图、设置页与录屏浮窗均为同进程子窗口。
 - **低延迟采帧与 HDR 还原**：Windows 下每个显示器常驻一个 `Windows.Graphics.Capture` 会话、仅保留最新帧，按下快捷键时几毫秒内拷贝到 staging 纹理；帧超过 5 秒或显示器唤醒 / 解锁后自动重建会话。HDR 屏采用 FP16 采帧并在 GPU 上按系统 SDR 白点还原；GDI `BitBlt` 作为自动兜底（设置环境变量 `PINSHOT_CAPTURE=gdi` 可关闭常驻会话）。
-- **GPU 原分辨率合成**：标注坐标以显示器像素存储，预览遮罩与最终导出共用同一套 mbui 节点树，由 `take_picture` 在 GPU 上按原始分辨率合成导出。
-- **`patches/mbui-pinshot.patch`**：允许 mbui 直接从原生像素缓冲创建纹理，并将字形图集从 4096² 缩减至 1024²（节省约 64 MB 显存）。
+- **GPU 原分辨率合成**：标注坐标以显示器像素存储，预览遮罩与最终导出共用同一套 Invar 节点树，由 `ui::take_picture` 在 GPU 上按原始分辨率合成导出。
+- **零本地框架补丁**：直接使用上游 Invar 原生像素缓冲快路径（`MBRAWPTR`）以及 `mb_render_set_atlas_size(1024)` / `mb_render_set_video_support(0)`。
 
 ## 从源码构建
 
 ### Windows
 
-需要 Visual Studio 2022（C++ 桌面开发组件）、Git for Windows（Git Bash）以及 [MoonBit](https://www.moonbitlang.com/)（`moon` 在 `PATH` 中）。
+需要 Visual Studio 2022（C++ 桌面开发组件）、`clang`/`clang++`（LLVM 或 llvm-mingw）、[Pion](https://github.com/AFK-surf/pion)（`pionc` + `qbe`），以及同级目录下的 [Invar](https://github.com/AFK-surf/invar)（`../invar`）与 [pion-packages](https://github.com/AFK-surf/pion-packages)（`../pion-packages`）。
 
 ```powershell
-scripts/build.ps1                # 生成 out/build/pinshot.exe（警告即错误，单文件自带安装与卸载）
+scripts/build.ps1                # 生成 out/Release/pinshot.exe（单文件自带安装与卸载）
+scripts/build.ps1 -Test          # 构建并运行 Pion 单元测试
 scripts/install.ps1              # 安装到 %LOCALAPPDATA%\Programs\PinShot 并启动
 packaging/pack-msix.ps1          # 打包 Microsoft Store MSIX
 ```
 
-构建脚本会自动调用 `scripts/fetch-stillfail.sh`，按 `stillfail.lock` 锁定的提交拉取 still.fail 的 `apps/mbui` 和 `libs/mbui` 到 `deps/stillfail` 并应用 `patches/` 补丁。
-
 ### macOS
 
-需要安装 Xcode 命令行工具和 [MoonBit](https://www.moonbitlang.com/)（`moon` 在 `PATH` 中）。
+需要安装 Xcode 命令行工具和 [Pion](https://github.com/AFK-surf/pion)（`pionc`）。
 
 ```bash
-bash scripts/build-mac.sh
-open out/build/PinShot.app
+pionc build --release . -o out/Release/PinShot
 ```
 
 GitHub Actions 中的 **macOS package** 工作流会在手动触发或推送 `v*` 标签时自动构建并产出 `PinShot-mac.zip`。

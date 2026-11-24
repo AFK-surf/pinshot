@@ -1,0 +1,616 @@
+// What PinShot asks of the system, and nothing of its UI: one set of calls, answered on Windows by
+// native/platform_win.c (and on macOS by native/platform_mac.m) via native/pion_ps_bridge.c.
+// Text crosses as UTF-8 (paths ending in a NUL: cstr); what happens outside the frames (a shortcut,
+// the icon, its menu, a window's close) comes on the channel "ps" (main.pion).
+
+import "hostapi"
+import "json"
+import "ui"
+
+// ---- MoonBit-bytes C interop helpers (backed by invar's pion_mb_compat.c) ----
+
+extern "C" fn c_mb_bytes_len(p : Ptr) -> Int = "pion_mb_bytes_len"
+extern "C" fn c_mb_decref(p : Ptr) -> Unit = "moonbit_decref"
+
+fn take_mb_bytes(p : Ptr) -> Bytes {
+  let n = c_mb_bytes_len(p)
+  let b = if n > 0 { bytes_from_ptr(p, n) } else { "".to_bytes() }
+  c_mb_decref(p)
+  b
+}
+
+/// `s` as UTF-8 bytes.
+fn utf8_encode(s : String) -> Bytes {
+  s.to_bytes()
+}
+
+/// `s` as the native side reads a path or a name: UTF-8 ending in a NUL.
+fn cstr(s : String) -> Bytes {
+  let b = s.to_bytes()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < b.length() {
+    sb.write_byte(b[i])
+    i += 1
+  }
+  sb.write_byte(0 as Byte)
+  sb.to_string().to_bytes()
+}
+
+/// Decode a UTF-8 byte sequence (lossy: invalid bytes become U+FFFD) into a String.
+fn text_of(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  let n = b.length()
+  let mut i = 0
+  while i < n {
+    let c0 = b[i].to_int()
+    if c0 < 0x80 {
+      sb.write_char(int_to_char(c0))
+      i += 1
+    } else if (c0 & 0xE0) == 0xC0 && i + 1 < n {
+      let c1 = b[i + 1].to_int()
+      if (c1 & 0xC0) == 0x80 {
+        let cp = ((c0 & 0x1F) << 6) | (c1 & 0x3F)
+        if cp >= 0x80 {
+          sb.write_char(int_to_char(cp))
+          i += 2
+        } else {
+          sb.write_char('\u{FFFD}')
+          i += 1
+        }
+      } else {
+        sb.write_char('\u{FFFD}')
+        i += 1
+      }
+    } else if (c0 & 0xF0) == 0xE0 && i + 2 < n {
+      let c1 = b[i + 1].to_int()
+      let c2 = b[i + 2].to_int()
+      if (c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80 {
+        let cp = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F)
+        if cp >= 0x800 && (cp < 0xD800 || cp > 0xDFFF) {
+          sb.write_char(int_to_char(cp))
+          i += 3
+        } else {
+          sb.write_char('\u{FFFD}')
+          i += 1
+        }
+      } else {
+        sb.write_char('\u{FFFD}')
+        i += 1
+      }
+    } else if (c0 & 0xF8) == 0xF0 && i + 3 < n {
+      let c1 = b[i + 1].to_int()
+      let c2 = b[i + 2].to_int()
+      let c3 = b[i + 3].to_int()
+      if (c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80 {
+        let cp = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F)
+        if cp >= 0x10000 && cp <= 0x10FFFF {
+          sb.write_char(int_to_char(cp))
+          i += 4
+        } else {
+          sb.write_char('\u{FFFD}')
+          i += 1
+        }
+      } else {
+        sb.write_char('\u{FFFD}')
+        i += 1
+      }
+    } else {
+      sb.write_char('\u{FFFD}')
+      i += 1
+    }
+  }
+  sb.to_string()
+}
+
+fn int_to_char(cp : Int) -> Char {
+  if cp >= 0 && cp <= 0x10FFFF && (cp < 0xD800 || cp > 0xDFFF) {
+    cp.unsafe_to_char()
+  } else {
+    '\u{FFFD}'
+  }
+}
+
+fn str_chars(s : String) -> Array[Char] {
+  let out : Array[Char] = []
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let c0 = s.code_unit_at(i)
+    if c0 < 0x80 {
+      out.push(int_to_char(c0))
+      i += 1
+    } else if (c0 & 0xE0) == 0xC0 && i + 1 < n {
+      let c1 = s.code_unit_at(i + 1)
+      out.push(int_to_char(((c0 & 0x1F) << 6) | (c1 & 0x3F)))
+      i += 2
+    } else if (c0 & 0xF0) == 0xE0 && i + 2 < n {
+      let c1 = s.code_unit_at(i + 1)
+      let c2 = s.code_unit_at(i + 2)
+      out.push(int_to_char(((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F)))
+      i += 3
+    } else if (c0 & 0xF8) == 0xF0 && i + 3 < n {
+      let c1 = s.code_unit_at(i + 1)
+      let c2 = s.code_unit_at(i + 2)
+      let c3 = s.code_unit_at(i + 3)
+      out.push(int_to_char(((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F)))
+      i += 4
+    } else {
+      out.push('\u{FFFD}')
+      i += 1
+    }
+  }
+  out
+}
+
+fn chars_to_string(cs : Array[Char], lo : Int, hi : Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = if lo < 0 { 0 } else { lo }
+  let end = if hi > cs.length() { cs.length() } else { hi }
+  while i < end {
+    sb.write_char(cs[i])
+    i += 1
+  }
+  sb.to_string()
+}
+
+// ---- Direct scalar / zero-Bytes-arg C FFI ----
+
+extern "C" fn ps_start(again : Int) -> Int = "ps_start"
+extern "C" fn ps_shutter() -> Unit = "ps_shutter"
+extern "C" fn ps_ui_chinese() -> Int = "ps_ui_chinese"
+extern "C" fn ps_shadow(wid : Int) -> Unit = "ps_shadow"
+extern "C" fn ps_move_window(wid : Int) -> Unit = "ps_move_window"
+extern "C" fn ps_toast_place(wid : Int, w : Int, h : Int) -> Unit = "ps_toast_place"
+extern "C" fn ps_tray_on() -> Int = "ps_tray_on"
+extern "C" fn c_ps_args() -> Ptr = "ps_args"
+extern "C" fn ps_quit() -> Unit = "ps_quit"
+extern "C" fn ps_hotkey(which : Int, mods : Int, vk : Int) -> Int = "ps_hotkey"
+extern "C" fn ps_key_record(on : Int) -> Int = "ps_key_record"
+extern "C" fn c_ps_key_name(vk : Int) -> Ptr = "ps_key_name"
+extern "C" fn ps_capture_now() -> Int = "ps_capture_now"
+extern "C" fn ps_capture_ask() -> Unit = "ps_capture_ask"
+extern "C" fn ps_capture_open(on : Int) -> Unit = "ps_capture_open"
+extern "C" fn ps_set_capture_keep(keep : Int) -> Unit = "ps_set_capture_keep"
+extern "C" fn c_ps_capture_info() -> Ptr = "ps_capture_info"
+extern "C" fn c_ps_capture_take() -> Ptr = "ps_capture_take"
+extern "C" fn ps_capture_release() -> Unit = "ps_capture_release"
+extern "C" fn ps_pixel(x : Int, y : Int) -> Int = "ps_pixel"
+extern "C" fn ps_mean(x : Int, y : Int, cell : Int) -> Int = "ps_mean"
+extern "C" fn c_ps_windows() -> Ptr = "ps_windows"
+extern "C" fn ps_window_shows(of : Int, i : Int, x : Int, y : Int) -> Int = "ps_window_shows"
+extern "C" fn ps_own(wid : Int, topmost : Int) -> Int = "ps_own"
+extern "C" fn ps_place(wid : Int, x : Int, y : Int, w : Int, h : Int, show : Int, focus : Int) -> Unit = "ps_place"
+extern "C" fn ps_hide(wid : Int) -> Unit = "ps_hide"
+extern "C" fn ps_let_close(wid : Int) -> Unit = "ps_let_close"
+extern "C" fn ps_center(wid : Int, w : Int, h : Int) -> Unit = "ps_center"
+extern "C" fn ps_cloak(wid : Int, on : Int) -> Unit = "ps_cloak"
+extern "C" fn ps_topmost(wid : Int, on : Int, front : Int) -> Unit = "ps_topmost"
+extern "C" fn ps_opacity(wid : Int, alpha : Int) -> Unit = "ps_opacity"
+extern "C" fn c_ps_window_rect(wid : Int) -> Ptr = "ps_window_rect"
+extern "C" fn ps_shift_down() -> Int = "ps_shift_down"
+extern "C" fn c_ps_pointer() -> Ptr = "ps_pointer"
+extern "C" fn ps_gpu_flush() -> Unit = "ps_gpu_flush"
+extern "C" fn c_ps_memory() -> Ptr = "ps_memory"
+extern "C" fn ps_now_ms() -> Double = "ps_now_ms"
+extern "C" fn c_ps_data_dir() -> Ptr = "ps_data_dir"
+extern "C" fn c_ps_pictures_dir() -> Ptr = "ps_pictures_dir"
+extern "C" fn c_ps_wallpaper() -> Ptr = "ps_wallpaper"
+extern "C" fn c_ps_stamp() -> Ptr = "ps_stamp"
+extern "C" fn ps_autostart() -> Int = "ps_autostart"
+extern "C" fn ps_set_autostart(on : Int) -> Int = "ps_set_autostart"
+extern "C" fn c_ps_clipboard_image() -> Ptr = "ps_clipboard_image"
+
+// Longshot
+extern "C" fn ps_long_begin(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_long_begin"
+extern "C" fn ps_long_stop() -> Unit = "ps_long_stop"
+extern "C" fn ps_long_pause(on : Int) -> Unit = "ps_long_pause"
+extern "C" fn ps_long_reset() -> Unit = "ps_long_reset"
+extern "C" fn ps_long_end() -> Unit = "ps_long_end"
+extern "C" fn c_ps_long_info() -> Ptr = "ps_long_info"
+extern "C" fn c_ps_long_preview(w : Int, h : Int, from_row : Int) -> Ptr = "ps_long_preview"
+extern "C" fn c_ps_long_png() -> Ptr = "ps_long_png"
+extern "C" fn ps_long_preview_free() -> Unit = "ps_long_preview_free"
+extern "C" fn ps_long_exclude(wid : Int) -> Unit = "ps_long_exclude"
+
+// Record
+extern "C" fn ps_rec_prepare(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_rec_prepare"
+extern "C" fn c_ps_rec_rect() -> Ptr = "ps_rec_rect"
+extern "C" fn ps_rec_start(fps : Int, cursor : Int, audio : Int) -> Int = "ps_rec_start"
+extern "C" fn ps_rec_pause(on : Int) -> Unit = "ps_rec_pause"
+extern "C" fn ps_rec_stop(cancel : Int) -> Unit = "ps_rec_stop"
+extern "C" fn ps_rec_has_av1() -> Int = "ps_rec_has_av1"
+extern "C" fn ps_rec_export_cancel() -> Unit = "ps_rec_export_cancel"
+extern "C" fn c_ps_rec_preview() -> Ptr = "ps_rec_preview"
+extern "C" fn ps_rec_end() -> Unit = "ps_rec_end"
+extern "C" fn ps_rec_exclude(wid : Int) -> Unit = "ps_rec_exclude"
+extern "C" fn ps_next_win_clear() -> Unit = "ps_next_win_clear"
+extern "C" fn ps_rec_input_show(on : Int) -> Unit = "ps_rec_input_show"
+
+// Update / Install
+extern "C" fn ps_install_kind() -> Int = "ps_install_kind"
+extern "C" fn ps_update_cleanup() -> Unit = "ps_update_cleanup"
+extern "C" fn ps_epoch_s() -> Double = "ps_epoch_s"
+extern "C" fn ps_idle_ms() -> Int = "ps_idle_ms"
+extern "C" fn ps_update_ticks(first_ms : Int, every_ms : Int) -> Unit = "ps_update_ticks"
+
+// ---- Bridged C FFI (functions accepting Bytes args, via native/pion_ps_bridge.c) ----
+
+extern "C" fn c_ps_tray_note(t : Ptr, tl : Int64, m : Ptr, ml : Int64) -> Unit = "pion_ps_tray_note"
+extern "C" fn c_ps_set_menu(s : Ptr, sl : Int64) -> Unit = "pion_ps_set_menu"
+extern "C" fn c_ps_log(s : Ptr, sl : Int64) -> Unit = "pion_ps_log"
+extern "C" fn c_ps_read_file(p : Ptr, pl : Int64) -> Ptr = "pion_ps_read_file"
+extern "C" fn c_ps_picture_jpeg(p : Ptr, pl : Int64, quality : Int) -> Ptr = "pion_ps_picture_jpeg"
+extern "C" fn c_ps_picture_oriented(p : Ptr, pl : Int64, turns : Int, flipped : Int, shown : Int) -> Ptr = "pion_ps_picture_oriented"
+extern "C" fn c_ps_write_file(p : Ptr, pl : Int64, d : Ptr, dl : Int64) -> Int = "pion_ps_write_file"
+extern "C" fn c_ps_save_dialog(wid : Int, dir : Ptr, dl : Int64, name : Ptr, nl : Int64) -> Ptr = "pion_ps_save_dialog"
+extern "C" fn c_ps_pick_folder(wid : Int, dir : Ptr, dl : Int64) -> Ptr = "pion_ps_pick_folder"
+extern "C" fn c_ps_reveal(p : Ptr, pl : Int64) -> Unit = "pion_ps_reveal"
+extern "C" fn c_ps_popup_menu(wid : Int, s : Ptr, sl : Int64) -> Ptr = "pion_ps_popup_menu"
+extern "C" fn c_ps_ocr(id : Int, png : Ptr, pl : Int64) -> Int = "pion_ps_ocr"
+extern "C" fn c_ps_ocr_now(png : Ptr, pl : Int64) -> Ptr = "pion_ps_ocr_now"
+extern "C" fn c_ps_rec_export(dest : Ptr, dl : Int64, fmt : Int, quality : Int, max_side : Int, gif_fps : Int) -> Int = "pion_ps_rec_export"
+extern "C" fn c_ps_rec_reuse(src : Ptr, sl : Int64, dst : Ptr, dl : Int64) -> Int = "pion_ps_rec_reuse"
+extern "C" fn c_ps_update_path(name : Ptr, nl : Int64) -> Ptr = "pion_ps_update_path"
+extern "C" fn c_ps_fetch(u : Ptr, ul : Int64, p : Ptr, pl : Int64, s : Ptr, sl : Int64, a : Ptr, al : Int64) -> Int = "pion_ps_fetch"
+extern "C" fn c_ps_release_signed(v : Ptr, vl : Int64, ss : Ptr, ssl : Int64, es : Ptr, esl : Int64, sg : Ptr, sgl : Int64) -> Int = "pion_ps_release_signed"
+extern "C" fn c_ps_install_cli(v : Ptr, vl : Int64) -> Int = "pion_ps_install_cli"
+extern "C" fn c_ps_install_sync_meta(v : Ptr, vl : Int64) -> Unit = "pion_ps_install_sync_meta"
+extern "C" fn c_ps_swap_exe(p : Ptr, pl : Int64, s : Ptr, sl : Int64) -> Int = "pion_ps_swap_exe"
+extern "C" fn c_ps_open_url(u : Ptr, ul : Int64) -> Unit = "pion_ps_open_url"
+
+// ---- Wrappers keeping exact original PinShot signatures ----
+
+fn ps_args() -> Bytes { take_mb_bytes(c_ps_args()) }
+fn ps_key_name(vk : Int) -> Bytes { take_mb_bytes(c_ps_key_name(vk)) }
+fn ps_capture_info() -> Bytes { take_mb_bytes(c_ps_capture_info()) }
+fn ps_capture_take() -> Bytes { take_mb_bytes(c_ps_capture_take()) }
+fn ps_windows() -> Bytes { take_mb_bytes(c_ps_windows()) }
+fn ps_window_rect(wid : Int) -> Bytes { take_mb_bytes(c_ps_window_rect(wid)) }
+fn ps_pointer() -> Bytes { take_mb_bytes(c_ps_pointer()) }
+fn ps_memory() -> Bytes { take_mb_bytes(c_ps_memory()) }
+fn ps_data_dir() -> Bytes { take_mb_bytes(c_ps_data_dir()) }
+fn ps_pictures_dir() -> Bytes { take_mb_bytes(c_ps_pictures_dir()) }
+fn ps_wallpaper() -> Bytes { take_mb_bytes(c_ps_wallpaper()) }
+fn ps_stamp() -> Bytes { take_mb_bytes(c_ps_stamp()) }
+fn ps_clipboard_image() -> Bytes { take_mb_bytes(c_ps_clipboard_image()) }
+fn ps_long_info() -> Bytes { take_mb_bytes(c_ps_long_info()) }
+fn ps_long_preview(w : Int, h : Int, from_row : Int) -> Bytes { take_mb_bytes(c_ps_long_preview(w, h, from_row)) }
+fn ps_long_png() -> Bytes { take_mb_bytes(c_ps_long_png()) }
+fn ps_rec_rect() -> Bytes { take_mb_bytes(c_ps_rec_rect()) }
+fn ps_rec_preview() -> Bytes { take_mb_bytes(c_ps_rec_preview()) }
+
+fn ps_tray_note(title : Bytes, text : Bytes) -> Unit {
+  c_ps_tray_note(bytes_data_ptr(title), title.length().to_int64(), bytes_data_ptr(text), text.length().to_int64())
+}
+fn ps_set_menu(lines : Bytes) -> Unit {
+  c_ps_set_menu(bytes_data_ptr(lines), lines.length().to_int64())
+}
+fn ps_log(line : Bytes) -> Unit {
+  c_ps_log(bytes_data_ptr(line), line.length().to_int64())
+}
+fn log(line : String) -> Unit {
+  ps_log(cstr(line))
+}
+fn ps_read_file(path : Bytes) -> Bytes {
+  take_mb_bytes(c_ps_read_file(bytes_data_ptr(path), path.length().to_int64()))
+}
+fn ps_picture_jpeg(pic : Bytes, quality : Int) -> Bytes {
+  take_mb_bytes(c_ps_picture_jpeg(bytes_data_ptr(pic), pic.length().to_int64(), quality))
+}
+fn ps_picture_oriented(pic : Bytes, turns : Int, flipped : Int, shown : Int) -> Bytes {
+  take_mb_bytes(c_ps_picture_oriented(bytes_data_ptr(pic), pic.length().to_int64(), turns, flipped, shown))
+}
+fn ps_write_file(path : Bytes, data : Bytes) -> Int {
+  c_ps_write_file(bytes_data_ptr(path), path.length().to_int64(), bytes_data_ptr(data), data.length().to_int64())
+}
+fn ps_save_dialog(wid : Int, dir : Bytes, name : Bytes) -> Bytes {
+  take_mb_bytes(c_ps_save_dialog(wid, bytes_data_ptr(dir), dir.length().to_int64(), bytes_data_ptr(name), name.length().to_int64()))
+}
+fn ps_pick_folder(wid : Int, dir : Bytes) -> Bytes {
+  take_mb_bytes(c_ps_pick_folder(wid, bytes_data_ptr(dir), dir.length().to_int64()))
+}
+fn ps_reveal(path : Bytes) -> Unit {
+  c_ps_reveal(bytes_data_ptr(path), path.length().to_int64())
+}
+fn ps_popup_menu(wid : Int, lines : Bytes) -> Bytes {
+  take_mb_bytes(c_ps_popup_menu(wid, bytes_data_ptr(lines), lines.length().to_int64()))
+}
+fn ps_ocr(id : Int, png : Bytes) -> Int {
+  c_ps_ocr(id, bytes_data_ptr(png), png.length().to_int64())
+}
+fn ps_ocr_now(png : Bytes) -> Bytes {
+  take_mb_bytes(c_ps_ocr_now(bytes_data_ptr(png), png.length().to_int64()))
+}
+fn ps_rec_export(dest_path : Bytes, fmt : Int, quality : Int, max_side : Int, gif_fps : Int) -> Int {
+  c_ps_rec_export(bytes_data_ptr(dest_path), dest_path.length().to_int64(), fmt, quality, max_side, gif_fps)
+}
+fn ps_rec_reuse(src_path : Bytes, dst_path : Bytes) -> Int {
+  c_ps_rec_reuse(bytes_data_ptr(src_path), src_path.length().to_int64(), bytes_data_ptr(dst_path), dst_path.length().to_int64())
+}
+fn ps_update_path(name : Bytes) -> Bytes {
+  take_mb_bytes(c_ps_update_path(bytes_data_ptr(name), name.length().to_int64()))
+}
+fn ps_fetch(url : Bytes, path : Bytes, sha256 : Bytes, agent : Bytes) -> Int {
+  c_ps_fetch(
+    bytes_data_ptr(url), url.length().to_int64(),
+    bytes_data_ptr(path), path.length().to_int64(),
+    bytes_data_ptr(sha256), sha256.length().to_int64(),
+    bytes_data_ptr(agent), agent.length().to_int64(),
+  )
+}
+fn ps_release_signed(version : Bytes, setup_sha : Bytes, exe_sha : Bytes, sig : Bytes) -> Int {
+  c_ps_release_signed(
+    bytes_data_ptr(version), version.length().to_int64(),
+    bytes_data_ptr(setup_sha), setup_sha.length().to_int64(),
+    bytes_data_ptr(exe_sha), exe_sha.length().to_int64(),
+    bytes_data_ptr(sig), sig.length().to_int64(),
+  )
+}
+fn ps_install_cli(version : Bytes) -> Int {
+  c_ps_install_cli(bytes_data_ptr(version), version.length().to_int64())
+}
+fn ps_install_sync_meta(version : Bytes) -> Unit {
+  c_ps_install_sync_meta(bytes_data_ptr(version), version.length().to_int64())
+}
+fn ps_swap_exe(path : Bytes, sha256 : Bytes) -> Int {
+  c_ps_swap_exe(bytes_data_ptr(path), path.length().to_int64(), bytes_data_ptr(sha256), sha256.length().to_int64())
+}
+fn ps_open_url(url : Bytes) -> Unit {
+  c_ps_open_url(bytes_data_ptr(url), url.length().to_int64())
+}
+
+// ---- Window & shared helpers ----
+
+fn close_window(wid : Int) -> Unit {
+  ps_let_close(wid)
+  ui::window_close_here(wid)
+}
+
+fn parse_double_or(s : String, fallback : Double) -> Double {
+  let t = trim_ws(s)
+  if t == "" {
+    return fallback
+  }
+  let n = t.length()
+  let mut i = 0
+  let mut sign = 1.0
+  if t.code_unit_at(0) == 45 {
+    sign = -1.0
+    i = 1
+  } else if t.code_unit_at(0) == 43 {
+    i = 1
+  }
+  let mut whole = 0.0
+  let mut frac = 0.0
+  let mut div = 1.0
+  let mut seen_dot = false
+  let mut seen_digit = false
+  while i < n {
+    let c = t.code_unit_at(i)
+    if c >= 48 && c <= 57 {
+      seen_digit = true
+      let d = (c - 48).to_double()
+      if seen_dot {
+        div = div * 10.0
+        frac = frac + d / div
+      } else {
+        whole = whole * 10.0 + d
+      }
+      i += 1
+    } else if c == 46 && !seen_dot {
+      seen_dot = true
+      i += 1
+    } else {
+      return fallback
+    }
+  }
+  if !seen_digit { fallback } else { sign * (whole + frac) }
+}
+
+fn parse_int_or(s : String, fallback : Int) -> Int {
+  match trim_ws(s).to_int() {
+    Some(v) => v
+    None => fallback
+  }
+}
+
+fn trim_ws(s : String) -> String {
+  let n = s.length()
+  let mut lo = 0
+  while lo < n {
+    let c = s.code_unit_at(lo)
+    if c == 32 || c == 9 || c == 10 || c == 13 { lo += 1 } else { break }
+  }
+  let mut hi = n
+  while hi > lo {
+    let c = s.code_unit_at(hi - 1)
+    if c == 32 || c == 9 || c == 10 || c == 13 { hi -= 1 } else { break }
+  }
+  if lo == 0 && hi == n { s } else { str_slice_bytes(s, lo, hi) }
+}
+
+fn str_slice_bytes(s : String, start : Int, end : Int) -> String {
+  let lo = if start < 0 { 0 } else if start > s.length() { s.length() } else { start }
+  let hi = if end < lo { lo } else if end > s.length() { s.length() } else { end }
+  let sb = StringBuilder::new()
+  let mut i = lo
+  while i < hi {
+    sb.write_byte(s.code_unit_at(i) as Byte)
+    i += 1
+  }
+  sb.to_string()
+}
+
+fn str_to_ascii_lower(s : String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < s.length() {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+    i += 1
+  }
+  sb.to_string()
+}
+
+fn str_has_prefix(s : String, pre : String) -> Bool {
+  ui::str_has_prefix(s, pre)
+}
+
+fn str_has_suffix(s : String, suf : String) -> Bool {
+  let n = s.length()
+  let m = suf.length()
+  if m > n {
+    return false
+  }
+  let mut i = 0
+  while i < m {
+    if s.code_unit_at(n - m + i) != suf.code_unit_at(i) {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
+fn str_contains(s : String, pat : String) -> Bool {
+  ui::str_contains(s, pat)
+}
+
+fn str_replace_all(s : String, old : String, rep : String) -> String {
+  if old == "" {
+    return s
+  }
+  let parts = s.split(old)
+  if parts.length() <= 1 {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < parts.length() {
+    if i > 0 {
+      sb.write_string(rep)
+    }
+    sb.write_string(parts[i])
+    i += 1
+  }
+  sb.to_string()
+}
+
+fn bytes_from_arr(arr : Array[Byte]) -> Bytes {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < arr.length() {
+    sb.write_byte(arr[i])
+    i += 1
+  }
+  sb.to_string().to_bytes()
+}
+
+fn make_array[T](n : Int, v : T) -> Array[T] {
+  let out : Array[T] = []
+  let mut i = 0
+  while i < n {
+    out.push(v)
+    i += 1
+  }
+  out
+}
+
+fn numbers_of(s : String) -> Array[Double] {
+  let out : Array[Double] = []
+  let parts = s.split(",")
+  let mut i = 0
+  while i < parts.length() {
+    out.push(parse_double_or(parts[i], 0.0))
+    i += 1
+  }
+  out
+}
+
+fn json_of(s : String) -> Option[json::Json] {
+  match json::parse(s) {
+    Ok(v) => Some(v)
+    Err(_) => None
+  }
+}
+
+fn jnum(o : json::JsonObject, k : String, fallback : Double) -> Double {
+  match o.get(k) {
+    Some(json::Json::Float(v)) => v
+    Some(json::Json::Int(n)) => n.to_double()
+    _ => fallback
+  }
+}
+
+fn jstr(o : json::JsonObject, k : String, fallback : String) -> String {
+  match o.get(k) {
+    Some(json::Json::Str(s)) => s
+    _ => fallback
+  }
+}
+
+fn jbool(o : json::JsonObject, k : String, fallback : Bool) -> Bool {
+  match o.get(k) {
+    Some(json::Json::Bool(b)) => b
+    _ => fallback
+  }
+}
+
+fn json_num(v : Double) -> json::Json {
+  json::Json::Float(v)
+}
+
+fn json_bool(b : Bool) -> json::Json {
+  json::Json::Bool(b)
+}
+
+fn json_str(s : String) -> json::Json {
+  json::Json::Str(s)
+}
+
+fn json_obj_map(m : Map[String, json::Json]) -> json::Json {
+  let pairs : Array[(String, json::Json)] = []
+  for k in m.keys() {
+    match m.get(k) {
+      Some(v) => pairs.push((k, v))
+      None => ()
+    }
+  }
+  json::Json::obj(pairs)
+}
+
+fn json_stringify(j : json::Json) -> String {
+  match json::stringify(j) {
+    Ok(s) => s
+    Err(_) => ""
+  }
+}
+
+fn println(s : String) -> Unit {
+  log(s)
+}
+
+fn shortcut_mod() -> Int {
+  if ui::keys_system() == 0 { ui::mod_cmd } else { ui::mod_ctrl }
+}
+
+fn file_in(dir : String, name : String) -> String {
+  dir + (if hostapi::platform() == 3 { "\\" } else { "/" }) + name
+}
+
+fn assert_eq[T](a : T, b : T) -> Unit {
+  debug_assert(a == b, "assert_eq failed")
+}
+
+fn assert_true(b : Bool) -> Unit {
+  debug_assert(b, "assert_true failed")
+}
+
+fn assert_false(b : Bool) -> Unit {
+  debug_assert(!b, "assert_false failed")
+}

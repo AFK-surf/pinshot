@@ -1,0 +1,159 @@
+// Minimal "installed" welcome window shown once after double-clicking the single-file installer (launched with
+// `--installed`): confirms installation visibly (Win11 often suppresses legacy tray balloons), shows active shortcuts,
+// offers an instant Start-with-Windows toggle, and links to Settings. Zero overhead when closed.
+
+import "ui"
+import "view"
+
+let welcome_wid : ui::Ref[Int] = ui::ref_new(0)
+
+fn open_welcome() -> Unit {
+  if welcome_wid.v > 0 && ui::window_front_here(welcome_wid.v) {
+    return
+  }
+  let wid = ui::window_open_here("welcome")
+  if wid <= 0 {
+    return
+  }
+  welcome_wid.v = wid
+  ps_center(wid, 412, 306)
+}
+
+fn close_welcome() -> Unit {
+  if welcome_wid.v > 0 {
+    let wid = welcome_wid.v
+    welcome_wid.v = 0
+    close_window(wid)
+  }
+}
+
+fn welcome_keycap(parent : view::View, text : () -> String, ok : () -> Bool) -> Unit {
+  let _ = parent.box(fn(k) {
+    let _ = k
+    .height(view::Live::Is(Some(24.0)))
+    .padding(view::Live::Is((9.0, 0.0, 9.0, 0.0)))
+    .radius(view::Live::Is(6.0))
+    .shrink(view::Live::Is(0.0))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Middle))
+    .ground(view::Live::Is(0x141518FFL))
+    .edge(view::Live::By(fn() { (1.0, if ok() { 0xFFFFFF26L } else { 0xE5A54580L }) }))
+    let _ = k.box(fn(t) {
+      let _ = t
+      .words(view::Live::By(text), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+      .ink(view::Live::By(fn() { if ok() { set_ink } else { 0xE5A545FFL } }))
+    })
+  })
+}
+
+fn welcome_button(parent : view::View, label : () -> String, primary : Bool, press : () -> Unit) -> Unit {
+  let _ = parent.box(fn(b) {
+    let hov = smooth_hover(b)
+    tactile_press(b)
+    let _ = b
+    .height(view::Live::Is(Some(32.0)))
+    .padding(view::Live::Is((if primary { 16.0 } else { 14.0 }, 0.0, if primary { 16.0 } else { 14.0 }, 0.0)))
+    .radius(view::Live::Is(8.0))
+    .shrink(view::Live::Is(0.0))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Middle))
+    .presses(view::Live::Is(true))
+    .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=label())) }))
+    .on_press(press)
+    .ground(view::Live::By(fn() {
+      if primary {
+        if b.pressed() { 0x2584E6FFL } else { mix_rgba(0x2F9BFFFFL, 0x49AAFFFFL, hov()) }
+      } else if b.pressed() {
+        0x3F434FFFL
+      } else {
+        mix_rgba(0x2A2D36FFL, 0x363A46FFL, hov())
+      }
+    }))
+    .edge(view::Live::Is((1.0, if primary { 0xFFFFFF24L } else { 0xFFFFFF1EL })))
+    let _ = b.box(fn(t) {
+      let _ = t
+      .words(view::Live::By(label), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: if primary { 600 } else { 500 }, line: 16.0, wrap: false })
+      .ink(view::Live::Is(if primary { 0xFFFFFFFFL } else { set_ink }))
+    })
+  })
+}
+
+fn welcome_window(root : view::View) -> Unit {
+  root.tree.hand_over_presses(false)
+  let k = fn(code : Int, action : String) -> view::Binding {
+    view::Binding::{ keys: [view::Stroke::{ code, mods: 0 }], action, when: view::KeyWhen::Always }
+  }
+  let _ = root.keymap(view::Live::Is(view::Keymap::new([k(ui::key_escape, "close"), k(ui::key_code_enter, "close")])))
+  let _ = root.on_action("close", fn(_) {
+    close_welcome()
+    true
+  })
+  let _ = root.box(fn(w) {
+    let _ = w.over(view::Live::Is(true)).ground(view::Live::Is(set_ground)).padding(view::Live::Is((24.0, 22.0, 24.0, 20.0))).gap(view::Live::Is(16.0))
+    // Header: emerald check badge + installed version & subtitle
+    let _ = w.box(fn(hdr) {
+      let _ = hdr.row(view::Live::Is(true)).gap(view::Live::Is(14.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
+      let _ = hdr.box(fn(badge) {
+        let _ = badge
+        .width(view::Live::Is(Some(42.0)))
+        .height(view::Live::Is(Some(42.0)))
+        .shrink(view::Live::Is(0.0))
+        .radius(view::Live::Is(11.0))
+        .ground(view::Live::Is(0x22C55E1CL))
+        .edge(view::Live::Is((1.0, 0x22C55E4AL)))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        let _ = badge.box(fn(ic) {
+          let _ = ic
+          .width(view::Live::Is(Some(20.0)))
+          .height(view::Live::Is(Some(20.0)))
+          .picture(view::Live::Is(Some(pixels::Vector::{ w: 16.0, h: 16.0, layers: [stroke_layer("M3.4 8.5L6.6 11.7L12.8 5.2", 0x4ADE80FFL, 2.0)] })))
+        })
+      })
+      let _ = hdr.box(fn(col) {
+        let _ = col.grow(view::Live::Is(1.0)).shrink(view::Live::Is(1.0)).min_width(view::Live::Is(Some(0.0))).gap(view::Live::Is(3.0))
+        set_words(col, fn() { "PinShot " + app_version + tr(" 已安装") }, 16.0, set_ink, weight=600)
+        let _ = col.box(fn(sub) {
+          let _ = sub
+          .words(view::Live::By(fn() { tr("已添加到开始菜单，正在系统托盘待命") }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 400, line: 17.0, wrap: true })
+          .ink(view::Live::Is(set_muted))
+        })
+      })
+    })
+    // Quick summary card: active shortcuts + start-at-login toggle
+    set_group(w, "", fn(g) {
+      set_row(g, "开始截图", fn(r) {
+        welcome_keycap(r, fn() { key_words(settings.get().capture_key, key_choices) }, fn() { capture_key_ok.get() })
+      })
+      set_row(g, "贴剪贴板图片", fn(r) {
+        welcome_keycap(r, fn() { key_words(settings.get().pin_key, pin_choices) }, fn() { pin_key_ok.get() })
+      })
+      set_row(g, "开机时启动", fn(r) {
+        switch(r, fn() { autostart.get() }, fn(on) {
+          if ps_set_autostart(if on { 1 } else { 0 }) == 1 {
+            autostart.set(on)
+          }
+        })
+      })
+    })
+    // Subtle management / uninstall hint
+    let _ = w.box(fn(note) {
+      let _ = note
+      .padding(view::Live::Is((2.0, 0.0, 2.0, 0.0)))
+      .words(view::Live::By(fn() { tr("可随时从系统托盘图标或「设置 › 应用」管理与卸载。") }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 400, line: 16.0, wrap: true })
+      .ink(view::Live::Is(0x8E94A3FFL))
+    })
+    // Spacer pushing footer to bottom
+    let _ = w.box(fn(sp) { let _ = sp.grow(view::Live::Is(1.0)) })
+    // Footer actions
+    let _ = w.box(fn(foot) {
+      let _ = foot.row(view::Live::Is(true)).lies_along(view::Live::Is(view::Lies::End)).gap(view::Live::Is(8.0))
+      welcome_button(foot, fn() { tr("打开设置") }, false, fn() {
+        close_welcome()
+        open_settings()
+      })
+      welcome_button(foot, fn() { tr("开始使用") }, true, fn() { close_welcome() })
+    })
+  })
+}

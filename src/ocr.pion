@@ -1,0 +1,736 @@
+// Live Text (PixPin / Apple Live Text style) on pins: Windows' own offline OCR (ocr_win.cpp, on a background thread)
+// returns per-word normalized boxes [0, 1] directly onto the pin image — no separate modal text window, zero idle
+// memory or threads. Drag over text to select, double-click a token, triple-click a line, Ctrl+C to copy, Esc to
+// clear or dismiss.
+
+import "hostapi"
+import "json"
+import "pixels"
+import "signals"
+import "ui"
+import "view"
+
+/// One recognized word on a pin, in normalized [0.0, 1.0] coordinates of the pin's shown image.
+struct OcrWord {
+  line : Int
+  space : Bool
+  x : Double
+  y : Double
+  w : Double
+  h : Double
+  text : String
+}
+
+/// Live Text state kept per pin (Idle until asked; cached while the pin stays in the same orientation).
+enum PinOcr {
+  Idle
+  Reading
+  Ready(Array[OcrWord], String)
+  Failed(String)
+}
+
+/// Monotonic request counter and in-flight map (cleared as soon as the reading returns or its pin closes).
+let ocr_id : ui::Ref[Int] = ui::ref_new(0)
+
+let ocr_pending : Map[Int, Pin] = Map::new()
+
+/// Parse normalized word boxes from native OCR TSV: `line\tspace\tx\ty\tw\th\ttext\n`.
+fn ocr_parse_boxes(raw : String) -> Array[OcrWord] {
+  let out : Array[OcrWord] = []
+  for row in raw.split("\n") {
+    let line_str = trim_ws(row)
+    if line_str == "" {
+      continue
+    }
+    let parts : Array[String] = line_str.split("\t")
+    if parts.length() < 7 {
+      continue
+    }
+    let text = if parts.length() == 7 {
+      parts[6]
+    } else {
+      let sb = StringBuilder::new()
+      for i in 6..<parts.length() {
+        if i > 6 {
+          sb.write_char('\t')
+        }
+        sb.write_string(parts[i])
+      }
+      sb.to_string()
+    }
+    if text == "" {
+      continue
+    }
+    let line = parse_int_or(parts[0], 0)
+    let space = parts[1] != "0"
+    let x = clamp(parse_double_or(parts[2], 0.0), 0.0, 1.0)
+    let y = clamp(parse_double_or(parts[3], 0.0), 0.0, 1.0)
+    let w = clamp(parse_double_or(parts[4], 0.0), 0.0, 1.0 - x)
+    let h = clamp(parse_double_or(parts[5], 0.0), 0.0, 1.0 - y)
+    out.push(OcrWord::{ line, space, x, y, w, h, text })
+  }
+  out
+}
+
+/// Join recognized words in inclusive range `[a, b]` (order-independent), preserving line breaks and CJK/Latin spacing.
+fn ocr_text_range(words : Array[OcrWord], a : Int, b : Int) -> String {
+  if words.length() == 0 {
+    return ""
+  }
+  let n = words.length()
+  let lo = clampi(if a < b { a } else { b }, 0, n - 1)
+  let hi = clampi(if a > b { a } else { b }, 0, n - 1)
+  let sb = StringBuilder::new()
+  for i in lo..=hi {
+    if i > lo {
+      if words[i].line != words[i - 1].line {
+        sb.write_char('\n')
+      } else if words[i].space {
+        sb.write_char(' ')
+      }
+    }
+    sb.write_string(words[i].text)
+  }
+  sb.to_string()
+}
+
+fn ocr_full_text(words : Array[OcrWord]) -> String {
+  if words.length() == 0 {
+    ""
+  } else {
+    ocr_text_range(words, 0, words.length() - 1)
+  }
+}
+
+/// Hit-test normalized `(u, v)` against recognized words (with slight pixel padding and same-line inter-word gap
+/// bridging so the I-beam cursor stays steady across spaces). Returns -1 when over empty image area.
+fn ocr_hit_word(words : Array[OcrWord], u : Double, v : Double, px_w : Double, px_h : Double) -> Int {
+  if words.length() == 0 || u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0 {
+    return -1
+  }
+  let pad_x = dmin(0.025, 5.0 / dmax(px_w, 1.0))
+  let pad_y = dmin(0.025, 3.0 / dmax(px_h, 1.0))
+  let mut best = -1
+  let mut best_d = 1.0e9
+  for i, w in words {
+    if u >= w.x - pad_x && u <= w.x + w.w + pad_x && v >= w.y - pad_y && v <= w.y + w.h + pad_y {
+      let cx = w.x + w.w * 0.5
+      let cy = w.y + w.h * 0.5
+      let d = (u - cx) * (u - cx) + (v - cy) * (v - cy)
+      if d < best_d {
+        best_d = d
+        best = i
+      }
+    }
+  }
+  if best >= 0 {
+    return best
+  }
+  // Bridge narrow horizontal spaces between adjacent words on the same line (without grabbing wide multi-column gaps).
+  for i in 0..<(words.length() - 1) {
+    let a = words[i]
+    let b = words[i + 1]
+    if a.line != b.line {
+      continue
+    }
+    let y0 = dmin(a.y, b.y) - pad_y
+    let y1 = dmax(a.y + a.h, b.y + b.h) + pad_y
+    if v < y0 || v > y1 {
+      continue
+    }
+    let ax1 = a.x + a.w
+    let gap = b.x - ax1
+    let max_gap = dmax(dmax(a.h, b.h) * 1.6, pad_x * 3.0)
+    if gap > 0.0 && gap <= max_gap && u >= ax1 && u <= b.x {
+      return if (u - ax1) <= (b.x - u) { i } else { i + 1 }
+    }
+  }
+  -1
+}
+
+/// Nearest word in reading order to normalized `(u, v)` during an active drag selection: prioritizes the vertical
+/// line band first so sweeping across multi-line paragraphs feels smooth and never jumps erratically.
+fn ocr_nearest_word(words : Array[OcrWord], u : Double, v : Double) -> Int {
+  if words.length() == 0 {
+    return -1
+  }
+  let mut best = 0
+  let mut best_score = 1.0e18
+  for i, w in words {
+    let dy = if v < w.y {
+      w.y - v
+    } else if v > w.y + w.h {
+      v - (w.y + w.h)
+    } else {
+      0.0
+    }
+    let dx = if u < w.x {
+      w.x - u
+    } else if u > w.x + w.w {
+      u - (w.x + w.w)
+    } else {
+      0.0
+    }
+    let cx = w.x + w.w * 0.5
+    let cy = w.y + w.h * 0.5
+    let tie = (u - cx).abs() + (v - cy).abs()
+    let score = dy * 100.0 + dx + tie * 0.001
+    if score < best_score {
+      best_score = score
+      best = i
+    }
+  }
+  best
+}
+
+fn ocr_is_punct(s : String) -> Bool {
+  let cs = str_chars(s)
+  if cs.length() != 1 {
+    return false
+  }
+  let cp = cs[0].to_int()
+  (cp >= 0x21 && cp <= 0x2F) ||
+  (cp >= 0x3A && cp <= 0x40) ||
+  (cp >= 0x5B && cp <= 0x60) ||
+  (cp >= 0x7B && cp <= 0x7E) ||
+  (cp >= 0x3000 && cp <= 0x303F) ||
+  (cp >= 0xFF01 && cp <= 0xFF0F) ||
+  (cp >= 0xFF1A && cp <= 0xFF20) ||
+  (cp >= 0xFF3B && cp <= 0xFF40) ||
+  (cp >= 0xFF5B && cp <= 0xFF65)
+}
+
+/// Double-click range: Latin words are already one `OcrWord`; for single-character CJK words, expand across contiguous
+/// unspaced non-punctuation characters on the same line.
+fn ocr_token_range(words : Array[OcrWord], idx : Int) -> (Int, Int) {
+  if idx < 0 || idx >= words.length() {
+    return (0, 0)
+  }
+  let target = words[idx]
+  if str_chars(target.text).length() > 1 || ocr_is_punct(target.text) {
+    return (idx, idx)
+  }
+  let mut lo = idx
+  while lo > 0 &&
+        words[lo - 1].line == target.line &&
+        !words[lo].space &&
+        str_chars(words[lo - 1].text).length() == 1 &&
+        !ocr_is_punct(words[lo - 1].text) {
+    lo -= 1
+  }
+  let mut hi = idx
+  while hi + 1 < words.length() &&
+        words[hi + 1].line == target.line &&
+        !words[hi + 1].space &&
+        str_chars(words[hi + 1].text).length() == 1 &&
+        !ocr_is_punct(words[hi + 1].text) {
+    hi += 1
+  }
+  (lo, hi)
+}
+
+/// Triple-click range: every word on the same line as `idx`.
+fn ocr_line_range(words : Array[OcrWord], idx : Int) -> (Int, Int) {
+  if idx < 0 || idx >= words.length() {
+    return (0, 0)
+  }
+  let line = words[idx].line
+  let mut lo = idx
+  while lo > 0 && words[lo - 1].line == line {
+    lo -= 1
+  }
+  let mut hi = idx
+  while hi + 1 < words.length() && words[hi + 1].line == line {
+    hi += 1
+  }
+  (lo, hi)
+}
+
+fn ocr_failed_short(why : String) -> String {
+  match why {
+    "none" => tr("未识别到文字")
+    "no-language" | "no-ocr" => tr("未安装识别语言")
+    _ => tr("识别失败")
+  }
+}
+
+/// Clear any in-flight OCR entry belonging to pin `p`.
+fn pin_ocr_clear_pending(p : Pin) -> Unit {
+  if p.ocr_req.v != 0 {
+    ocr_pending.remove(p.ocr_req.v)
+    p.ocr_req.v = 0
+  }
+}
+
+/// Start (or re-show cached) Live Text right on pin `p`.
+fn pin_start_ocr(p : Pin, from_capture~ : Bool = false) -> Unit {
+  if from_capture {
+    p.ocr_from_capture.v = true
+  }
+  signals::start_batch()
+  p.ocr_on.set(true)
+  p.ocr_sel.set(None)
+  p.ocr_hover.set(-1)
+  signals::end_batch()
+  match p.ocr.untracked() {
+    Ready(_, _) => return
+    Reading => if p.ocr_req.v != 0 { return }
+    _ => ()
+  }
+  pin_ocr_clear_pending(p)
+  ocr_id.v += 1
+  let id = ocr_id.v
+  p.ocr_req.v = id
+  ocr_pending[id] = p
+  p.ocr.set(Reading)
+  if ps_ocr(id, shown_picture(p)) == 0 {
+    ocr_pending.remove(id)
+    p.ocr_req.v = 0
+    p.ocr.set(PinOcr::Failed("failed"))
+  }
+}
+
+/// Force a fresh OCR pass on pin `p` (e.g. after Retry).
+fn pin_retry_ocr(p : Pin) -> Unit {
+  pin_ocr_clear_pending(p)
+  p.ocr.set(Idle)
+  pin_start_ocr(p)
+}
+
+/// Exit Live Text mode on pin `p` (keeps recognized boxes cached while orientation stays unchanged).
+fn pin_exit_ocr(p : Pin) -> Unit {
+  p.ocr_selecting.v = false
+  signals::start_batch()
+  p.ocr_on.set(false)
+  p.ocr_sel.set(None)
+  p.ocr_hover.set(-1)
+  signals::end_batch()
+}
+
+/// Toggle Live Text on pin `p` (Ctrl+O).
+fn pin_toggle_ocr(p : Pin) -> Unit {
+  if p.ocr_on.untracked() {
+    pin_exit_ocr(p)
+  } else {
+    pin_start_ocr(p)
+  }
+}
+
+fn pin_copy_ocr_text(p : Pin, text : String) -> Unit {
+  if text == "" {
+    return
+  }
+  hostapi::clipboard_set(text)
+  p.ocr_copied_at.set(now_of(p))
+  toast(tr("已复制"))
+}
+
+fn pin_copy_ocr_selected(p : Pin) -> Bool {
+  match (p.ocr.untracked(), p.ocr_sel.untracked()) {
+    (PinOcr::Ready(words, _), Some((a, b))) if words.length() > 0 => {
+      pin_copy_ocr_text(p, ocr_text_range(words, a, b))
+      true
+    }
+    _ => false
+  }
+}
+
+fn pin_copy_ocr_all(p : Pin) -> Bool {
+  match p.ocr.untracked() {
+    PinOcr::Ready(_, full) if full != "" => {
+      pin_copy_ocr_text(p, full)
+      true
+    }
+    _ => false
+  }
+}
+
+/// A reading told back ({"do":"ocr","id":N,"why":"","lang":"zh-Hans-CN","lines":3,"ms":120,"fmt":"boxes"}).
+fn ocr_told(o : json::JsonObject, words : Option[Bytes]) -> Unit {
+  let id = jnum(o, "id", -1.0).to_int()
+  let str = fn(k : String) { jstr(o, k, "") }
+  let raw = match words {
+    Some(b) => text_of(b)
+    None => ""
+  }
+  let why = str("why")
+  let lang = str("lang")
+  let fmt = str("fmt")
+  log("ocr \{id}: why '\{why}', \{lang}, fmt '\{fmt}', \{raw.length()} bytes")
+  let p = match ocr_pending.get(id) {
+    Some(_v) => _v
+    None => { return }
+  }
+  ocr_pending.remove(id)
+  if p.ocr_req.v != id || pin_of_wid(p.wid.v).is_none() {
+    return
+  }
+  p.ocr_req.v = 0
+  if why != "" {
+    p.ocr.set(PinOcr::Failed(why))
+    return
+  }
+  if fmt == "boxes" {
+    let ws = ocr_parse_boxes(raw)
+    if ws.length() == 0 {
+      p.ocr.set(PinOcr::Failed("none"))
+    } else {
+      let full = ocr_full_text(ws)
+      p.ocr.set(PinOcr::Ready(ws, full))
+    }
+  } else {
+    // Plain-text fallback (e.g. a platform engine that has not added box coordinates yet).
+    if trim_ws(raw) == "" {
+      p.ocr.set(PinOcr::Failed("none"))
+    } else {
+      p.ocr.set(PinOcr::Ready([], raw))
+    }
+  }
+}
+
+/// The part picked (with its marks) pinned right in place with Live Text active.
+fn ocr_out() -> Unit {
+  if exporting.v != "" {
+    return
+  }
+  let r = match sel.untracked() {
+    Some(_v) => _v
+    None => { return }
+  }
+  exporting.v = "ocr"
+  ps_cloak(0, 1)
+  let m = mon.v
+  picture_of_part(framed=false, fn(png) {
+    exporting.v = ""
+    match png {
+      Some(png) => open_pin(png, m.x + r.x, m.y + r.y, r.w, r.h, start_ocr=true)
+      None => ()
+    }
+    close_capture()
+  })
+}
+
+/// Single lightweight vector layer for Live Text highlights on pin `p` (zero nodes per word, None when inactive).
+fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
+  if !p.ocr_on.get() {
+    return None
+  }
+  let words = match p.ocr.get() {
+    PinOcr::Ready(ws, _) if ws.length() > 0 => ws
+    _ => return None
+  }
+  let vw = dmax(1.0, p.w.to_double() * p.zx.get())
+  let vh = dmax(1.0, p.h.to_double() * p.zy.get())
+  let layers : Array[pixels::VectorPath] = []
+  let hover = if pointed { p.ocr_hover.get() } else { -1 }
+  let sel = p.ocr_sel.get()
+  let sel_bounds : Option[(Int, Int)] = match sel {
+    Some((a, b)) => {
+      let lo = clampi(if a < b { a } else { b }, 0, words.length() - 1)
+      let hi = clampi(if a > b { a } else { b }, 0, words.length() - 1)
+      Some((lo, hi))
+    }
+    None => None
+  }
+  // Subtle Apple Live Text hover wash on hovered line + gentle highlight on hovered word (only if not already selected).
+  if hover >= 0 && hover < words.length() {
+    let in_sel = match sel_bounds {
+      Some((lo, hi)) => hover >= lo && hover <= hi
+      None => false
+    }
+    if !in_sel {
+      let (l0, l1) = ocr_line_range(words, hover)
+      let mut lx0 = 1.0e9
+      let mut ly0 = 1.0e9
+      let mut lx1 = 0.0
+      let mut ly1 = 0.0
+      for i in l0..=l1 {
+        let w = words[i]
+        lx0 = dmin(lx0, w.x * vw)
+        ly0 = dmin(ly0, w.y * vh)
+        lx1 = dmax(lx1, (w.x + w.w) * vw)
+        ly1 = dmax(ly1, (w.y + w.h) * vh)
+      }
+      let lh = dmax(1.0, ly1 - ly0)
+      let px = clamp(lh * 0.10, 1.5, 4.0)
+      let py = clamp(lh * 0.08, 1.0, 3.0)
+      let rx0 = clamp(lx0 - px, 0.0, vw)
+      let ry0 = clamp(ly0 - py, 0.0, vh)
+      let rx1 = clamp(lx1 + px, rx0, vw)
+      let ry1 = clamp(ly1 + py, ry0, vh)
+      let r = clamp(lh * 0.22, 2.0, 5.0)
+      if rx1 - rx0 > 1.0 && ry1 - ry0 > 1.0 {
+        layers.push(fill_layer(superellipse_rect_path(rx0, ry0, rx1 - rx0, ry1 - ry0, r), 0x2F9BFF18L))
+      }
+      let hw = words[hover]
+      let wx0 = clamp(hw.x * vw - 1.5, 0.0, vw)
+      let wy0 = clamp(hw.y * vh - 1.0, 0.0, vh)
+      let wx1 = clamp((hw.x + hw.w) * vw + 1.5, wx0, vw)
+      let wy1 = clamp((hw.y + hw.h) * vh + 1.0, wy0, vh)
+      let wr = clamp((wy1 - wy0) * 0.22, 2.0, 5.0)
+      if wx1 - wx0 > 1.0 && wy1 - wy0 > 1.0 {
+        layers.push(fill_layer(superellipse_rect_path(wx0, wy0, wx1 - wx0, wy1 - wy0, wr), 0x2F9BFF2EL))
+      }
+    }
+  }
+  // Smooth per-line merged selection ribbons (Apple Live Text blue).
+  match sel_bounds {
+    Some((lo, hi)) => {
+      let sb = StringBuilder::new()
+      let mut i = lo
+      while i <= hi {
+        let line = words[i].line
+        let mut x0 = 1.0e9
+        let mut y0 = 1.0e9
+        let mut x1 = 0.0
+        let mut y1 = 0.0
+        while i <= hi && words[i].line == line {
+          let w = words[i]
+          x0 = dmin(x0, w.x * vw)
+          y0 = dmin(y0, w.y * vh)
+          x1 = dmax(x1, (w.x + w.w) * vw)
+          y1 = dmax(y1, (w.y + w.h) * vh)
+          i += 1
+        }
+        let lh = dmax(1.0, y1 - y0)
+        let px = clamp(lh * 0.12, 1.5, 4.0)
+        let py = clamp(lh * 0.09, 1.0, 3.0)
+        let rx0 = clamp(x0 - px, 0.0, vw)
+        let ry0 = clamp(y0 - py, 0.0, vh)
+        let rx1 = clamp(x1 + px, rx0, vw)
+        let ry1 = clamp(y1 + py, ry0, vh)
+        let r = clamp(lh * 0.24, 2.0, 5.0)
+        if rx1 - rx0 > 1.0 && ry1 - ry0 > 1.0 {
+          sb.write_string(superellipse_rect_path(rx0, ry0, rx1 - rx0, ry1 - ry0, r))
+        }
+      }
+      let d = sb.to_string()
+      if d != "" {
+        layers.push(fill_layer(d, 0x2F9BFF5EL))
+      }
+    }
+    None => ()
+  }
+  if layers.length() == 0 {
+    None
+  } else {
+    Some({ w: vw, h: vh, layers })
+  }
+}
+
+/// Compact, whisper-quiet floating Live Text capsule anchored at bottom-right of pin `p`.
+fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
+  let close_vec : pixels::Vector = {
+    w: 12.0,
+    h: 12.0,
+    layers: [stroke_layer("M3 3l6 6M9 3l-6 6", 0x000000FFL, 1.5)],
+  }
+  let _ = root.box(fn(o) {
+    let _ = o
+    .over(view::Live::Is(true))
+    .lines_up(view::Live::Is(Some(view::Along::End)))
+    .lies_along(view::Live::Is(view::Lies::End))
+    .padding(view::Live::Is((6.0, 6.0, 6.0, 6.0)))
+    .laid_nowhere(view::Live::By(fn() { !p.ocr_on.get() }))
+    let _ = o.box(fn(bar) {
+      let _ = bar
+      .row(view::Live::Is(true))
+      .height(view::Live::Is(Some(28.0)))
+      .padding(view::Live::Is((4.0, 0.0, 4.0, 0.0)))
+      .gap(view::Live::Is(3.0))
+      .radius(view::Live::Is(9.0))
+      .ground(view::Live::Is(0x16181DE8L))
+      .edge(view::Live::Is((1.0, 0xFFFFFF24L)))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .presses(view::Live::Is(true))
+      .cursor(view::Live::Is(Some(view::Cursor::Arrow)))
+      // Status text (Reading / Failed)
+      let _ = bar.box(fn(st) {
+        let _ = st
+        .padding(view::Live::Is((6.0, 0.0, 4.0, 0.0)))
+        .laid_nowhere(view::Live::By(fn() { p.ocr.get() is Ready(_, _) }))
+        let _ = st.box(fn(t) {
+          let _ = t
+          .words(view::Live::By(fn() {
+            match p.ocr.get() {
+              Reading => tr("识别中…")
+              Failed(why) => ocr_failed_short(why)
+              _ => ""
+            }
+          }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+          .ink(view::Live::By(fn() {
+            match p.ocr.get() {
+              Failed(_) => 0xF2B8B5FFL
+              _ => 0xD5DAE3FFL
+            }
+          }))
+        })
+      })
+      // Retry button (Failed only)
+      let _ = bar.box(fn(rb) {
+        let _ = rb
+        .height(view::Live::Is(Some(20.0)))
+        .padding(view::Live::Is((7.0, 0.0, 7.0, 0.0)))
+        .radius(view::Live::Is(6.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::Is(true))
+        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+        .laid_nowhere(view::Live::By(fn() { !(p.ocr.get() is Failed(_)) }))
+        .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("重试"))) }))
+        .on_press(fn() { pin_retry_ocr(p) })
+        .ground(view::Live::By(fn() {
+          if rb.pressed() {
+            0xFFFFFF28L
+          } else if rb.pointed() {
+            0xFFFFFF1AL
+          } else {
+            0xFFFFFF10L
+          }
+        }))
+        let _ = rb.box(fn(t) {
+          let _ = t
+          .words(view::Live::By(fn() { tr("重试") }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+          .ink(view::Live::Is(0xEDEEF0FFL))
+        })
+      })
+      // Primary Copy chip (Ready only): copies selected text when selected, else copies all recognized text.
+      let _ = bar.box(fn(cb) {
+        let _ = cb
+        .height(view::Live::Is(Some(20.0)))
+        .padding(view::Live::Is((8.0, 0.0, 8.0, 0.0)))
+        .radius(view::Live::Is(6.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::Is(true))
+        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+        .laid_nowhere(view::Live::By(fn() { !(p.ocr.get() is Ready(_, _)) }))
+        .says(view::Live::By(fn() {
+          let label = if p.ocr_sel.get().is_some() { tr("复制选中") } else { tr("复制全部") }
+          Some(view::said(view::Role::Button, label=label))
+        }))
+        .on_press(fn() {
+          if !pin_copy_ocr_selected(p) {
+            let _ = pin_copy_ocr_all(p)
+          }
+        })
+        .ground(view::Live::By(fn() {
+          let copied = !root.drawn_past(p.ocr_copied_at.get() + 1200.0)
+          if copied {
+            0x1D8F52FFL
+          } else if cb.pressed() {
+            0x0E5EC0FFL
+          } else if cb.pointed() {
+            0x1E80F0FFL
+          } else {
+            0x1472E0FFL
+          }
+        }))
+        let _ = cb.box(fn(t) {
+          let _ = t
+          .words(view::Live::By(fn() {
+            let copied = !root.drawn_past(p.ocr_copied_at.get() + 1200.0)
+            if copied {
+              "✓ " + tr("已复制")
+            } else if p.ocr_sel.get().is_some() {
+              tr("复制选中")
+            } else {
+              tr("复制全部")
+            }
+          }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+          .ink(view::Live::Is(0xFFFFFFFFL))
+        })
+      })
+      // Select-all ghost chip (Ready with boxes and wide enough pin)
+      let _ = bar.box(fn(ab) {
+        let _ = ab
+        .height(view::Live::Is(Some(20.0)))
+        .padding(view::Live::Is((6.0, 0.0, 6.0, 0.0)))
+        .radius(view::Live::Is(6.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::Is(true))
+        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+        .laid_nowhere(view::Live::By(fn() {
+          let wide = p.w.to_double() * p.zx.get() >= 260.0
+          match p.ocr.get() {
+            Ready(ws, _) => !wide || ws.length() == 0
+            _ => true
+          }
+        }))
+        .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("全选"))) }))
+        .on_press(fn() {
+          match p.ocr.untracked() {
+            PinOcr::Ready(ws, _) if ws.length() > 0 => p.ocr_sel.set(Some((0, ws.length() - 1)))
+            _ => ()
+          }
+        })
+        .ground(view::Live::By(fn() {
+          if ab.pressed() {
+            0xFFFFFF22L
+          } else if ab.pointed() {
+            0xFFFFFF14L
+          } else {
+            0L
+          }
+        }))
+        let _ = ab.box(fn(t) {
+          let _ = t
+          .words(view::Live::By(fn() { tr("全选") }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+          .ink(view::Live::By(fn() { if ab.pointed() { 0xFFFFFFFFL } else { 0xC8CDD8FFL } }))
+        })
+      })
+      // Exit Live Text × button
+      let _ = bar.box(fn(xb) {
+        let _ = xb
+        .width(view::Live::Is(Some(20.0)))
+        .height(view::Live::Is(Some(20.0)))
+        .radius(view::Live::Is(6.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::Is(true))
+        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+        .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("退出选字"))) }))
+        .on_press(fn() { pin_exit_ocr(p) })
+        .ground(view::Live::By(fn() {
+          if xb.pressed() {
+            0xFFFFFF24L
+          } else if xb.pointed() {
+            0xFFFFFF16L
+          } else {
+            0L
+          }
+        }))
+        let _ = xb.box(fn(ic) {
+          let _ = ic
+          .width(view::Live::Is(Some(11.0)))
+          .height(view::Live::Is(Some(11.0)))
+          .picture(view::Live::Is(Some(close_vec)))
+          .tint(view::Live::By(fn() { if xb.pointed() { 0xFFFFFFFFL } else { 0x9FA7B5FFL } }))
+        })
+      })
+    })
+  })
+}
+
+test "ocr box parsing, joining and hit-testing" {
+  let sample = "0\t0\t0.10\t0.10\t0.05\t0.08\t你\n0\t0\t0.15\t0.10\t0.05\t0.08\t好\n0\t1\t0.22\t0.10\t0.18\t0.08\tPinShot\n1\t0\t0.10\t0.30\t0.20\t0.08\tLive\n1\t1\t0.33\t0.30\t0.18\t0.08\tText\n"
+  let ws = ocr_parse_boxes(sample)
+  assert_eq(ws.length(), 5)
+  assert_eq(ocr_full_text(ws), "你好 PinShot\nLive Text")
+  assert_eq(ocr_text_range(ws, 2, 0), "你好 PinShot")
+  assert_eq(ocr_text_range(ws, 1, 3), "好 PinShot\nLive")
+  assert_eq(ocr_hit_word(ws, 0.12, 0.14, 400.0, 200.0), 0)
+  assert_eq(ocr_hit_word(ws, 0.21, 0.14, 400.0, 200.0), 1)
+  assert_eq(ocr_hit_word(ws, 0.90, 0.90, 400.0, 200.0), -1)
+  assert_eq(ocr_nearest_word(ws, 0.95, 0.14), 2)
+  assert_eq(ocr_nearest_word(ws, 0.02, 0.34), 3)
+  let r0 = ocr_token_range(ws, 0)
+  assert_true(r0.0 == 0 && r0.1 == 1)
+  let r2 = ocr_token_range(ws, 2)
+  assert_true(r2.0 == 2 && r2.1 == 2)
+  let l0 = ocr_line_range(ws, 0)
+  assert_true(l0.0 == 0 && l0.1 == 2)
+  let l4 = ocr_line_range(ws, 4)
+  assert_true(l4.0 == 3 && l4.1 == 4)
+}
