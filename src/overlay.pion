@@ -15,7 +15,7 @@ import "signals"
 import "ui"
 import "view"
 
-let overlay_root : ui::Ref[Option[view::View]] = ui::ref_new(None)
+let overlay_root : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
 /// The moment of what is being done: the tree's clock.
 fn now() -> Double {
@@ -262,7 +262,7 @@ fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
 
 /// The overlay's window made one of PinShot's own as its first frame is drawn (its window is there then): out of sight
 /// till a capture, before anything can open one.
-let overlay_owned : ui::Ref[Bool] = ui::ref_new(false)
+let overlay_owned : signals::Ref[Bool] = signals::ref_new(false)
 
 fn overlay_first_frame() -> Unit {
   if overlay_owned.v || ui::current_window_id() != 0 {
@@ -301,7 +301,7 @@ fn overlay_first_frame() -> Unit {
 }
 
 /// Whether the capture under way is the one taken as the run starts (never seen).
-let warming : ui::Ref[Bool] = ui::ref_new(false)
+let warming : signals::Ref[Bool] = signals::ref_new(false)
 
 /// The overlay's tree, made once.
 fn overlay_window(root : view::View) -> Unit {
@@ -523,10 +523,10 @@ fn size_label(stage : view::View) -> Unit {
 // ---- the hand ----
 
 /// Where the last press went down (pixels), and whether it has moved 3 points from there.
-let down_at : ui::Ref[(Double, Double, Bool)] = ui::ref_new((0.0, 0.0, false))
+let down_at : signals::Ref[(Double, Double, Bool)] = signals::ref_new((0.0, 0.0, false))
 
 /// Whether the press under way put down words being written (it opens no new ones).
-let words_put_down : ui::Ref[Bool] = ui::ref_new(false)
+let words_put_down : signals::Ref[Bool] = signals::ref_new(false)
 
 fn stage_drag(d : view::Drag) -> Unit {
   let (x, y) = to_px(d.x, d.y)
@@ -679,7 +679,7 @@ fn press_down(x : Double, y : Double) -> Unit {
 }
 
 /// The eraser's last point and whether it has erased anything yet, while it is dragged (Erasing).
-let erase_at : ui::Ref[(Double, Double, Bool)] = ui::ref_new((0.0, 0.0, false))
+let erase_at : signals::Ref[(Double, Double, Bool)] = signals::ref_new((0.0, 0.0, false))
 
 fn press_moved(x : Double, y : Double) -> Unit {
   let (_, _, moved) = down_at.v
@@ -779,10 +779,10 @@ fn clamp_to_sel(x : Double, y : Double) -> (Double, Double) {
 }
 
 /// When and where (pixels) the last click was let go (a second soon after and near it: a double click).
-let last_click : ui::Ref[(Double, Double, Double)] = ui::ref_new((0.0, 0.0, 0.0))
+let last_click : signals::Ref[(Double, Double, Double)] = signals::ref_new((0.0, 0.0, 0.0))
 
 /// Whether the first click of a potential double-click pushed an undoable mark/erase (undone if the second click lands).
-let last_click_undo : ui::Ref[Bool] = ui::ref_new(false)
+let last_click_undo : signals::Ref[Bool] = signals::ref_new(false)
 
 /// Whether the click let go at (x, y) is the second of two: as soon after the first as Windows' double click (500 ms)
 /// and within 4 points of it.

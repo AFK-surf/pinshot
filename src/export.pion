@@ -5,11 +5,12 @@
 
 import "hostapi"
 import "pixels"
+import "signals"
 import "ui"
 import "view"
 
 /// What is being done with the picture, while it is taken ("" nothing): no second copy meanwhile.
-let exporting : ui::Ref[String] = ui::ref_new("")
+let exporting : signals::Ref[String] = signals::ref_new("")
 
 /// The part picked drawn as a picture of its own pixels, `done` told its PNG: laid on its background where that is on
 /// (beautify.mbt), unless `framed` is false (the words read out of it).
@@ -190,9 +191,9 @@ fn pin_out() -> Unit {
   })
 }
 
-let r_w : ui::Ref[Int] = ui::ref_new(0)
+let r_w : signals::Ref[Int] = signals::ref_new(0)
 
-let r_h : ui::Ref[Int] = ui::ref_new(0)
+let r_h : signals::Ref[Int] = signals::ref_new(0)
 
 /// The shutter's sound, where the settings have it.
 fn shutter() -> Unit {

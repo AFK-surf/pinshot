@@ -30,7 +30,7 @@ enum PinOcr {
 }
 
 /// Monotonic request counter and in-flight map (cleared as soon as the reading returns or its pin closes).
-let ocr_id : ui::Ref[Int] = ui::ref_new(0)
+let ocr_id : signals::Ref[Int] = signals::ref_new(0)
 
 let ocr_pending : Map[Int, Pin] = Map::new()
 

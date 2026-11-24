@@ -6,6 +6,7 @@
 // what is copied, is where it is.
 
 import "motion"
+import "signals"
 import "ui"
 import "view"
 
@@ -30,7 +31,7 @@ let shown_room : motion::Way = motion::Way::new(0.0)
 let beauty_fade : motion::Way = motion::Way::new(1.0)
 
 /// Whether a part showed as it last changed (a part coming from none is there at once).
-let shown_had : ui::Ref[Bool] = ui::ref_new(false)
+let shown_had : signals::Ref[Bool] = signals::ref_new(false)
 
 /// The ways set as the part, or the background's room, change: at the moment of their cause (`stage`'s).
 fn shown_follow(stage : view::View) -> Unit {

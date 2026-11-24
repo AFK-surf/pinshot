@@ -5,7 +5,7 @@ import "signals"
 import "ui"
 import "view"
 
-let toast_wid : ui::Ref[Int] = ui::ref_new(0)
+let toast_wid : signals::Ref[Int] = signals::ref_new(0)
 
 let toast_text : signals::Signal[String] = signals::signal("")
 

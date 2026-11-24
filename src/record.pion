@@ -33,34 +33,34 @@ fn rec_here() -> Bool {
   hostapi::platform() == 3 || hostapi::platform() == 0
 }
 
-let rec_wid : ui::Ref[Int] = ui::ref_new(0)
+let rec_wid : signals::Ref[Int] = signals::ref_new(0)
 
-let rec_fps_wid : ui::Ref[Int] = ui::ref_new(0)
+let rec_fps_wid : signals::Ref[Int] = signals::ref_new(0)
 
-let rec_root : ui::Ref[Option[view::View]] = ui::ref_new(None)
+let rec_root : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
-let rec_content : ui::Ref[Option[view::View]] = ui::ref_new(None)
+let rec_content : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
-let rec_from_bar : ui::Ref[Option[(Double, Double, Double, Double)]] = ui::ref_new(None)
+let rec_from_bar : signals::Ref[Option[(Double, Double, Double, Double)]] = signals::ref_new(None)
 
 /// True while the screenshot overlay is kept visible for 1 frame until the recording window presents & uncloaks over it.
-let rec_closing_overlay : ui::Ref[Bool] = ui::ref_new(false)
+let rec_closing_overlay : signals::Ref[Bool] = signals::ref_new(false)
 
 /// True for Frame 0 when transitioning from the screenshot toolbar so `shell` starts at the exact screenshot toolbar width
 /// and smoothly morphs its length inward to the Ready bar width (with `cur_x` fixed so DWM never teleports the swapchain).
 let rec_morph_in : signals::Signal[Bool] = signals::signal(false)
 
-let rec_handoff_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+let rec_handoff_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
-let rec_placed_size : ui::Ref[(Int, Int)] = ui::ref_new((0, 0))
+let rec_placed_size : signals::Ref[(Int, Int)] = signals::ref_new((0, 0))
 
-let rec_part : ui::Ref[Rect] = ui::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+let rec_part : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
 
-let rec_mon : ui::Ref[Rect] = ui::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+let rec_mon : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
 
-let rec_work : ui::Ref[Rect] = ui::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+let rec_work : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
 
-let rec_scale : ui::Ref[Double] = ui::ref_new(1.0)
+let rec_scale : signals::Ref[Double] = signals::ref_new(1.0)
 
 /// Phase: 0 Ready, 1 Recording, 2 Paused, 3 Finalizing master, 4 Export picker, 5 Exporting, 6 Exported, 7 Error.
 let rec_phase : signals::Signal[Int] = signals::signal(0)
@@ -121,7 +121,7 @@ let rec_exports : Map[String, (String, Double)] = Map::new()
 
 let rec_exports_ver : signals::Signal[Int] = signals::signal(0)
 
-let rec_exporting_key : ui::Ref[String] = ui::ref_new("")
+let rec_exporting_key : signals::Ref[String] = signals::ref_new("")
 
 let rec_copied_note : signals::Signal[Bool] = signals::signal(false)
 
@@ -129,12 +129,12 @@ let rec_has_av1 : signals::Signal[Bool] = signals::signal(false)
 
 let rec_preview_key : signals::Signal[String] = signals::signal("")
 
-let rec_preview_seq : ui::Ref[Int] = ui::ref_new(0)
+let rec_preview_seq : signals::Ref[Int] = signals::ref_new(0)
 
 /// Inline 2-step discard confirmation when cancelling an active recording or closing an unexported master.
 let rec_confirm_discard : signals::Signal[Bool] = signals::signal(false)
 
-let rec_discard_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+let rec_discard_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
 /// Unified Monoid-style fluid tooltip coordinator for the recording window (same delay, glide, anchor & keycap rules as toolbar.mbt).
 let rec_tips : TipScope = TipScope::new()
@@ -142,7 +142,7 @@ let rec_tips : TipScope = TipScope::new()
 /// Live resize dimensions readout shown inside the bottom transparent halo while dragging the recording frame.
 let rec_tip : signals::Signal[String] = signals::signal("")
 
-let rec_dim_tip_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+let rec_dim_tip_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
 /// Whether the Ready bar's FPS dropdown (30 / 60 / 90 / 120 fps) is expanded.
 let rec_fps_open : signals::Signal[Bool] = signals::signal(false)
@@ -559,7 +559,7 @@ fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
   ps_place(rec_wid.v, x, y, w, h, 1, if do_focus { 1 } else { 0 })
 }
 
-let rec_shrink_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+let rec_shrink_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
 /// Measure the inner content box (including its transparent shadow halo) and resize snugly.
 /// When shrinking (e.g. Ready bar -> Recording bar), defer HWND tightening until after the 185ms pill morph finishes
@@ -1514,7 +1514,7 @@ fn rec_window(root : view::View) -> Unit {
       let _ = content.box(fn(shell) {
         let is_exp = fn() { rec_phase.get() >= 4 }
         let exp_p = motion::eased_on(shell, is_exp, motion::tween(185.0, ease=ui::Ease::Out))
-        let rec_moves_ref : ui::Ref[Option[motion::Moves]] = ui::ref_new(None)
+        let rec_moves_ref : signals::Ref[Option[motion::Moves]] = signals::ref_new(None)
         let rec_parts : Array[view::View] = []
         let track_part = fn(v : view::View) {
           match rec_moves_ref.v {

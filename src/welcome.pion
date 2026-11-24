@@ -2,10 +2,11 @@
 // `--installed`): confirms installation visibly (Win11 often suppresses legacy tray balloons), shows active shortcuts,
 // offers an instant Start-with-Windows toggle, and links to Settings. Zero overhead when closed.
 
+import "signals"
 import "ui"
 import "view"
 
-let welcome_wid : ui::Ref[Int] = ui::ref_new(0)
+let welcome_wid : signals::Ref[Int] = signals::ref_new(0)
 
 fn open_welcome() -> Unit {
   if welcome_wid.v > 0 && ui::window_front_here(welcome_wid.v) {

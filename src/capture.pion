@@ -8,17 +8,17 @@ import "signals"
 import "ui"
 
 /// The monitor taken: where it is on the screen and how big (pixels), and its scale (pixels a point).
-let mon : ui::Ref[Rect] = ui::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+let mon : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
 
 /// The monitor's usable work area in monitor-local pixels (excluding Dock/taskbar and menu bar).
-let mon_work : ui::Ref[Rect] = ui::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+let mon_work : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
 
 let mon_scale : signals::Signal[Double] = signals::signal(1.0)
 
 /// The key the overlay shows the picture by ("" none): a new one each capture, so no decode of the last is shown.
 let frozen_key : signals::Signal[String] = signals::signal("")
 
-let frozen_n : ui::Ref[Int] = ui::ref_new(0)
+let frozen_n : signals::Ref[Int] = signals::ref_new(0)
 
 /// The windows on it, the front first (what a click picks while nothing is selected).
 let windows_on : signals::Signal[Array[Rect]] = signals::signal_ref([])
@@ -30,9 +30,9 @@ let capturing : signals::Signal[Bool] = signals::signal(false)
 let overlay_seen : signals::Signal[Bool] = signals::signal(false)
 
 /// When the shortcut was pressed (ps_now_ms), and how long the screen took to take: for the timings said in the log.
-let asked_at : ui::Ref[Double] = ui::ref_new(0.0)
+let asked_at : signals::Ref[Double] = signals::ref_new(0.0)
 
-let took_ms : ui::Ref[Double] = ui::ref_new(0.0)
+let took_ms : signals::Ref[Double] = signals::ref_new(0.0)
 
 /// The pointer on the overlay, in the monitor's pixels (where it was last seen).
 let pointer_px : signals::Signal[(Double, Double)] = signals::signal_by((0.0, 0.0), fn(a, b) { a.0 == b.0 && a.1 == b.1 })
@@ -206,10 +206,10 @@ fn capture_taken() -> Unit {
 }
 
 /// How the screen was taken ("gdi", "wgc start/frame/copy" ms).
-let took_how : ui::Ref[String] = ui::ref_new("")
+let took_how : signals::Ref[String] = signals::ref_new("")
 
 /// When the picture came over to the app.
-let taken_at : ui::Ref[Double] = ui::ref_new(0.0)
+let taken_at : signals::Ref[Double] = signals::ref_new(0.0)
 
 /// The capture closed: the overlay gone at once, the picture let go of.
 fn close_capture() -> Unit {

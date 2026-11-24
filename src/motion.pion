@@ -106,12 +106,12 @@ fn sliding_thumb(
   let wy = motion::NodeWay::new(0.0)
   let ww = motion::NodeWay::new(0.0)
   let wh = motion::NodeWay::new(0.0)
-  let placed = ui::ref_new(false)
-  let last_key = ui::ref_new(-999999)
-  let last_snap = ui::ref_new(signals::untracked(snap_watch))
+  let placed = signals::ref_new(false)
+  let last_key = signals::ref_new(-999999)
+  let last_snap = signals::ref_new(signals::untracked(snap_watch))
   let visible : signals::Signal[Bool] = signals::signal(false)
-  let thumb_ref : ui::Ref[Option[view::View]] = ui::ref_new(None)
-  let pending_cancel : ui::Ref[() -> Unit] = ui::ref_new(fn() {  })
+  let thumb_ref : signals::Ref[Option[view::View]] = signals::ref_new(None)
+  let pending_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
   let _ = container.box(fn(th) {
     thumb_ref.v = Some(th)
@@ -205,7 +205,7 @@ fn rolling_label(
 ) -> Unit {
   let first = signals::untracked(value)
   let st : signals::Signal[RollTextState] = signals::signal_by(RollTextState::{ words: format(first), dir: 0.0 }, fn(a, b) { a == b })
-  let last = ui::ref_new(first)
+  let last = signals::ref_new(first)
   let look = view::WordsLook::{ ..view::words_plain, size, weight, line, wrap: false }
   let _ = parent.box(fn(v) {
     let _ = v.row(view::Live::Is(true)).lines_up(view::Live::Is(Some(view::Along::Middle))).shrink(view::Live::Is(0.0))
@@ -238,7 +238,7 @@ fn rolling_label(
         let held = signals::untracked(char_now)
         let shown : signals::Signal[String] = signals::signal(held)
         let gone : signals::Signal[String] = signals::signal("")
-        let way_dir = ui::ref_new(1.0)
+        let way_dir = signals::ref_new(1.0)
         let roll = motion::NodeWay::new(1.0)
         slot.reacts(fn() { (char_now(), st.get().dir) }, at_start=false, fn(now) {
           let (c, d) = now

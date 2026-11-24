@@ -13,7 +13,7 @@ import "ui"
 import "view"
 
 struct Pin {
-  wid : ui::Ref[Int]
+  wid : signals::Ref[Int]
   /// the picture as it was pinned, the one kept (its pixels made turned only to be shown, copied or saved: the
   /// review, #1), and its size
   png : Bytes
@@ -43,24 +43,24 @@ struct Pin {
   /// which of its edges the pointer is by (pin_edge: 1 left, 2 right, 4 top, 8 bottom; 0 inside): the cursor's
   edge : signals::Signal[Int]
   /// a drag by an edge under way: none, or where it went down
-  sizing : ui::Ref[Option[PinSizing]]
+  sizing : signals::Ref[Option[PinSizing]]
   /// Live Text (in-place OCR selection on the pin image; zero idle cost while ocr_on is false)
   ocr_on : signals::Signal[Bool]
   ocr : signals::Signal[PinOcr]
   ocr_sel : signals::Signal[Option[(Int, Int)]]
   ocr_hover : signals::Signal[Int]
   ocr_copied_at : signals::Signal[Double]
-  ocr_req : ui::Ref[Int]
-  ocr_from_capture : ui::Ref[Bool]
-  ocr_selecting : ui::Ref[Bool]
-  ocr_anchor : ui::Ref[Int]
-  ocr_down_on_word : ui::Ref[Bool]
-  ocr_down_x : ui::Ref[Double]
-  ocr_down_y : ui::Ref[Double]
-  ocr_drag_moved : ui::Ref[Bool]
-  ocr_click_at : ui::Ref[Double]
-  ocr_click_word : ui::Ref[Int]
-  ocr_clicks : ui::Ref[Int]
+  ocr_req : signals::Ref[Int]
+  ocr_from_capture : signals::Ref[Bool]
+  ocr_selecting : signals::Ref[Bool]
+  ocr_anchor : signals::Ref[Int]
+  ocr_down_on_word : signals::Ref[Bool]
+  ocr_down_x : signals::Ref[Double]
+  ocr_down_y : signals::Ref[Double]
+  ocr_drag_moved : signals::Ref[Bool]
+  ocr_click_at : signals::Ref[Double]
+  ocr_click_word : signals::Ref[Int]
+  ocr_clicks : signals::Ref[Int]
 }
 
 /// A pin being sized by an edge or a corner: which (pin_edge's bits), its window as the press went down (x, y, w, h,
@@ -80,10 +80,10 @@ struct PinSizing {
 /// The pins by what each window was opened for ("pin:N").
 let pins : Map[String, Pin] = Map::new()
 
-let pin_n : ui::Ref[Int] = ui::ref_new(0)
+let pin_n : signals::Ref[Int] = signals::ref_new(0)
 
 /// Whether the pins are out of sight (the shortcut that hides and shows them all).
-let pins_hidden : ui::Ref[Bool] = ui::ref_new(false)
+let pins_hidden : signals::Ref[Bool] = signals::ref_new(false)
 
 /// A pin of `png` (w by h pixels) opened at x, y on the screen, at `zoom` (a long screenshot's: brought down to fit).
 fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.0, start_ocr~ : Bool = false) -> Unit {
@@ -93,7 +93,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.
   ui::add_image(key, png)
   let s = settings.untracked()
   let p : Pin = Pin::{
-    wid: ui::ref_new(0),
+    wid: signals::ref_new(0),
     png,
     first_w: w,
     first_h: h,
@@ -112,7 +112,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.
     active_at: signals::signal(-10000.0),
     flash: signals::signal(0.0),
     edge: signals::signal(0),
-    sizing: ui::ref_new(None),
+    sizing: signals::ref_new(None),
     ocr_on: signals::signal(false),
     ocr: signals::signal_ref(Idle),
     ocr_sel: signals::signal_by(None, fn(a, b) {
@@ -124,17 +124,17 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.
     }),
     ocr_hover: signals::signal(-1),
     ocr_copied_at: signals::signal(-10000.0),
-    ocr_req: ui::ref_new(0),
-    ocr_from_capture: ui::ref_new(start_ocr),
-    ocr_selecting: ui::ref_new(false),
-    ocr_anchor: ui::ref_new(-1),
-    ocr_down_on_word: ui::ref_new(false),
-    ocr_down_x: ui::ref_new(0.0),
-    ocr_down_y: ui::ref_new(0.0),
-    ocr_drag_moved: ui::ref_new(false),
-    ocr_click_at: ui::ref_new(-10000.0),
-    ocr_click_word: ui::ref_new(-1),
-    ocr_clicks: ui::ref_new(0),
+    ocr_req: signals::ref_new(0),
+    ocr_from_capture: signals::ref_new(start_ocr),
+    ocr_selecting: signals::ref_new(false),
+    ocr_anchor: signals::ref_new(-1),
+    ocr_down_on_word: signals::ref_new(false),
+    ocr_down_x: signals::ref_new(0.0),
+    ocr_down_y: signals::ref_new(0.0),
+    ocr_drag_moved: signals::ref_new(false),
+    ocr_click_at: signals::ref_new(-10000.0),
+    ocr_click_word: signals::ref_new(-1),
+    ocr_clicks: signals::ref_new(0),
   }
   pins[what] = p
   let wid = ui::window_open_here(what)
@@ -365,7 +365,7 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
 }
 
 /// For the keys of turned pictures.
-let pin_key_n : ui::Ref[Int] = ui::ref_new(0)
+let pin_key_n : signals::Ref[Int] = signals::ref_new(0)
 
 /// The pin turned a quarter clockwise (`cw`) or the other way: its sides and zooms swapped.
 fn turn_pin(p : Pin, cw : Bool) -> Unit {
@@ -1192,7 +1192,7 @@ fn pin_active(wid : Int, on : Bool) -> Unit {
   p.flash.set(1.0)
   if hostapi::platform() == 0 && pin_roots.get(wid) is Some(root) {
     let since = p.active_at.untracked()
-    let advance_ref : ui::Ref[() -> Unit] = ui::ref_new(fn() { () })
+    let advance_ref : signals::Ref[() -> Unit] = signals::ref_new(fn() { () })
     advance_ref.v = fn() {
       if p.active_at.untracked() == since && p.flash.untracked() > 0.0 {
         pin_tick(wid)

@@ -194,7 +194,7 @@ fn main_tool_slot() -> Int {
 }
 
 /// The main screenshot toolbar row view, used to hand its exact screen rect to the recording bar on transition.
-let toolbar_main_view : ui::Ref[Option[view::View]] = ui::ref_new(None)
+let toolbar_main_view : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
 /// Exact screen rect (x, y, w, h in monitor-local points) of the main screenshot toolbar row, if mounted and laid out.
 fn toolbar_main_rect() -> Option[(Double, Double, Double, Double)] {
@@ -738,9 +738,9 @@ fn style_row(row : view::View) -> Unit {
   let left_w = motion::NodeWay::new(style_left_width(init_grp))
   let color_a = motion::NodeWay::new(if init_col { 1.0 } else { 0.0 })
 
-  let shell_ref : ui::Ref[Option[view::View]] = ui::ref_new(None)
-  let left_ref : ui::Ref[Option[view::View]] = ui::ref_new(None)
-  let csec_ref : ui::Ref[Option[view::View]] = ui::ref_new(None)
+  let shell_ref : signals::Ref[Option[view::View]] = signals::ref_new(None)
+  let left_ref : signals::Ref[Option[view::View]] = signals::ref_new(None)
+  let csec_ref : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
   let _ = row.box(fn(shell) {
     shell_ref.v = Some(shell)
@@ -1043,22 +1043,22 @@ let tip_out_scale : Double = 0.97
 
 /// Per-window coordinator for Monoid-style fluid tooltips (shared across screenshot, recording, and longshot toolbars).
 struct TipScope {
-  layer : ui::Ref[Option[view::View]]
+  layer : signals::Ref[Option[view::View]]
   owner : signals::Signal[Int]
-  next_id : ui::Ref[Int]
+  next_id : signals::Ref[Int]
   hands : motion::Handoff
-  went_at : ui::Ref[Double]
-  shut_now : ui::Ref[() -> Unit]
+  went_at : signals::Ref[Double]
+  shut_now : signals::Ref[() -> Unit]
 }
 
 fn TipScope::new() -> TipScope {
   TipScope::{
-    layer: ui::ref_new(None),
+    layer: signals::ref_new(None),
     owner: signals::signal(0),
-    next_id: ui::ref_new(0),
+    next_id: signals::ref_new(0),
     hands: motion::Handoff::new(within=tip_linger),
-    went_at: ui::ref_new(-1.0e18),
-    shut_now: ui::ref_new(fn() {  }),
+    went_at: signals::ref_new(-1.0e18),
+    shut_now: signals::ref_new(fn() {  }),
   }
 }
 
@@ -1223,10 +1223,10 @@ fn TipScope::follow(
       open.set(false)
     },
   )
-  let made = ui::ref_new(false)
-  let holder_v : ui::Ref[Option[view::View]] = ui::ref_new(None)
-  let shut = ui::ref_new(false)
-  let rest : ui::Ref[Option[() -> Unit]] = ui::ref_new(None)
+  let made = signals::ref_new(false)
+  let holder_v : signals::Ref[Option[view::View]] = signals::ref_new(None)
+  let shut = signals::ref_new(false)
+  let rest : signals::Ref[Option[() -> Unit]] = signals::ref_new(None)
   let stop_rest = fn() {
     match rest.v {
       Some(cancel) => cancel()

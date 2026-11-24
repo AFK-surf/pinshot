@@ -18,6 +18,7 @@
 import "host"
 import "hostapi"
 import "json"
+import "signals"
 import "ui"
 
 pub fn main(_world : World) -> Int {
@@ -286,10 +287,10 @@ fn bench() -> Unit {
 }
 
 /// Whether the run was started to open its settings (they open once its window is there).
-let started_with_settings : ui::Ref[Bool] = ui::ref_new(false)
+let started_with_settings : signals::Ref[Bool] = signals::ref_new(false)
 
 /// Whether the run was just installed interactively (opens the minimal installed welcome card once its window is there).
-let started_with_welcome : ui::Ref[Bool] = ui::ref_new(false)
+let started_with_welcome : signals::Ref[Bool] = signals::ref_new(false)
 
 /// The theme every window's words are in: dark, as PinShot is, and digits all one width (the user, 2026-11-17: 「有的数字需要用等宽模式」:
 /// a number that changes where it stands, the magnifier's place and colour, a size, a zoom, keeps its width).

@@ -43,11 +43,11 @@ let marks : signals::Signal[Array[Mark]] = signals::signal_ref([])
 /// The mark being drawn now (None: none).
 let draft : signals::Signal[Option[Mark]] = signals::signal_ref(None)
 
-let undone : ui::Ref[Array[Array[Mark]]] = ui::ref_new([])
+let undone : signals::Ref[Array[Array[Mark]]] = signals::ref_new([])
 
-let done_before : ui::Ref[Array[Array[Mark]]] = ui::ref_new([])
+let done_before : signals::Ref[Array[Array[Mark]]] = signals::ref_new([])
 
-let mark_ids : ui::Ref[Int] = ui::ref_new(0)
+let mark_ids : signals::Ref[Int] = signals::ref_new(0)
 
 let tool : signals::Signal[Tool] = signals::signal_by(Move, fn(a, b) { a == b })
 

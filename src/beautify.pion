@@ -50,7 +50,7 @@ fn beauty_path() -> String {
   file_in(text_of(ps_data_dir()), "beauty.json")
 }
 
-let beauty_read : ui::Ref[Bool] = ui::ref_new(false)
+let beauty_read : signals::Ref[Bool] = signals::ref_new(false)
 
 /// beauty.json read once, as it is first turned on.
 fn beauty_load() -> Unit {
@@ -117,7 +117,7 @@ let wallpaper : signals::Signal[Option[(String, Double, Double)]] = signals::sig
   }
 })
 
-let wallpaper_n : ui::Ref[Int] = ui::ref_new(0)
+let wallpaper_n : signals::Ref[Int] = signals::ref_new(0)
 
 /// The desktop's wallpaper read again (it may have changed since), the one read before let go.
 fn wallpaper_read() -> Unit {

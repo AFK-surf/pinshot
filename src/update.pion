@@ -117,25 +117,25 @@ fn plain_sha(h : String) -> Bool {
   true
 }
 
-let release : ui::Ref[Option[Release]] = ui::ref_new(None)
+let release : signals::Ref[Option[Release]] = signals::ref_new(None)
 
 /// Where the release was downloaded to.
-let update_file : ui::Ref[String] = ui::ref_new("")
+let update_file : signals::Ref[String] = signals::ref_new("")
 
 /// Whether the person asked for this (检查更新, 立即更新): what is found is put in place at once, not waited for.
-let update_asked : ui::Ref[Bool] = ui::ref_new(false)
+let update_asked : signals::Ref[Bool] = signals::ref_new(false)
 
 /// When the release downloaded came to be ready (seconds since 1970), and whether the person was told it waits.
-let ready_at : ui::Ref[Double] = ui::ref_new(0.0)
+let ready_at : signals::Ref[Double] = signals::ref_new(0.0)
 
-let ready_noted : ui::Ref[Bool] = ui::ref_new(false)
+let ready_noted : signals::Ref[Bool] = signals::ref_new(false)
 
 /// When latest.json was last asked for this run, whether or not it was got (seconds since 1970; 0 not yet): one that
 /// failed is asked again an hour after, not at each tick.
-let last_tried : ui::Ref[Double] = ui::ref_new(0.0)
+let last_tried : signals::Ref[Double] = signals::ref_new(0.0)
 
 /// How this copy was installed (ps_install_kind: 2 the Store's, 1 PinShot-Setup's, 0 the portable exe).
-let install_kind : ui::Ref[Int] = ui::ref_new(-1)
+let install_kind : signals::Ref[Int] = signals::ref_new(-1)
 
 fn update_kind() -> Int {
   if install_kind.v < 0 {

@@ -385,7 +385,7 @@ fn apply_keys() -> Unit {
 
 // ---- the window ----
 
-let settings_wid : ui::Ref[Int] = ui::ref_new(0)
+let settings_wid : signals::Ref[Int] = signals::ref_new(0)
 
 fn open_settings(tab~ : Int = -1) -> Unit {
   if tab >= 0 && tab < settings_tabs.length() {
@@ -966,8 +966,8 @@ fn sponsor_card(parent : view::View) -> Unit {
     glow.go_from(card, 0.0, 1.0, motion::tween(900.0, ease=ui::Ease::Out))
     sheen.go_from(card, 0.0, 1.0, motion::tween(820.0, ease=ui::Ease::Out), at=card.cause_at() + 240.0)
     // (hovered: the heart once, the sheen once, the steam again for as long as the pointer stays)
-    let rise_again : ui::Ref[() -> Unit] = ui::ref_new(fn() { () })
-    let keep_rising_fn : ui::Ref[() -> Unit] = ui::ref_new(fn() { () })
+    let rise_again : signals::Ref[() -> Unit] = signals::ref_new(fn() { () })
+    let keep_rising_fn : signals::Ref[() -> Unit] = signals::ref_new(fn() { () })
     keep_rising_fn.v = fn() {
       steam.go_from(card, 0.0, 1.0, motion::tween(2200.0, ease=ui::Ease::Linear))
       rise_again.v = card.at_moment(card.cause_at() + 2200.0, fn() {
@@ -1130,7 +1130,7 @@ fn set_words(parent : view::View, text : () -> String, size : Double, ink : Int6
   })
 }
 
-let set_card_rows : ui::Ref[Int] = ui::ref_new(0)
+let set_card_rows : signals::Ref[Int] = signals::ref_new(0)
 
 fn set_group(parent : view::View, title : String, make : (view::View) -> Unit) -> Unit {
   let _ = parent.box(fn(g) {
