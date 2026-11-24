@@ -183,6 +183,7 @@ extern "C" fn ps_own(wid : Int, topmost : Int) -> Int = "ps_own"
 extern "C" fn ps_place(wid : Int, x : Int, y : Int, w : Int, h : Int, show : Int, focus : Int) -> Unit = "ps_place"
 extern "C" fn ps_hide(wid : Int) -> Unit = "ps_hide"
 extern "C" fn ps_let_close(wid : Int) -> Unit = "ps_let_close"
+extern "C" fn ps_hit_inset(wid : Int, l : Int, t : Int, r : Int, b : Int) -> Unit = "ps_hit_inset"
 extern "C" fn ps_center(wid : Int, w : Int, h : Int) -> Unit = "ps_center"
 extern "C" fn ps_cloak(wid : Int, on : Int) -> Unit = "ps_cloak"
 extern "C" fn ps_topmost(wid : Int, on : Int, front : Int) -> Unit = "ps_topmost"
@@ -258,6 +259,7 @@ extern "C" fn c_ps_install_cli(v : Ptr, vl : Int64) -> Int = "pion_ps_install_cl
 extern "C" fn c_ps_install_sync_meta(v : Ptr, vl : Int64) -> Unit = "pion_ps_install_sync_meta"
 extern "C" fn c_ps_swap_exe(p : Ptr, pl : Int64, s : Ptr, sl : Int64) -> Int = "pion_ps_swap_exe"
 extern "C" fn c_ps_open_url(u : Ptr, ul : Int64) -> Unit = "pion_ps_open_url"
+extern "C" fn c_ps_stdout(s : Ptr, sl : Int64) -> Unit = "pion_ps_stdout"
 
 // ---- Wrappers keeping exact original PinShot signatures ----
 
@@ -592,7 +594,8 @@ fn json_stringify(j : json::Json) -> String {
 }
 
 fn println(s : String) -> Unit {
-  log(s)
+  let b = s.to_bytes()
+  c_ps_stdout(bytes_data_ptr(b), b.length().to_int64())
 }
 
 fn shortcut_mod() -> Int {

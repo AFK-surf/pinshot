@@ -1245,10 +1245,12 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
       return 0;
     }
     case WM_ACTIVATE: {
-      // (taken or let go as the window in front: a pin shows it)
+      // (taken or let go as the window in front: a pin shows it; other = sibling PinShot wid gaining focus if any)
       int on = LOWORD(wp) != WA_INACTIVE;
-      char json[64];
-      snprintf(json, sizeof json, "{\"do\":\"active\",\"wid\":%d,\"on\":%d}", (int)wid, on);
+      int other = 0;
+      if (!on && lp) other = (int)(INT_PTR)GetPropW((HWND)lp, L"PinShot.Wid");
+      char json[96];
+      snprintf(json, sizeof json, "{\"do\":\"active\",\"wid\":%d,\"on\":%d,\"other\":%d}", (int)wid, on, other);
       ps_tell(json);
       // (and drawn on: the app hears it on its own window's frame, a pin draws only as something comes to it; its
       // flash, as it is taken, runs 360 ms, a frame asked of it every 16 ms till then. Let go, it is drawn twice, its
@@ -1304,12 +1306,31 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
       }
       break;
     }
+    case WM_NCHITTEST: {
+      UINT_PTR packed = (UINT_PTR)GetPropW(h, L"PinShot.HitInset");
+      if (packed) {
+        int il = (int)(packed & 0xFFFF);
+        int it = (int)((packed >> 16) & 0xFFFF);
+        int ir = (int)((packed >> 32) & 0xFFFF);
+        int ib = (int)((packed >> 48) & 0xFFFF);
+        RECT wr;
+        GetWindowRect(h, &wr);
+        int px = (int)(short)LOWORD(lp) - wr.left;
+        int py = (int)(short)HIWORD(lp) - wr.top;
+        if (px < il || py < it || px >= (wr.right - wr.left) - ir || py >= (wr.bottom - wr.top) - ib) {
+          return HTTRANSPARENT;
+        }
+      }
+      break;
+    }
     case WM_NCDESTROY:
       KillTimer(h, 0x5053);
       RemovePropW(h, L"PinShot.Frames");
       RemovePropW(h, L"PinShot.Closing");
       RemovePropW(h, L"PinShot.Clear");
       RemovePropW(h, L"PinShot.Cloaked");
+      RemovePropW(h, L"PinShot.Wid");
+      RemovePropW(h, L"PinShot.HitInset");
       RemoveWindowSubclass(h, own_proc, 1);
       break;
   }
@@ -1328,6 +1349,21 @@ void ps_move_window(int32_t wid) {
 void ps_let_close(int32_t wid) {
   HWND h = own_window(wid);
   if (h) SetPropW(h, L"PinShot.Closing", (HANDLE)1);
+}
+
+// Click-through margins (physical pixels) for a transparent shadow-halo popup window so its halo never blocks sibling UI.
+void ps_hit_inset(int32_t wid, int32_t l, int32_t t, int32_t r, int32_t b) {
+  HWND h = own_window(wid);
+  if (!h) return;
+  if (l <= 0 && t <= 0 && r <= 0 && b <= 0) {
+    RemovePropW(h, L"PinShot.HitInset");
+    return;
+  }
+  UINT_PTR packed = ((UINT_PTR)(l & 0xFFFF)) |
+                    (((UINT_PTR)(t & 0xFFFF)) << 16) |
+                    (((UINT_PTR)(r & 0xFFFF)) << 32) |
+                    (((UINT_PTR)(b & 0xFFFF)) << 48);
+  SetPropW(h, L"PinShot.HitInset", (HANDLE)packed);
 }
 
 // A test run kept out of sight (PINSHOT_TEST_CLOAKED): each window beside the overlay cloaked as it is placed (a pin,
@@ -1356,7 +1392,9 @@ int32_t ps_own(int32_t wid, int32_t topmost) {
   LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
   ex &= ~(LONG_PTR)WS_EX_APPWINDOW;
   ex |= WS_EX_TOOLWINDOW;
+  if (topmost == 2) ex |= WS_EX_NOACTIVATE;
   SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
+  SetPropW(h, L"PinShot.Wid", (HANDLE)(INT_PTR)wid);
   DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
   DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
   // (no transition of DWM's as it shows or hides: it is there at once, and gone at once)

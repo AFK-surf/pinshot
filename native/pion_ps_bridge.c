@@ -9,6 +9,13 @@
 #include "moonbit.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
+
+void pion_ps_stdout(const uint8_t *s, int64_t sl) {
+  if (s && sl > 0) fwrite(s, 1, (size_t)sl, stdout);
+  fputc('\n', stdout);
+  fflush(stdout);
+}
 
 extern moonbit_bytes_t pion_mb_bytes_from_raw(const uint8_t *ptr, int64_t len);
 

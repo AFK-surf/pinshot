@@ -68,6 +68,8 @@ pub fn main(_world : World) -> Int {
       long_window
     } else if what == "rec" {
       rec_window
+    } else if what == "rec_fps" {
+      rec_fps_window
     } else {
       pin_window(wid, what)
     }
@@ -99,6 +101,10 @@ pub fn main(_world : World) -> Int {
     }
     if wid == rec_wid.v {
       rec_gone()
+    }
+    if wid == rec_fps_wid.v {
+      rec_fps_wid.v = 0
+      rec_fps_open.set(false)
     }
     pin_gone(wid)
   })
@@ -196,7 +202,13 @@ fn told(json : String, bytes : Option[Bytes]) -> Unit {
     }
     "active" => {
       let w = jnum(o, "wid", -1.0)
-      if w >= 0.0 { pin_active(w.to_int(), jnum(o, "on", 0.0) != 0.0) }
+      if w >= 0.0 {
+        let wid = w.to_int()
+        let on = jnum(o, "on", 0.0) != 0.0
+        let other = jnum(o, "other", 0.0).to_int()
+        pin_active(wid, on)
+        rec_active(wid, on, other)
+      }
     }
     "pins" => pins_toggle()
     "key-pressed" => {
@@ -218,6 +230,8 @@ fn told(json : String, bytes : Option[Bytes]) -> Unit {
           long_close()
         } else if wid == rec_wid.v {
           rec_cancel()
+        } else if wid == rec_fps_wid.v {
+          rec_fps_open.set(false)
         } else {
           close_pin(wid)
         }

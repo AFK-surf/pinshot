@@ -35,6 +35,8 @@ fn rec_here() -> Bool {
 
 let rec_wid : ui::Ref[Int] = ui::ref_new(0)
 
+let rec_fps_wid : ui::Ref[Int] = ui::ref_new(0)
+
 let rec_root : ui::Ref[Option[view::View]] = ui::ref_new(None)
 
 let rec_content : ui::Ref[Option[view::View]] = ui::ref_new(None)
@@ -163,6 +165,93 @@ fn rec_fps_should_open_up() -> Bool {
   let room_above = r[1] + rec_pad_t * k - m.y.to_double()
   let need = 136.0 * k
   room_below < need && room_above >= need
+}
+
+/// Transparent shadow halo around the floating FPS dropdown popup window.
+let rec_fps_pad_x : Double = 24.0
+
+let rec_fps_pad_t : Double = 20.0
+
+let rec_fps_pad_b : Double = 30.0
+
+let rec_fps_card_w : Double = 98.0
+
+let rec_fps_card_h : Double = 118.0
+
+fn rec_fps_place() -> Unit {
+  if rec_wid.v == 0 || rec_phase.untracked() != 0 {
+    return
+  }
+  let r = numbers_of(text_of(ps_window_rect(rec_wid.v)))
+  if r.length() < 4 || r[2] <= 0.0 || r[3] <= 0.0 {
+    return
+  }
+  let m = rec_work.v
+  let k = rec_scale.v
+  let upward = rec_fps_up.untracked()
+  let pw = ((rec_fps_card_w + rec_fps_pad_x * 2.0) * k).ceil().to_int()
+  let ph = ((rec_fps_card_h + rec_fps_pad_t + rec_fps_pad_b) * k).ceil().to_int()
+  let rx = r[0].round().to_int()
+  let ry = r[1].round().to_int()
+  let rh = r[3].round().to_int()
+  let card_x = rx + ((rec_pad_l + 62.0) * k).round().to_int()
+  let px = clampi(card_x - (rec_fps_pad_x * k).round().to_int(), m.x, m.right() - pw)
+  let py = if upward {
+    let bar_top = ry + (rec_pad_t * k).round().to_int()
+    let card_top = bar_top - ((6.0 + rec_fps_card_h) * k).round().to_int()
+    clampi(card_top - (rec_fps_pad_t * k).round().to_int(), m.y, m.bottom() - ph)
+  } else {
+    let bar_bot = ry + rh - (rec_pad_b * k).round().to_int()
+    let card_top = bar_bot + (6.0 * k).round().to_int()
+    clampi(card_top - (rec_fps_pad_t * k).round().to_int(), m.y, m.bottom() - ph)
+  }
+  if rec_fps_wid.v == 0 {
+    ps_next_win_clear()
+    let wid = ui::window_open_here("rec_fps")
+    if wid <= 0 {
+      return
+    }
+    rec_fps_wid.v = wid
+    let _ = ps_own(wid, 2)
+    ps_rec_exclude(wid)
+    if ui::env("PINSHOT_TEST_CLOAKED") != "" {
+      ps_cloak(wid, 1)
+    }
+  }
+  ps_hit_inset(
+    rec_fps_wid.v,
+    (rec_fps_pad_x * k).round().to_int(),
+    (rec_fps_pad_t * k).round().to_int(),
+    (rec_fps_pad_x * k).round().to_int(),
+    (rec_fps_pad_b * k).round().to_int(),
+  )
+  ps_place(rec_fps_wid.v, px, py, pw, ph, 1, 0)
+}
+
+fn rec_fps_sync() -> Unit {
+  if rec_wid.v != 0 && rec_phase.untracked() == 0 && rec_fps_open.untracked() {
+    rec_fps_place()
+  } else if rec_fps_wid.v != 0 {
+    ps_hide(rec_fps_wid.v)
+  }
+}
+
+fn rec_fps_close_window() -> Unit {
+  if rec_fps_wid.v != 0 {
+    let fwid = rec_fps_wid.v
+    rec_fps_wid.v = 0
+    close_window(fwid)
+  }
+}
+
+/// Dismiss the FPS dropdown when either the recording bar or dropdown loses activation to an external window.
+fn rec_active(wid : Int, on : Bool, other : Int) -> Unit {
+  if on || !rec_fps_open.untracked() {
+    return
+  }
+  if (wid == rec_wid.v && other != rec_fps_wid.v) || (wid == rec_fps_wid.v && other != rec_wid.v) {
+    rec_fps_open.set(false)
+  }
 }
 
 /// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma so alpha reaches 0 before every window edge).
@@ -802,6 +891,7 @@ fn rec_close() -> Unit {
   if rec_wid.v == 0 {
     return
   }
+  rec_fps_close_window()
   ps_rec_end()
   ps_capture_open(0)
   let wid = rec_wid.v
@@ -811,6 +901,7 @@ fn rec_close() -> Unit {
 }
 
 fn rec_gone() -> Unit {
+  rec_fps_close_window()
   if rec_wid.v != 0 {
     rec_wid.v = 0
     ps_rec_end()
@@ -1376,12 +1467,16 @@ fn rec_window(root : view::View) -> Unit {
     rec_disarm_discard()
   })
 
-  // Re-measure and adapt window dimensions cleanly whenever UI structure/labels change (never on timer ticks or late codec init).
+  // Sync the separate FPS dropdown popup window without ever resizing or moving `rec_wid`.
+  root.reacts(fn() { (rec_phase.get(), rec_fps_open.get(), rec_fps_up.get()) }, at_start=false, fn(_) {
+    rec_fps_sync()
+  })
+
+  // Re-measure and adapt window dimensions cleanly whenever UI structure/labels change (never on timer ticks, dropdown open/close, or late codec init).
   root.reacts(fn() {
     (
       rec_phase.get(),
       rec_morph_in.get(),
-      rec_fps_open.get(),
       rec_fps.get(),
       rec_exp_fmt.get(),
       rec_exp_qual.get(),
@@ -1397,7 +1492,15 @@ fn rec_window(root : view::View) -> Unit {
 
   // Transparent page over DirectComposition so the inner superellipse bar/panel + soft shadow float natively
   let _ = root.box(fn(page) {
-    let _ = page.over(view::Live::Is(true)).lines_up(view::Live::Is(Some(view::Along::Start)))
+    let _ = page
+    .over(view::Live::Is(true))
+    .lines_up(view::Live::Is(Some(view::Along::Start)))
+    .presses(view::Live::Is(true))
+    .on_press(fn() {
+      if rec_fps_open.untracked() {
+        rec_fps_open.set(false)
+      }
+    })
 
     // Content wrapper including transparent shadow halo whose laid_size() drives exact window size
     let _ = page.box(fn(content) {
@@ -1406,11 +1509,6 @@ fn rec_window(root : view::View) -> Unit {
       .shrink(view::Live::Is(0.0))
       .padding(view::Live::Is((rec_pad_l, rec_pad_t, rec_pad_r, rec_pad_b)))
       .lines_up(view::Live::Is(Some(view::Along::Start)))
-
-      // Upward-unfolding FPS dropdown menu (above Ready bar when near the bottom of the monitor)
-      content.show(fn() { rec_phase.get() == 0 && rec_fps_open.get() && rec_fps_up.get() }, fn(dd_wrap) {
-        rec_fps_menu_view(dd_wrap, true)
-      }, at_once=true)
 
       // Unified morphing superellipse shell: smoothly reshapes across Ready bar -> Recording bar -> Finalizing pill -> Studio HUD card
       let _ = content.box(fn(shell) {
@@ -1443,6 +1541,12 @@ fn rec_window(root : view::View) -> Unit {
         .ground(view::Live::By(fn() { mix_rgba(0x18191DF7L, 0x141519F8L, exp_p.shown(shell)) }))
         .edge(view::Live::By(fn() { (1.0, mix_rgba(0xFFFFFF2EL, 0xFFFFFF28L, exp_p.shown(shell))) }))
         .shadow(view::Live::By(fn() { if is_exp() { (11.0, 4.0, 0x0000007AL) } else { (9.0, 3.0, 0x00000058L) } }))
+        .presses(view::Live::Is(true))
+        .on_press(fn() {
+          if rec_fps_open.untracked() {
+            rec_fps_open.set(false)
+          }
+        })
 
         // ---- Phases 0..3: Concentric superellipse floating recording bar (matches toolbar.mbt) ----
         shell.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
@@ -1500,6 +1604,9 @@ fn rec_window(root : view::View) -> Unit {
               .presses(view::Live::Is(true))
               .on_drag(fn(d) {
                 if d.kind == view::DragIs::Down && rec_wid.v != 0 {
+                  if rec_fps_open.untracked() {
+                    rec_fps_open.set(false)
+                  }
                   ps_move_window(rec_wid.v)
                 }
               }, whole=true)
@@ -1905,6 +2012,9 @@ fn rec_window(root : view::View) -> Unit {
               .presses(view::Live::Is(true))
               .on_drag(fn(d) {
                 if d.kind == view::DragIs::Down && rec_wid.v != 0 {
+                  if rec_fps_open.untracked() {
+                    rec_fps_open.set(false)
+                  }
                   ps_move_window(rec_wid.v)
                 }
               }, whole=true)
@@ -2445,11 +2555,6 @@ fn rec_window(root : view::View) -> Unit {
         }
       })
 
-      // Downward-unfolding FPS dropdown menu (30 / 60 / 90 / 120 fps) aligned directly under the Ready bar's FPS pill
-      content.show(fn() { rec_phase.get() == 0 && rec_fps_open.get() && !rec_fps_up.get() }, fn(dd_wrap) {
-        rec_fps_menu_view(dd_wrap, false)
-      }, at_once=true)
-
       // Floating hover tooltip / inline discard-confirmation pill centered inside the bottom halo (`rec_pad_b = 36pt`)
       let _ = content.box(fn(tip_row) {
         let shown_text = fn() {
@@ -2490,17 +2595,34 @@ fn rec_window(root : view::View) -> Unit {
   })
 }
 
-/// Shared 30 / 60 / 90 / 120 fps dropdown menu for the Ready bar; unfolds upward (`upward=true`) when near the bottom
-/// of the monitor so the Ready bar stays stationary under the pointer.
-fn rec_fps_menu_view(dd_wrap : view::View, upward : Bool) -> Unit {
-  let _ = dd_wrap
-  .padding(view::Live::Is(if upward { (62.0, 0.0, 0.0, 6.0) } else { (62.0, 6.0, 0.0, 0.0) }))
-  .shrink(view::Live::Is(0.0))
-  .lines_up(view::Live::Is(Some(view::Along::Start)))
+/// Dedicated transparent popup window for the 30 / 60 / 90 / 120 fps dropdown menu.
+/// Keeping it in its own window prevents `rec_wid` from resizing/moving (zero toolbar flicker)
+/// and lets `WM_ACTIVATE` dismiss the popover on any outside click.
+fn rec_fps_window(root : view::View) -> Unit {
+  root.tree.hand_over_presses(false)
+  let _ = root.keymap(view::Live::Is(rec_keys()))
+  let _ = root.on_action("cancel", fn(_) {
+    rec_fps_open.set(false)
+    true
+  })
+  let _ = root.box(fn(page) {
+    let _ = page
+    .over(view::Live::Is(true))
+    .padding(view::Live::Is((rec_fps_pad_x, rec_fps_pad_t, rec_fps_pad_x, rec_fps_pad_b)))
+    .lines_up(view::Live::Is(Some(view::Along::Start)))
+    .presses(view::Live::Is(true))
+    .on_press(fn() {
+      rec_fps_open.set(false)
+    })
+    rec_fps_menu_view(page)
+  })
+}
+
+/// Shared 30 / 60 / 90 / 120 fps dropdown menu card rendered inside `rec_fps_window`.
+fn rec_fps_menu_view(dd_wrap : view::View) -> Unit {
   let _ = dd_wrap.box(fn(menu) {
-    enter_reveal(menu, ms=135.0, dy=if upward { 8.0 } else { -8.0 }, from_scale=0.96)
     let _ = menu
-    .width(view::Live::Is(Some(98.0)))
+    .width(view::Live::Is(Some(rec_fps_card_w)))
     .padding(view::Live::Is((4.0, 4.0, 4.0, 4.0)))
     .gap(view::Live::Is(2.0))
     .radius(view::Live::Is(11.0))
@@ -2526,6 +2648,9 @@ fn rec_fps_menu_view(dd_wrap : view::View, upward : Bool) -> Unit {
           rec_fps.set(f)
           rec_fps_open.set(false)
           save_settings()
+          if rec_wid.v != 0 && ui::env("PINSHOT_TEST_CLOAKED") == "" {
+            let _ = ui::window_front_here(rec_wid.v)
+          }
         })
         .ground(view::Live::By(fn() {
           if item.pressed() {
