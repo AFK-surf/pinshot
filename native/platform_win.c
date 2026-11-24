@@ -98,7 +98,7 @@ double ps_now_ms(void) { return ps_ms(); }
 #define PS_WGC_TIMER 8       // the captures made again a moment after the monitors wake (tray_proc)
 #define PS_IDLE_TRIM_TIMER 9 // Instant mode: trim D3D11 driver pools after sitting idle (tray_proc)
 #define PS_TRIM_SOON_TIMER 10 // what a closed window held given back a moment later (ps_gpu_flush)
-#define IDLE_TRIM_MS 60000
+#define IDLE_TRIM_MS 3000
 static int wgc_off;          // PINSHOT_CAPTURE=gdi: no capture kept
 // GUID_CONSOLE_DISPLAY_STATE (the monitors off 0, on 1, dimmed 2)
 static const GUID display_state_guid = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47}};
@@ -123,6 +123,8 @@ typedef struct {
 } WgcShmHeader;
 int ps_wgc_restart(void);
 int ps_wgc_borderless_ok(void);
+int ps_wgc_dd_ok(void);
+int ps_wgc_last_used_dd(void);
 int ps_wgc_mon_hdr(HMONITOR mon, float *white);
 void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch);
 void ps_wgc_release(void *taken);
@@ -470,9 +472,9 @@ static int cap_begin(void) {
   cap_used_helper = 0;
   cap_helper_fail[0] = 0;
   int test_screen = getenv("PINSHOT_TEST") && getenv("PINSHOT_TEST_SCREEN");
-  // Low-VRAM mode: on SDR monitors take GDI directly (~20-30 ms, 0 MB WGC VRAM); on HDR monitors capture via a
-  // short-lived helper process so 16-bit HDR tone-mapping stays exact and Windows reclaims 100% of WGC VRAM on exit.
-  if (!wgc_off && !keep_gpu_warm && !test_screen && tray_hwnd && ps_wgc_borderless_ok()) {
+  // Low-VRAM mode: when DXGI Desktop Duplication is available, run it directly in-process (~5 ms, 0 MB leaked VRAM);
+  // otherwise on SDR monitors take GDI directly, and on HDR monitors use the short-lived WGC helper process.
+  if (!wgc_off && !keep_gpu_warm && !test_screen && tray_hwnd && !ps_wgc_dd_ok() && ps_wgc_borderless_ok()) {
     float hdr_white = 1.0f;
     if (!ps_wgc_mon_hdr(cap_mon, &hdr_white)) return gdi_begin();
     if (wgc_helper_begin()) return 1;
@@ -557,9 +559,9 @@ moonbit_bytes_t ps_capture_info(void) {
   } else if (cap.staging) {
     double t[5];
     ps_wgc_timing(t);
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc copy %.1f; hdr white %.2f%s; frame %.1f s old%s%s", cap_x, cap_y, cap_w,
-             cap_h, cap_dpi, cap_ms, t[0], t[1], t[2] > 0 ? " (copied first)" : "", t[3],
-             t[4] > 0 ? " (session made again)" : "", lag);
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,%s copy %.1f; hdr white %.2f%s; frame %.1f s old%s%s", cap_x, cap_y, cap_w,
+             cap_h, cap_dpi, cap_ms, ps_wgc_last_used_dd() ? "dxgi" : "wgc", t[0], t[1],
+             t[2] > 0 ? " (copied first)" : "", t[3], t[4] > 0 ? " (session made again)" : "", lag);
   } else {
     char st[96];
     ps_wgc_state(st, sizeof st);
