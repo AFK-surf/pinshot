@@ -643,6 +643,229 @@ static void patch_mp4_hev1_to_hvc1(const std::wstring &path) {
   CloseHandle(hf);
 }
 
+// NVIDIA's AV1 hardware MFT declares max_frame_width/height = 1920x1088 in its Sequence Header OBUs regardless of the
+// actual frame size (coding each frame at its own size), and MF SinkWriter copies 1920x1088 into the MP4 'av01' sample
+// entry while writing the real size into 'tkhd'. Players then compute a bogus non-square SAR (squishing/stretching the
+// clip) or fail to decode/thumbnail it. Patch the 'av01' sample entry width/height and every Sequence Header OBU (in
+// 'av1C' and each keyframe in 'mdat') in place to the real frame size without changing any bit lengths.
+static bool mp4_read_at(HANDLE hf, uint64_t at, void *dst, DWORD n) {
+  LARGE_INTEGER li;
+  li.QuadPart = (LONGLONG)at;
+  DWORD got = 0;
+  return SetFilePointerEx(hf, li, NULL, FILE_BEGIN) && ReadFile(hf, dst, n, &got, NULL) && got == n;
+}
+
+static void mp4_write_at(HANDLE hf, uint64_t at, const void *src, DWORD n) {
+  LARGE_INTEGER li;
+  li.QuadPart = (LONGLONG)at;
+  DWORD put = 0;
+  if (SetFilePointerEx(hf, li, NULL, FILE_BEGIN)) WriteFile(hf, src, n, &put, NULL);
+}
+
+static bool patch_av1_seq_hdr_obu(uint8_t *b, size_t n, int w, int h) {
+  size_t at = 0;
+  auto f = [&](int bits) -> uint32_t {
+    uint32_t v = 0;
+    for (int i = 0; i < bits; i++, at++) {
+      v = (v << 1) | (at < n * 8 ? ((b[at >> 3] >> (7 - (at & 7))) & 1u) : 0u);
+    }
+    return v;
+  };
+  f(3);  // seq_profile
+  f(1);  // still_picture
+  if (f(1)) {  // reduced_still_picture_header
+    f(5);      // seq_level_idx[0]
+  } else {
+    bool model = false;
+    int delay_bits = 0;
+    if (f(1)) {  // timing_info_present_flag
+      f(32);     // num_units_in_display_tick
+      f(32);     // time_scale
+      if (f(1)) {  // equal_picture_interval -> uvlc num_ticks_per_picture_minus_1
+        int zeros = 0;
+        while (!f(1) && zeros < 32) zeros++;
+        f(zeros);
+      }
+      model = f(1) != 0;  // decoder_model_info_present_flag
+      if (model) {
+        delay_bits = (int)f(5) + 1;
+        f(32);
+        f(5);
+        f(5);
+      }
+    }
+    bool display = f(1) != 0;  // initial_display_delay_present_flag
+    int points = (int)f(5) + 1;
+    for (int i = 0; i < points; i++) {
+      f(12);               // operating_point_idc
+      if (f(5) > 7) f(1);  // seq_level_idx + optional seq_tier
+      if (model && f(1)) {
+        f(delay_bits);
+        f(delay_bits);
+        f(1);
+      }
+      if (display && f(1)) f(4);
+    }
+  }
+  int wb = (int)f(4) + 1;
+  int hb = (int)f(4) + 1;
+  if (at + (size_t)wb + (size_t)hb > n * 8) return false;
+  uint32_t want_w = (uint32_t)(w - 1);
+  uint32_t want_h = (uint32_t)(h - 1);
+  if (want_w >= (1u << wb) || want_h >= (1u << hb)) return false;
+  size_t pos_wh = at;
+  uint32_t cur_w = f(wb);
+  uint32_t cur_h = f(hb);
+  if (cur_w == want_w && cur_h == want_h) return false;
+  at = pos_wh;
+  auto put = [&](int bits, uint32_t v) {
+    for (int i = bits - 1; i >= 0; i--, at++) {
+      uint8_t m = (uint8_t)(1u << (7 - (at & 7)));
+      if ((v >> i) & 1u) b[at >> 3] |= m;
+      else b[at >> 3] &= (uint8_t)~m;
+    }
+  };
+  put(wb, want_w);
+  put(hb, want_h);
+  return true;
+}
+
+static void patch_av1_obus_in_place(HANDLE hf, uint64_t at, uint64_t n, int w, int h) {
+  if (n == 0 || n > (64u << 20)) return;
+  std::vector<uint8_t> buf((size_t)n);
+  if (!mp4_read_at(hf, at, buf.data(), (DWORD)n)) return;
+  bool changed = false;
+  for (size_t p = 0; p < buf.size();) {
+    uint8_t hdr = buf[p];
+    int obu_type = (hdr >> 3) & 15;
+    int ext = (hdr >> 2) & 1;
+    int has_size = (hdr >> 1) & 1;
+    size_t q = p + 1 + (size_t)ext;
+    size_t len = 0;
+    if (has_size) {
+      for (int i = 0; q < buf.size() && i < 8; i++) {
+        uint8_t x = buf[q++];
+        len |= (size_t)(x & 0x7Fu) << (7 * i);
+        if (!(x & 0x80u)) break;
+      }
+    } else {
+      len = q < buf.size() ? (buf.size() - q) : 0;
+    }
+    if (q + len > buf.size()) break;
+    if (obu_type == 1) changed |= patch_av1_seq_hdr_obu(buf.data() + q, len, w, h);
+    p = q + len;
+  }
+  if (changed) mp4_write_at(hf, at, buf.data(), (DWORD)n);
+}
+
+static void patch_mp4_av1_size(const std::wstring &path, int w, int h) {
+  if (w <= 0 || h <= 0 || w > 65535 || h > 65535) return;
+  HANDLE hf = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                          FILE_ATTRIBUTE_NORMAL, NULL);
+  if (hf == INVALID_HANDLE_VALUE) return;
+  LARGE_INTEGER fsz = {};
+  Mp4Box moov;
+  if (GetFileSizeEx(hf, &fsz) && fsz.QuadPart >= 16 &&
+      find_mp4_child(hf, 0, (uint64_t)fsz.QuadPart, fourcc('m', 'o', 'o', 'v'), moov)) {
+    Mp4Box trak;
+    for (uint64_t off = moov.payload; read_mp4_box(hf, off, moov.end, trak); off = trak.end) {
+      if (trak.type != fourcc('t', 'r', 'a', 'k')) continue;
+      Mp4Box mdia, minf, stbl, stsd, entry;
+      if (!find_mp4_child(hf, trak.payload, trak.end, fourcc('m', 'd', 'i', 'a'), mdia)) continue;
+      if (!find_mp4_child(hf, mdia.payload, mdia.end, fourcc('m', 'i', 'n', 'f'), minf)) continue;
+      if (!find_mp4_child(hf, minf.payload, minf.end, fourcc('s', 't', 'b', 'l'), stbl)) continue;
+      if (!find_mp4_child(hf, stbl.payload, stbl.end, fourcc('s', 't', 's', 'd'), stsd)) continue;
+      if (stsd.payload + 8 >= stsd.end) continue;
+      if (!read_mp4_box(hf, stsd.payload + 8, stsd.end, entry)) continue;
+      if (entry.type != fourcc('a', 'v', '0', '1')) continue;
+      if (entry.payload + 28 > entry.end) continue;
+
+      uint8_t wh[4] = {(uint8_t)(w >> 8), (uint8_t)w, (uint8_t)(h >> 8), (uint8_t)h};
+      mp4_write_at(hf, entry.payload + 24, wh, 4);
+
+      if (entry.payload + 78 < entry.end) {
+        Mp4Box av1c;
+        if (find_mp4_child(hf, entry.payload + 78, entry.end, fourcc('a', 'v', '1', 'C'), av1c) &&
+            av1c.payload + 4 < av1c.end) {
+          patch_av1_obus_in_place(hf, av1c.payload + 4, av1c.end - (av1c.payload + 4), w, h);
+        }
+      }
+
+      Mp4Box stsz, stsc, stss, chunk_box;
+      bool has_stco = find_mp4_child(hf, stbl.payload, stbl.end, fourcc('s', 't', 'c', 'o'), chunk_box);
+      bool has_co64 = !has_stco && find_mp4_child(hf, stbl.payload, stbl.end, fourcc('c', 'o', '6', '4'), chunk_box);
+      if (!find_mp4_child(hf, stbl.payload, stbl.end, fourcc('s', 't', 's', 'z'), stsz) ||
+          !find_mp4_child(hf, stbl.payload, stbl.end, fourcc('s', 't', 's', 'c'), stsc) ||
+          !(has_stco || has_co64))
+        continue;
+      bool has_stss = find_mp4_child(hf, stbl.payload, stbl.end, fourcc('s', 't', 's', 's'), stss);
+      if (stsz.end - stsz.payload < 12 || stsc.end - stsc.payload < 8 || chunk_box.end - chunk_box.payload < 8)
+        continue;
+      if (stsz.end - stsz.payload > (32u << 20) || stsc.end - stsc.payload > (32u << 20) ||
+          chunk_box.end - chunk_box.payload > (32u << 20))
+        continue;
+      std::vector<uint8_t> z((size_t)(stsz.end - stsz.payload));
+      std::vector<uint8_t> r((size_t)(stsc.end - stsc.payload));
+      std::vector<uint8_t> c((size_t)(chunk_box.end - chunk_box.payload));
+      if (!mp4_read_at(hf, stsz.payload, z.data(), (DWORD)z.size()) ||
+          !mp4_read_at(hf, stsc.payload, r.data(), (DWORD)r.size()) ||
+          !mp4_read_at(hf, chunk_box.payload, c.data(), (DWORD)c.size()))
+        continue;
+
+      uint32_t fixed = read_be32(&z[4]);
+      uint32_t count = read_be32(&z[8]);
+      uint32_t chunks = read_be32(&c[4]);
+      uint32_t runs = read_be32(&r[4]);
+      if (count == 0 || count > (16u << 20)) continue;
+      std::vector<uint32_t> szs(count, fixed);
+      if (!fixed) {
+        for (uint32_t i = 0; i < count && 12 + 4 * (size_t)i + 4 <= z.size(); i++)
+          szs[i] = read_be32(&z[12 + 4 * i]);
+      }
+      std::vector<uint64_t> offs(count, 0);
+      uint32_t n = 0;
+      for (uint32_t i = 0; i < runs && 8 + 12 * (size_t)i + 12 <= r.size(); i++) {
+        uint32_t first_1 = read_be32(&r[8 + 12 * i]);
+        uint32_t per = read_be32(&r[12 + 12 * i]);
+        if (first_1 == 0) continue;
+        uint32_t first = first_1 - 1;
+        uint32_t last = chunks;
+        if (i + 1 < runs && 8 + 12 * (size_t)(i + 1) + 4 <= r.size()) {
+          uint32_t next_1 = read_be32(&r[8 + 12 * (i + 1)]);
+          if (next_1 > 0 && next_1 - 1 < last) last = next_1 - 1;
+        }
+        for (uint32_t ch = first; ch < last && ch < chunks; ch++) {
+          uint64_t place = 0;
+          if (has_stco) {
+            if (8 + 4 * (size_t)ch + 4 > c.size()) break;
+            place = read_be32(&c[8 + 4 * ch]);
+          } else {
+            if (8 + 8 * (size_t)ch + 8 > c.size()) break;
+            place = read_be64(&c[8 + 8 * ch]);
+          }
+          for (uint32_t j = 0; j < per && n < count; j++, n++) {
+            offs[n] = place;
+            place += szs[n];
+          }
+        }
+      }
+      if (has_stss && stss.end - stss.payload >= 8 && stss.end - stss.payload <= (32u << 20)) {
+        std::vector<uint8_t> k((size_t)(stss.end - stss.payload));
+        if (mp4_read_at(hf, stss.payload, k.data(), (DWORD)k.size())) {
+          uint32_t keys = read_be32(&k[4]);
+          for (uint32_t i = 0; i < keys && 8 + 4 * (size_t)i + 4 <= k.size(); i++) {
+            uint32_t s1 = read_be32(&k[8 + 4 * i]);
+            if (s1 > 0 && s1 - 1 < n) patch_av1_obus_in_place(hf, offs[s1 - 1], szs[s1 - 1], w, h);
+          }
+        }
+      } else if (n > 0) {
+        patch_av1_obus_in_place(hf, offs[0], szs[0], w, h);
+      }
+    }
+  }
+  CloseHandle(hf);
+}
+
 // ---- Streaming GIF89a encoder (15-bit Median-Cut + dirty-rect + static-frame merge + LZW) ----
 
 struct GifWriter {
@@ -1153,6 +1376,7 @@ static void mf_end() {
 struct Mp4Encoder {
   bool gpu_path = false;
   bool is_hevc = false;
+  bool is_av1 = false;
   bool has_audio = false;
   bool audio_passthrough = false;
   std::string codec_name;
@@ -1381,6 +1605,7 @@ struct Mp4Encoder {
 
     gpu_path = try_hw;
     is_hevc = (codec_mode == 0);
+    is_av1 = (codec_mode == 3);
     if (codec_mode == 3) codec_name = "AV1 (HW)";
     else if (codec_mode == 0 && try_hw) codec_name = "HEVC (HW)";
     else if (try_hw) codec_name = "H.264 (HW)";
@@ -1705,6 +1930,7 @@ struct Mp4Encoder {
       return 0;
     }
     if (is_hevc) patch_mp4_hev1_to_hvc1(out_path);
+    else if (is_av1) patch_mp4_av1_size(out_path, out_w, out_h);
     return file_size_of(out_path);
   }
 };
