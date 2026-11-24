@@ -1521,7 +1521,7 @@ int32_t ps_shift_down(void) { return GetKeyState(VK_SHIFT) < 0; }
 
 // The pointer on the screen: "x,y" (pixels).
 moonbit_bytes_t ps_pointer(void) {
-  POINT p;
+  POINT p = {0, 0};
   GetCursorPos(&p);
   char s[48];
   snprintf(s, sizeof s, "%ld,%ld", p.x, p.y);
