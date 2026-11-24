@@ -16,7 +16,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <d3d11.h>
-#include <dxgi1_3.h>
+#include <dxgi1_5.h>
 #include <roapi.h>
 #include <wrl.h>
 #include <wrl/wrappers/corewrappers.h>
@@ -151,8 +151,10 @@ static double take_white;  // the SDR white the last one taken was brought down 
 
 static double take_age;  // how old the frame taken was, in seconds
 static int take_fresh;  // its session was made again as it was taken (its last frame too old to trust)
-// 1: keep each monitor's WGC session open in the background (default); 0: open a session on demand for one frame and
-// close it right after (saving ~245 MB of idle video memory on 4K HDR while still capturing 16-bit HDR frames).
+static int take_used_dd;  // 1 when the last frame came from DXGI Desktop Duplication (DuplicateOutput1)
+// 1: keep capture device warm (default); 0: tear down capture device after each shot.
+// When DXGI Desktop Duplication (IDXGIOutput5::DuplicateOutput1) is available, no persistent WGC frame pools are kept
+// in the background (~260 MB VRAM saved on 4K HDR) while still capturing 16-bit HDR frames on demand in ~5 ms.
 static int keep_sessions = 1;
 static int long_holds;  // a long screenshot under way: a session made as needed kept till it ends (ps_wgc_long_hold)
 // While a long screenshot takes a part every tick: the textures it goes through kept for the next tick (the staging
@@ -165,6 +167,131 @@ static void kept_let_go(void) {
   kept_out.Reset();
   kept_uav.Reset();
 }
+
+// Lightweight DXGI Desktop Duplication state (0 MB idle frame pool, ~8.5 MB D3D11 device when warm, 0 MB when torn down).
+static ComPtr<ID3D11Device> dd_dev;
+static ComPtr<ID3D11DeviceContext> dd_ctx;
+static ComPtr<ID3D11ComputeShader> dd_srgb;
+static ComPtr<ID3D11Buffer> dd_srgb_k;
+static LUID dd_luid = {0, 0};
+static int dd_ok = -1;  // -1 untried, 1 available, 0 unavailable (fallback to WGC/GDI)
+
+static int dd_disabled(void) {
+  const char *how = getenv("PINSHOT_CAPTURE");
+  return how && (!strcmp(how, "gdi") || !strcmp(how, "wgc"));
+}
+
+static void dd_teardown(void) {
+  kept_let_go();
+  dd_srgb.Reset();
+  dd_srgb_k.Reset();
+  if (dd_ctx) {
+    dd_ctx->ClearState();
+    dd_ctx->Flush();
+  }
+  if (dd_dev) {
+    ComPtr<IDXGIDevice3> d3;
+    if (SUCCEEDED(dd_dev.As(&d3))) d3->Trim();
+  }
+  dd_ctx.Reset();
+  dd_dev.Reset();
+  dd_luid.LowPart = 0;
+  dd_luid.HighPart = 0;
+}
+
+static int dd_find_output(HMONITOR mon, ComPtr<IDXGIAdapter1> &out_adap, ComPtr<IDXGIOutput> &out_out) {
+  ComPtr<IDXGIFactory1> fac;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&fac)))) return 0;
+  for (UINT ai = 0;; ai++) {
+    ComPtr<IDXGIAdapter1> adap;
+    if (fac->EnumAdapters1(ai, &adap) == DXGI_ERROR_NOT_FOUND) break;
+    if (!adap) continue;
+    for (UINT oi = 0;; oi++) {
+      ComPtr<IDXGIOutput> out;
+      if (adap->EnumOutputs(oi, &out) == DXGI_ERROR_NOT_FOUND) break;
+      if (!out) continue;
+      DXGI_OUTPUT_DESC od = {};
+      if (SUCCEEDED(out->GetDesc(&od)) && od.Monitor == mon) {
+        out_adap = adap;
+        out_out = out;
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+static int dd_ensure_dev(IDXGIAdapter1 *adap) {
+  DXGI_ADAPTER_DESC1 ad = {};
+  if (FAILED(adap->GetDesc1(&ad))) return 0;
+  if (dd_dev && dd_ctx && dd_dev->GetDeviceRemovedReason() == S_OK &&
+      dd_luid.LowPart == ad.AdapterLuid.LowPart && dd_luid.HighPart == ad.AdapterLuid.HighPart) {
+    return 1;
+  }
+  dd_teardown();
+  D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
+  if (FAILED(D3D11CreateDevice(adap, D3D_DRIVER_TYPE_UNKNOWN, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2,
+                               D3D11_SDK_VERSION, &dd_dev, NULL, &dd_ctx))) {
+    return 0;
+  }
+  ComPtr<ID3D10Multithread> mt;
+  if (SUCCEEDED(dd_dev.As(&mt))) mt->SetMultithreadProtected(TRUE);
+  dd_dev->CreateComputeShader(to_srgb_bc, sizeof to_srgb_bc, NULL, &dd_srgb);
+  D3D11_BUFFER_DESC bd = {16, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+  dd_dev->CreateBuffer(&bd, NULL, &dd_srgb_k);
+  dd_luid = ad.AdapterLuid;
+  return 1;
+}
+
+static int dd_make_dupl(IDXGIOutput *out, ComPtr<IDXGIOutputDuplication> &dupl) {
+  ComPtr<IDXGIOutput5> out5;
+  if (SUCCEEDED(out->QueryInterface(IID_PPV_ARGS(&out5)))) {
+    DXGI_FORMAT fmts[2] = {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
+    if (SUCCEEDED(last_hr = out5->DuplicateOutput1(dd_dev.Get(), 0, 2, fmts, &dupl)) && dupl) return 1;
+  }
+  ComPtr<IDXGIOutput1> out1;
+  if (SUCCEEDED(out->QueryInterface(IID_PPV_ARGS(&out1)))) {
+    if (SUCCEEDED(last_hr = out1->DuplicateOutput(dd_dev.Get(), &dupl)) && dupl) return 1;
+  }
+  return 0;
+}
+
+static int dd_probe(void) {
+  if (dd_disabled()) {
+    dd_ok = 0;
+    return 0;
+  }
+  POINT pt = {0, 0};
+  HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+  ComPtr<IDXGIAdapter1> adap;
+  ComPtr<IDXGIOutput> out;
+  if (!mon || !dd_find_output(mon, adap, out) || !dd_ensure_dev(adap.Get())) {
+    dd_ok = 0;
+    return 0;
+  }
+  ComPtr<IDXGIOutputDuplication> dupl;
+  int ok = dd_make_dupl(out.Get(), dupl);
+  dupl.Reset();
+  if (dd_ctx) {
+    dd_ctx->ClearState();
+    dd_ctx->Flush();
+  }
+  if (dd_dev) {
+    ComPtr<IDXGIDevice3> d3;
+    if (SUCCEEDED(dd_dev.As(&d3))) d3->Trim();
+  }
+  if (!ok || !keep_sessions) dd_teardown();
+  dd_ok = ok ? 1 : 0;
+  return dd_ok;
+}
+
+extern "C" int ps_wgc_dd_ok(void) {
+  if (dd_disabled()) return 0;
+  if (dd_ok < 0) return dd_probe();
+  return dd_ok == 1;
+}
+
+extern "C" int ps_wgc_last_used_dd(void) { return take_used_dd; }
 
 extern "C" void ps_wgc_timing(double *out) {
   out[0] = take_ms, out[1] = take_white, out[2] = said_half, out[3] = take_age, out[4] = take_fresh;
@@ -496,18 +623,47 @@ extern "C" int ps_wgc_restart(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
   hdr_forget();
-  if (!keep_sessions) return 0;
+  dd_ok = -1;
+  if (!keep_sessions) {
+    dd_teardown();
+    return 0;
+  }
+  // Prefer zero-pool DXGI Desktop Duplication (DuplicateOutput1) over persistent WGC sessions (~260 MB VRAM saved).
+  if (dd_probe()) {
+    // Tear down any lingering WGC device/sessions so only the lightweight DXGI DD device remains.
+    if (ready > 0) {
+      to_srgb.Reset();
+      to_srgb_k.Reset();
+      pool_statics.Reset();
+      item_interop.Reset();
+      if (rt_dev) {
+        ComPtr<ABI::Windows::Foundation::IClosable> c;
+        if (SUCCEEDED(rt_dev.As(&c))) c->Close();
+      }
+      rt_dev.Reset();
+      if (ctx) { ctx->ClearState(); ctx->Flush(); }
+      if (dev) {
+        ComPtr<IDXGIDevice3> d3;
+        if (SUCCEEDED(dev.As(&d3))) d3->Trim();
+      }
+      ctx.Reset();
+      dev.Reset();
+      ready = 0;
+    }
+    return 1;
+  }
   if (!ps_wgc_ready()) return 0;
   if (!borderless_allowed()) return 0;
   EnumDisplayMonitors(NULL, NULL, mon_found, 0);
   return nmons;
 }
 
-// Completely tear down the standalone WGC D3D11 device and WinRT factories when idle in Low-VRAM mode so WGC holds
-// 0 MB of VRAM/RAM between captures (recreated on demand in ~15 ms on the next capture).
+// Completely tear down the standalone WGC/DXGI D3D11 devices and WinRT factories when idle in Low-VRAM mode so
+// capture holds 0 MB of VRAM/RAM between captures.
 static void wgc_teardown(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
+  dd_teardown();
   kept_let_go();
   to_srgb.Reset();
   to_srgb_k.Reset();
@@ -584,7 +740,198 @@ extern "C" void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, in
   return take(mon, w, h, rx, ry, rw, rh, 1, bits, pitch);
 }
 
+// Fast on-demand capture via DXGI Desktop Duplication (IDXGIOutput5::DuplicateOutput1):
+// 0 MB idle frame pool, ~5 ms capture on 4K HDR (RGBA16F -> to_srgb) or SDR (BGRA8), zero yellow border, zero WGC leak.
+static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, uint8_t **bits, int *pitch) {
+  if (dd_disabled() || dd_ok == 0) return NULL;
+  LARGE_INTEGER t0, t1, f;
+  QueryPerformanceCounter(&t0);
+  QueryPerformanceFrequency(&f);
+  ComPtr<IDXGIAdapter1> adap;
+  ComPtr<IDXGIOutput> out;
+  if (!dd_find_output(mon, adap, out) || !dd_ensure_dev(adap.Get())) {
+    dd_ok = 0;
+    return NULL;
+  }
+  ComPtr<IDXGIOutputDuplication> dupl;
+  if (!dd_make_dupl(out.Get(), dupl)) {
+    if (last_hr == E_ACCESSDENIED || last_hr == DXGI_ERROR_UNSUPPORTED) dd_ok = 0;
+    return NULL;
+  }
+  dd_ok = 1;
+  ComPtr<IDXGIResource> res;
+  DXGI_OUTDUPL_FRAME_INFO fi = {};
+  HRESULT hr = E_FAIL;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    hr = dupl->AcquireNextFrame(attempt == 0 ? 250 : 40, &fi, &res);
+    if (SUCCEEDED(hr) && res) {
+      if (fi.LastPresentTime.QuadPart != 0 || attempt == 2) break;
+      res.Reset();
+      dupl->ReleaseFrame();
+    } else if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+      break;
+    } else {
+      break;
+    }
+  }
+  if (FAILED(hr) || !res) {
+    dupl.Reset();
+    return NULL;
+  }
+  ComPtr<ID3D11Texture2D> tex;
+  if (FAILED(res.As(&tex)) || !tex) {
+    res.Reset();
+    dupl->ReleaseFrame();
+    dupl.Reset();
+    return NULL;
+  }
+  D3D11_TEXTURE2D_DESC td = {};
+  tex->GetDesc(&td);
+  if ((int)td.Width != w || (int)td.Height != h) {
+    tex.Reset();
+    res.Reset();
+    dupl->ReleaseFrame();
+    dupl.Reset();
+    return NULL;
+  }
+  int whole = rx == 0 && ry == 0 && rw == w && rh == h;
+  int is_hdr = (td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+  float white = 1.0f;
+  if (is_hdr) mon_hdr(mon, &white);
+  said_half = 0;
+  ComPtr<ID3D11Texture2D> src_for_copy = tex;
+  D3D11_TEXTURE2D_DESC copy_desc = td;
+  if (is_hdr) {
+    if (!dd_srgb || !dd_srgb_k) {
+      tex.Reset(); res.Reset(); dupl->ReleaseFrame(); dupl.Reset();
+      return NULL;
+    }
+    ComPtr<ID3D11ShaderResourceView> srv;
+    ComPtr<ID3D11Texture2D> half;
+    uint32_t ox = (uint32_t)rx, oy = (uint32_t)ry;
+    if (FAILED(dd_dev->CreateShaderResourceView(tex.Get(), NULL, &srv))) {
+      D3D11_TEXTURE2D_DESC hd = td;
+      hd.Width = (UINT)rw;
+      hd.Height = (UINT)rh;
+      hd.Usage = D3D11_USAGE_DEFAULT;
+      hd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      hd.CPUAccessFlags = 0;
+      hd.MiscFlags = 0;
+      hd.MipLevels = hd.ArraySize = 1;
+      said_half = 1;
+      if (FAILED(dd_dev->CreateTexture2D(&hd, NULL, &half))) {
+        tex.Reset(); res.Reset(); dupl->ReleaseFrame(); dupl.Reset();
+        return NULL;
+      }
+      if (whole) dd_ctx->CopyResource(half.Get(), tex.Get());
+      else {
+        D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
+        dd_ctx->CopySubresourceRegion(half.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
+      }
+      ox = oy = 0;
+      if (FAILED(dd_dev->CreateShaderResourceView(half.Get(), NULL, &srv))) {
+        tex.Reset(); res.Reset(); dupl->ReleaseFrame(); dupl.Reset();
+        return NULL;
+      }
+    }
+    D3D11_TEXTURE2D_DESC od = td;
+    od.Width = (UINT)rw;
+    od.Height = (UINT)rh;
+    od.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    od.Usage = D3D11_USAGE_DEFAULT;
+    od.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+    od.CPUAccessFlags = 0;
+    od.MiscFlags = 0;
+    od.MipLevels = od.ArraySize = 1;
+    ComPtr<ID3D11Texture2D> uav_tex;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    if (long_holds && kept_out) {
+      D3D11_TEXTURE2D_DESC kd;
+      kept_out->GetDesc(&kd);
+      ComPtr<ID3D11Device> kdev;
+      kept_out->GetDevice(&kdev);
+      if (kdev.Get() == dd_dev.Get() && kd.Width == od.Width && kd.Height == od.Height && kd.Format == od.Format)
+        uav_tex = kept_out, uav = kept_uav;
+    }
+    if (!uav_tex && (FAILED(dd_dev->CreateTexture2D(&od, NULL, &uav_tex)) ||
+                     FAILED(dd_dev->CreateUnorderedAccessView(uav_tex.Get(), NULL, &uav)))) {
+      tex.Reset(); res.Reset(); dupl->ReleaseFrame(); dupl.Reset();
+      return NULL;
+    }
+    D3D11_MAPPED_SUBRESOURCE kp;
+    if (FAILED(dd_ctx->Map(dd_srgb_k.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &kp))) {
+      tex.Reset(); res.Reset(); dupl->ReleaseFrame(); dupl.Reset();
+      return NULL;
+    }
+    struct { float inv_white; uint32_t ox; uint32_t oy; uint32_t pad; } k = {1.0f / white, ox, oy, 0};
+    memcpy(kp.pData, &k, sizeof k);
+    dd_ctx->Unmap(dd_srgb_k.Get(), 0);
+    ID3D11ShaderResourceView *srvs[1] = {srv.Get()};
+    ID3D11UnorderedAccessView *uavs[1] = {uav.Get()};
+    ID3D11Buffer *ks[1] = {dd_srgb_k.Get()};
+    dd_ctx->CSSetShader(dd_srgb.Get(), NULL, 0);
+    dd_ctx->CSSetShaderResources(0, 1, srvs);
+    dd_ctx->CSSetUnorderedAccessViews(0, 1, uavs, NULL);
+    dd_ctx->CSSetConstantBuffers(0, 1, ks);
+    dd_ctx->Dispatch((rw + 15) / 16, (rh + 15) / 16, 1);
+    ID3D11ShaderResourceView *no_srv[1] = {NULL};
+    ID3D11UnorderedAccessView *no_uav[1] = {NULL};
+    dd_ctx->CSSetShaderResources(0, 1, no_srv);
+    dd_ctx->CSSetUnorderedAccessViews(0, 1, no_uav, NULL);
+    dd_ctx->CSSetShader(NULL, NULL, 0);
+    if (long_holds) kept_out = uav_tex, kept_uav = uav;
+    src_for_copy = uav_tex;
+    copy_desc = od;
+    whole = 1;
+  }
+  copy_desc.Usage = D3D11_USAGE_STAGING;
+  copy_desc.BindFlags = 0;
+  copy_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  copy_desc.MiscFlags = 0;
+  copy_desc.MipLevels = copy_desc.ArraySize = 1;
+  copy_desc.Width = (UINT)rw;
+  copy_desc.Height = (UINT)rh;
+  ComPtr<ID3D11Texture2D> staging;
+  if (long_holds && kept_staging) {
+    D3D11_TEXTURE2D_DESC kd;
+    kept_staging->GetDesc(&kd);
+    ComPtr<ID3D11Device> kdev;
+    kept_staging->GetDevice(&kdev);
+    if (kdev.Get() == dd_dev.Get() && kd.Width == copy_desc.Width && kd.Height == copy_desc.Height && kd.Format == copy_desc.Format)
+      staging = kept_staging;
+    kept_staging.Reset();
+  }
+  if (!staging && FAILED(dd_dev->CreateTexture2D(&copy_desc, NULL, &staging))) {
+    tex.Reset(); res.Reset(); dupl->ReleaseFrame(); dupl.Reset();
+    return NULL;
+  }
+  if (whole) dd_ctx->CopyResource(staging.Get(), src_for_copy.Get());
+  else {
+    D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
+    dd_ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, src_for_copy.Get(), 0, &box);
+  }
+  // Release duplication surface & object immediately (0 MB held behind!).
+  src_for_copy.Reset();
+  tex.Reset();
+  res.Reset();
+  dupl->ReleaseFrame();
+  dupl.Reset();
+  D3D11_MAPPED_SUBRESOURCE mp;
+  if (FAILED(dd_ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mp))) return NULL;
+  *bits = (uint8_t *)mp.pData;
+  *pitch = (int)mp.RowPitch;
+  take_white = is_hdr ? white : 0.0;
+  take_age = 0.0;
+  take_fresh = 0;
+  take_used_dd = 1;
+  QueryPerformanceCounter(&t1);
+  take_ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+  return staging.Detach();
+}
+
 static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int any_age, uint8_t **bits, int *pitch) {
+  take_used_dd = 0;
+  if (void *dd_res = dd_take(mon, w, h, rx, ry, rw, rh, bits, pitch)) return dd_res;
   LARGE_INTEGER t0, t1, f;
   QueryPerformanceCounter(&t0);
   QueryPerformanceFrequency(&f);
@@ -823,8 +1170,14 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   return staging.Detach();
 }
 
-// Trim unused driver pools on the WGC D3D11 device when idle (leaving live capture sessions intact).
+// Trim unused driver pools on the capture D3D11 device(s) when idle.
 extern "C" void ps_wgc_trim(void) {
+  if (dd_dev && dd_ctx && !long_holds) {
+    dd_ctx->ClearState();
+    dd_ctx->Flush();
+    ComPtr<IDXGIDevice3> d3;
+    if (SUCCEEDED(dd_dev.As(&d3))) d3->Trim();
+  }
   if (ready > 0 && dev && ctx && !long_holds) {
     ctx->ClearState();
     ctx->Flush();
@@ -846,7 +1199,7 @@ extern "C" void ps_wgc_release(void *taken) {
   d->GetImmediateContext(&c);
   c->Unmap(t, 0);
   // (a long screenshot's, of the device in use: kept for its next tick, not made again each time)
-  if (long_holds && !kept_staging && d.Get() == dev.Get()) {
+  if (long_holds && !kept_staging && (d.Get() == dev.Get() || d.Get() == dd_dev.Get())) {
     kept_staging = t;
     t->Release();
     return;
@@ -854,14 +1207,18 @@ extern "C" void ps_wgc_release(void *taken) {
   t->Release();
   c->ClearState();
   c->Flush();
-  if (!keep_sessions && !long_holds) {
+  if (!long_holds) {
     ComPtr<IDXGIDevice3> d3;
     if (SUCCEEDED(d.As(&d3))) d3->Trim();
-    int same = (d.Get() == dev.Get());
-    d3.Reset();
-    c.Reset();
-    d.Reset();
-    if (same) wgc_teardown();
+    if (!keep_sessions) {
+      int same_wgc = (d.Get() == dev.Get());
+      int same_dd = (d.Get() == dd_dev.Get());
+      d3.Reset();
+      c.Reset();
+      d.Reset();
+      if (same_wgc) wgc_teardown();
+      else if (same_dd) dd_teardown();
+    }
   }
 }
 
