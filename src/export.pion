@@ -125,29 +125,40 @@ fn save_out() -> Unit {
   exporting.v = "save"
   ps_cloak(0, 1)
   picture_of_part(fn(png) {
-    exporting.v = ""
     match png {
       Some(png) => {
         let s = settings.untracked()
-        // (the overlay hidden while the system's dialog is up: a dialog is not seen over a cloaked owner)
-        let path = if s.ask_where {
-          ps_hide(0)
-          text_of(ps_save_dialog(-1, cstr(s.save_dir), cstr(file_name())))
+        if s.ask_where {
+          // Run the modal save dialog after view_frame clears frame_running so its nested
+          // Win32 message loop can drain mb_post (WM_MB_POSTED) instead of wedging the queue.
+          ui::after_frame(fn() {
+            ps_hide(0)
+            let path = text_of(ps_save_dialog(-1, cstr(s.save_dir), cstr(file_name())))
+            exporting.v = ""
+            if path != "" {
+              write_picture_file(path, png)
+              shutter()
+              log("saved \{path}")
+              close_capture()
+            } else {
+              let m = mon.v
+              ps_place(0, m.x, m.y, m.w, m.h, 1, 1)
+              ps_cloak(0, 0)
+            }
+          })
         } else {
-          file_in(s.save_dir, file_name())
-        }
-        if path != "" {
+          exporting.v = ""
+          let path = file_in(s.save_dir, file_name())
           write_picture_file(path, png)
           shutter()
           log("saved \{path}")
           close_capture()
-        } else {
-          let m = mon.v
-          ps_place(0, m.x, m.y, m.w, m.h, 1, 1)
-          ps_cloak(0, 0)
         }
       }
-      None => close_capture()
+      None => {
+        exporting.v = ""
+        close_capture()
+      }
     }
   })
 }

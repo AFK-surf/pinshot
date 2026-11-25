@@ -779,6 +779,8 @@ void ps_set_menu(moonbit_bytes_t lines) {
   }
 }
 
+void ps_quit(void);
+
 static void tray_menu(int x, int y) {
   HMENU m = CreatePopupMenu();
   for (int i = 0; i < menu_n; i++) {
@@ -790,6 +792,10 @@ static void tray_menu(int x, int y) {
   PostMessageW(tray_hwnd, WM_NULL, 0, 0);
   DestroyMenu(m);
   if (chose > 0 && chose <= menu_n) {
+    if (!strcmp(menu_keys[chose - 1], "quit")) {
+      ps_quit();
+      return;
+    }
     char json[96];
     snprintf(json, sizeof json, "{\"do\":\"menu\",\"item\":\"%s\"}", menu_keys[chose - 1]);
     ps_tell(json);
@@ -841,7 +847,7 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_PS_AGAIN:
       if (wp == 1) ps_tell("{\"do\":\"menu\",\"item\":\"settings\"}");
-      else if (wp == 2) ps_tell("{\"do\":\"menu\",\"item\":\"quit\"}");
+      else if (wp == 2) ps_quit();
       else if (wp == 3) ;
       else capture_asked("again");
       return 0;
