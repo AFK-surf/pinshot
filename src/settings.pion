@@ -826,11 +826,14 @@ fn key_clear_button(parent : view::View, which : Int) -> Unit {
     recording.get() != which && vk != 0
   }
   let _ = parent.box(fn(b) {
+    let hov = smooth_hover(b)
+    tactile_press(b, sink_px=0.8)
+    hig_focus(b)
     let _ = b
     .laid_nowhere(view::Live::By(fn() { !has() }))
-    .width(view::Live::Is(Some(28.0)))
-    .height(view::Live::Is(Some(28.0)))
-    .radius(view::Live::Is(8.0))
+    .width(view::Live::Is(Some(22.0)))
+    .height(view::Live::Is(Some(22.0)))
+    .radius(view::Live::Is(11.0))
     .shrink(view::Live::Is(0.0))
     .lines_up(view::Live::Is(Some(view::Along::Middle)))
     .lies_along(view::Live::Is(view::Lies::Middle))
@@ -838,14 +841,19 @@ fn key_clear_button(parent : view::View, which : Int) -> Unit {
     .cursor(view::Live::Is(Some(view::Cursor::Hand)))
     .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("清空快捷键"))) }))
     .on_press(fn() { clear_key(which) })
-    .ground(view::Live::By(fn() { if b.pointed() { 0x464A56FFL } else { 0x353841FFL } }))
-    .edge(view::Live::Is((1.0, 0xFFFFFF22L)))
+    .ground(view::Live::By(fn() {
+      if b.pressed() {
+        0xFFFFFF26L
+      } else {
+        mix_rgba(0L, 0xFFFFFF18L, hov())
+      }
+    }))
     let _ = b.box(fn(g) {
       let _ = g
-      .width(view::Live::Is(Some(14.0)))
-      .height(view::Live::Is(Some(14.0)))
-      .picture(view::Live::Is(Some(pixels::Vector::{ w: 14.0, h: 14.0, layers: [stroke_layer("M3.5 3.5l7 7M10.5 3.5l-7 7", 0x000000FFL, 1.5)] })))
-      .tint(view::Live::By(fn() { if b.pointed() { 0xFFFFFFFFL } else { 0xD2D6E0FFL } }))
+      .width(view::Live::Is(Some(10.0)))
+      .height(view::Live::Is(Some(10.0)))
+      .picture(view::Live::Is(Some(pixels::Vector::{ w: 10.0, h: 10.0, layers: [stroke_layer("M2.2 2.2l5.6 5.6M7.8 2.2l-5.6 5.6", 0x000000FFL, 1.35)] })))
+      .tint(view::Live::By(fn() { mix_rgba(0x8E95A4FFL, 0xFFFFFFFFL, hov()) }))
     })
   })
 }

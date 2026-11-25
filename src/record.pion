@@ -2507,7 +2507,7 @@ fn rec_window(root : view::View) -> Unit {
                   let _ = g
                   .width(view::Live::Is(Some(14.5)))
                   .height(view::Live::Is(Some(14.5)))
-                  .picture(view::Live::Is(Some(glyph("save"))))
+                  .picture(view::Live::Is(Some(glyph("folder"))))
                   .tint(view::Live::By(fn() {
                     if rec_phase.get() == 5 {
                       0xFFFFFF66L
@@ -2536,7 +2536,7 @@ fn rec_window(root : view::View) -> Unit {
                 .presses(view::Live::Is(true))
                 .cursor(view::Live::By(fn() { if rec_phase.get() == 5 { None } else { Some(view::Cursor::Hand) } }))
                 .says(view::Live::By(fn() {
-                  Some(view::said(view::Role::Button, label=if rec_phase.get() == 6 { tr("复制文件") } else { tr("保存并复制") }))
+                  Some(view::said(view::Role::Button, label=if rec_phase.get() == 6 { tr("复制") } else if english.get() { "Save" } else { "保存" }))
                 }))
                 .on_press(fn() { if rec_phase.untracked() != 5 { rec_run_export(false) } })
                 .ground(view::Live::By(fn() {
@@ -2558,7 +2558,7 @@ fn rec_window(root : view::View) -> Unit {
                   .width(view::Live::Is(Some(13.0)))
                   .height(view::Live::Is(Some(13.0)))
                   .shrink(view::Live::Is(0.0))
-                  .picture(view::Live::Is(Some(glyph("copy"))))
+                  .picture(view::Live::By(fn() { Some(glyph(if rec_phase.get() == 6 { "copy" } else { "save" })) }))
                   .tint(view::Live::By(fn() { mix_rgba(0xFFFFFFFFL, 0x6EE7B7FFL, ok_p.shown(ic)) }))
                 }, at_once=true)
                 let _ = pri.box(fn(t) {
@@ -2568,8 +2568,8 @@ fn rec_window(root : view::View) -> Unit {
                     view::Live::By(fn() {
                       match rec_phase.get() {
                         5 => tr("编码中…")
-                        6 => tr("复制文件")
-                        _ => tr("保存并复制")
+                        6 => tr("复制")
+                        _ => if english.get() { "Save" } else { "保存" }
                       }
                     }),
                     look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 600, line: 15.0, wrap: false },
