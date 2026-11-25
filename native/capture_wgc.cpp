@@ -572,48 +572,19 @@ extern "C" int ps_wgc_borderless_ok(void) {
   return borderless_allowed();
 }
 
-extern "C" int ps_wgc_restart(void) {
+static void wgc_dev_teardown(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
-  hdr_forget();
-  dd_ok = -1;
-  if (!keep_sessions) {
-    dd_teardown();
-    return 0;
+  if (kept_staging) {
+    ComPtr<ID3D11Device> kdev;
+    kept_staging->GetDevice(&kdev);
+    if (kdev.Get() == dev.Get()) kept_staging.Reset();
   }
-  if (dd_probe()) {
-    if (ready > 0) {
-      to_srgb.Reset();
-      to_srgb_k.Reset();
-      pool_statics.Reset();
-      item_interop.Reset();
-      if (rt_dev) {
-        ComPtr<ABI::Windows::Foundation::IClosable> c;
-        if (SUCCEEDED(rt_dev.As(&c))) c->Close();
-      }
-      rt_dev.Reset();
-      if (ctx) { ctx->ClearState(); ctx->Flush(); }
-      if (dev) {
-        ComPtr<IDXGIDevice3> d3;
-        if (SUCCEEDED(dev.As(&d3))) d3->Trim();
-      }
-      ctx.Reset();
-      dev.Reset();
-      ready = 0;
-    }
-    return 1;
+  if (kept_out) {
+    ComPtr<ID3D11Device> kdev;
+    kept_out->GetDevice(&kdev);
+    if (kdev.Get() == dev.Get()) kept_out.Reset(), kept_uav.Reset();
   }
-  if (!ps_wgc_ready()) return 0;
-  if (!borderless_allowed()) return 0;
-  EnumDisplayMonitors(NULL, NULL, mon_found, 0);
-  return nmons;
-}
-
-static void wgc_teardown(void) {
-  for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
-  nmons = 0;
-  dd_teardown();
-  kept_let_go();
   to_srgb.Reset();
   to_srgb_k.Reset();
   pool_statics.Reset();
@@ -634,6 +605,30 @@ static void wgc_teardown(void) {
   ctx.Reset();
   dev.Reset();
   ready = 0;
+}
+
+static void wgc_teardown(void) {
+  wgc_dev_teardown();
+  dd_teardown();
+}
+
+extern "C" int ps_wgc_restart(void) {
+  for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
+  nmons = 0;
+  hdr_forget();
+  dd_ok = -1;
+  if (!keep_sessions) {
+    dd_teardown();
+    return 0;
+  }
+  if (dd_probe()) {
+    if (ready > 0) wgc_dev_teardown();
+    return 1;
+  }
+  if (!ps_wgc_ready()) return 0;
+  if (!borderless_allowed()) return 0;
+  EnumDisplayMonitors(NULL, NULL, mon_found, 0);
+  return nmons;
 }
 
 extern "C" void ps_wgc_set_keep(int keep) {
@@ -670,7 +665,11 @@ extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int
 extern "C" void ps_wgc_long_hold(int on) {
   long_holds = on;
   if (!on) kept_let_go();
-  if (on || keep_sessions) return;
+  if (on) return;
+  if (keep_sessions) {
+    if (dd_ok == 1 && (nmons > 0 || ready > 0)) wgc_dev_teardown();
+    return;
+  }
   wgc_teardown();
 }
 
@@ -679,10 +678,11 @@ extern "C" void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, in
   return take(mon, w, h, rx, ry, rw, rh, 1, bits, pitch);
 }
 
-#define DD_FRAME_MS 300.0
-static int dd_black;  // Desktop Duplication takings that came out all black (ps_wgc_state)
+#define DD_FRAME_MS 200.0
+static int dd_black;
 
-// Whether a picture is all black, a 32 by 32 grid of its pixels looked at.
+extern "C" int ps_wgc_dd_black(void) { return dd_black; }
+
 static int dd_all_black(const uint8_t *bits, int pitch, int w, int h) {
   for (int j = 0; j < 32; j++) {
     const uint8_t *row = bits + (size_t)((2 * j + 1) * (int64_t)h / 64) * pitch;
@@ -708,27 +708,37 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
   ComPtr<IDXGIOutputDuplication> dupl;
   if (!dd_make_dupl(out.Get(), dupl)) {
     if (last_hr == E_ACCESSDENIED || last_hr == DXGI_ERROR_UNSUPPORTED) dd_ok = 0;
+    if (!keep_sessions && !long_holds) dd_teardown();
     return NULL;
   }
   dd_ok = 1;
   ComPtr<IDXGIResource> res;
   DXGI_OUTDUPL_FRAME_INFO fi = {};
-  HRESULT hr = E_FAIL;
+  HRESULT hr = DXGI_ERROR_WAIT_TIMEOUT;
+  LARGE_INTEGER t_acq;
+  QueryPerformanceCounter(&t_acq);
   // A fresh duplication can first hand pointer-only frames (LastPresentTime 0) whose surface is still all black:
-  // never take one; none with the desktop within DD_FRAME_MS leaves the capture to WGC / GDI.
-  for (int attempt = 0;; attempt++) {
-    hr = dupl->AcquireNextFrame(attempt == 0 ? 250 : 40, &fi, &res);
+  // never take one; wait out the remaining budget for a desktop frame, otherwise leave capture to WGC / GDI.
+  for (;;) {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    double left = DD_FRAME_MS - (now.QuadPart - t_acq.QuadPart) * 1000.0 / (double)f.QuadPart;
+    if (left <= 0.0) {
+      hr = DXGI_ERROR_WAIT_TIMEOUT;
+      break;
+    }
+    UINT wait_ms = left < 1.0 ? 1u : (UINT)left;
+    hr = dupl->AcquireNextFrame(wait_ms, &fi, &res);
     if (FAILED(hr) || !res) break;
     if (fi.LastPresentTime.QuadPart != 0) break;
     res.Reset();
     dupl->ReleaseFrame();
     hr = DXGI_ERROR_WAIT_TIMEOUT;
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    if ((now.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart > DD_FRAME_MS) break;
   }
   if (FAILED(hr) || !res) {
+    last_hr = hr;
     dupl.Reset();
+    if (!keep_sessions && !long_holds) dd_teardown();
     return NULL;
   }
   ComPtr<ID3D11Texture2D> tex;
@@ -871,11 +881,17 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
   dupl.Reset();
   D3D11_MAPPED_SUBRESOURCE mp;
   if (FAILED(dd_ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mp))) return NULL;
-  // (a whole monitor is never all black, its taskbar at least: such a frame is left to WGC / GDI)
+  // A whole monitor is never all black (its taskbar at least); leave such a frame to WGC / GDI.
   if (whole_monitor && dd_all_black((const uint8_t *)mp.pData, (int)mp.RowPitch, rw, rh)) {
     dd_ctx->Unmap(staging.Get(), 0);
     staging.Reset();
     dd_black++;
+    if (!keep_sessions && !long_holds) {
+      dd_teardown();
+    } else if (dd_ctx) {
+      dd_ctx->ClearState();
+      dd_ctx->Flush();
+    }
     return NULL;
   }
   *bits = (uint8_t *)mp.pData;
@@ -889,6 +905,11 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
   return staging.Detach();
 }
 
+extern "C" void *ps_wgc_take_dd(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch) {
+  take_used_dd = 0;
+  return dd_take(mon, w, h, 0, 0, w, h, bits, pitch);
+}
+
 static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int any_age, uint8_t **bits, int *pitch) {
   take_used_dd = 0;
   if (void *dd_res = dd_take(mon, w, h, rx, ry, rw, rh, bits, pitch)) return dd_res;
@@ -900,11 +921,12 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     return NULL;
   }
   if (!ps_wgc_ready() || !borderless_allowed()) return NULL;
-  if (keep_sessions && nmons == 0) ps_wgc_restart();
+  if (keep_sessions && nmons == 0 && dd_ok != 1) ps_wgc_restart();
   Mon *m = NULL;
   for (int i = 0; i < nmons; i++)
     if (mons[i].mon == mon) m = &mons[i];
-  if (!m && !keep_sessions) {
+  int one_shot = !keep_sessions || (dd_ok == 1 && !m);
+  if (!m && one_shot) {
     for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
     nmons = 1;
     m = &mons[0];
@@ -950,7 +972,7 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
       QueryPerformanceCounter(&now);
       double left = FIRST_FRAME_MS - (now.QuadPart - started.QuadPart) * 1000.0 / (double)f.QuadPart;
       if (left <= 0) {
-        if (!keep_sessions && !long_holds) {
+        if (one_shot && !long_holds) {
           mon_stop(m);
           nmons = 0;
         }
@@ -963,7 +985,7 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     age = (now.QuadPart - at) / (double)f.QuadPart;
   }
   auto drop_on_demand = [&]() {
-    if (!keep_sessions && !long_holds) {
+    if (one_shot && !long_holds) {
       mon_stop(m);
       nmons = 0;
     }
@@ -1039,7 +1061,10 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     if (long_holds && kept_out) {
       D3D11_TEXTURE2D_DESC kd;
       kept_out->GetDesc(&kd);
-      if (kd.Width == od.Width && kd.Height == od.Height && kd.Format == od.Format) out = kept_out, uav = kept_uav;
+      ComPtr<ID3D11Device> kdev;
+      kept_out->GetDevice(&kdev);
+      if (kdev.Get() == dev.Get() && kd.Width == od.Width && kd.Height == od.Height && kd.Format == od.Format)
+        out = kept_out, uav = kept_uav;
     }
     if (!out && (FAILED(dev->CreateTexture2D(&od, NULL, &out)) || FAILED(dev->CreateUnorderedAccessView(out.Get(), NULL, &uav)))) {
       tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
@@ -1085,7 +1110,10 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   if (long_holds && kept_staging) {
     D3D11_TEXTURE2D_DESC kd;
     kept_staging->GetDesc(&kd);
-    if (kd.Width == td.Width && kd.Height == td.Height && kd.Format == td.Format) staging = kept_staging;
+    ComPtr<ID3D11Device> kdev;
+    kept_staging->GetDevice(&kdev);
+    if (kdev.Get() == dev.Get() && kd.Width == td.Width && kd.Height == td.Height && kd.Format == td.Format)
+      staging = kept_staging;
     kept_staging.Reset();
   }
   if (!staging && FAILED(dev->CreateTexture2D(&td, NULL, &staging))) {
@@ -1100,7 +1128,7 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
   }
   take_white = m->hdr ? white : 0.0;
-  if (!keep_sessions && !long_holds) {
+  if (one_shot && !long_holds) {
     tex.Reset();
     {
       ComPtr<ABI::Windows::Foundation::IClosable> c;
@@ -1156,14 +1184,18 @@ extern "C" void ps_wgc_release(void *taken) {
   if (!long_holds) {
     ComPtr<IDXGIDevice3> d3;
     if (SUCCEEDED(d.As(&d3))) d3->Trim();
-    if (!keep_sessions) {
-      int same_wgc = (d.Get() == dev.Get());
-      int same_dd = (d.Get() == dd_dev.Get());
+    int same_wgc = (d.Get() == dev.Get());
+    int same_dd = (d.Get() == dd_dev.Get());
+    if (!keep_sessions || (same_wgc && dd_ok == 1)) {
       d3.Reset();
       c.Reset();
       d.Reset();
-      if (same_wgc) wgc_teardown();
-      else if (same_dd) dd_teardown();
+      if (same_wgc) {
+        if (keep_sessions) wgc_dev_teardown();
+        else wgc_teardown();
+      } else if (same_dd) {
+        dd_teardown();
+      }
     }
   }
 }
@@ -1309,6 +1341,7 @@ extern "C" int ps_wgc_shot_cli(void) {
     hdr->h = h;
     hdr->pitch = w * 4;
     keep_sessions = 0;
+    dd_ok = 0;
     POINT pt = {x + w / 2, y + h / 2};
     HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     uint8_t *bits = NULL;
