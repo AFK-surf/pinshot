@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
   const char *exe = "$clangEsc";
 #endif
   int k = 0;
-  args[k++] = exe;
+  args[k++] = "clang";
   args[k++] = "--target=x86_64-pc-windows-msvc";
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-fuse-ld=lld") == 0) continue;

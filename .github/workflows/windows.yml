@@ -17,7 +17,8 @@ permissions:
   contents: read
 jobs:
   package:
-    runs-on: windows-latest
+    # (Visual Studio 2022's headers and libraries, as the releases made by hand were built with)
+    runs-on: windows-2022
     timeout-minutes: 60
     steps:
       - name: Checkout PinShot
