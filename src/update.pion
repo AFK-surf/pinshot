@@ -144,9 +144,10 @@ fn update_kind() -> Int {
   install_kind.v
 }
 
-/// Whether this copy updates itself (the Store's is updated by the Store).
+/// Whether this copy updates itself (Store and macOS app bundles omit the Windows self-updater).
 fn updates_here() -> Bool {
-  update_kind() != 2
+  let k = update_kind()
+  k != 2 && k != 3
 }
 
 let day_s : Double = 86400.0
@@ -477,6 +478,9 @@ fn update_button_pressed() -> Unit {
 /// shifts up or down, or left and right beside the button, as updates are checked).
 fn update_note() -> String {
   let ver = "PinShot " + app_version
+  if update_kind() == 3 {
+    return ver
+  }
   if !updates_here() {
     return ver + " · " + tr("通过 Microsoft Store 更新")
   }

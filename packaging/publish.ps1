@@ -1,15 +1,15 @@
 param([string]$Version = "")
 # Puts a release's downloads in the R2 bucket `pinshot` (Cloudflare account hisenxpress@gmail.com, wrangler logged in)
 # and the download page (site/) on Cloudflare Pages: https://pin-shot.pages.dev. PinShot on Windows is a single
-# self-installing executable (out/build/pinshot.exe); it is uploaded as pinshot.exe (and mirrored as PinShot-Setup*.exe
+# self-installing executable (out/Release/pinshot.exe); it is uploaded as pinshot.exe (and mirrored as PinShot-Setup*.exe
 # with matching setup_sha256 so existing <= 1.0.24 Inno Setup installs upgrade seamlessly via /UPDATE into the
 # single-file install), along with signed latest.json (packaging/sign-release.ps1, key in $env:PINSHOT_SIGN_KEY).
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path
-$appVersion = (Select-String -Path "$repo\app\main.mbt" -Pattern '^let app_version : String = "([^"]+)"').Matches[0].Groups[1].Value
+$appVersion = (Select-String -Path "$repo\src\main.pion" -Pattern '^let app_version : String = "([^"]+)"').Matches[0].Groups[1].Value
 if (-not $Version) { $Version = $appVersion }
-if ($Version -ne $appVersion) { throw "version $Version is not app_version $appVersion (app/main.mbt)" }
-$exe = "$repo\out\build\pinshot.exe"
+if ($Version -ne $appVersion) { throw "version $Version is not app_version $appVersion (src/main.pion)" }
+$exe = "$repo\out\Release\pinshot.exe"
 if (-not (Test-Path $exe)) { throw "missing $exe" }
 
 function Put([string]$file, [string]$key, [string]$type) {

@@ -584,6 +584,24 @@ void ps_shutter(void) {
   [sound play];
 }
 void ps_set_capture_keep(int32_t keep) { (void)keep; }
+void ps_hit_inset(int32_t wid, int32_t l, int32_t t, int32_t r, int32_t b) {
+  (void)wid; (void)l; (void)t; (void)r; (void)b;
+}
+int32_t ps_install_kind(void) { return 3; }
+void ps_update_cleanup(void) {}
+double ps_epoch_s(void) { return [[NSDate date] timeIntervalSince1970]; }
+int32_t ps_idle_ms(void) { return 0; }
+void ps_update_ticks(int32_t first_ms, int32_t every_ms) { (void)first_ms; (void)every_ms; }
+moonbit_bytes_t ps_update_path(moonbit_bytes_t name) { (void)name; return ps_data(nil); }
+int32_t ps_fetch(moonbit_bytes_t url, moonbit_bytes_t path, moonbit_bytes_t sha256, moonbit_bytes_t agent) {
+  (void)url; (void)path; (void)sha256; (void)agent; return 0;
+}
+int32_t ps_release_signed(moonbit_bytes_t version, moonbit_bytes_t setup_sha, moonbit_bytes_t exe_sha, moonbit_bytes_t sig) {
+  (void)version; (void)setup_sha; (void)exe_sha; (void)sig; return 0;
+}
+int32_t ps_install_cli(moonbit_bytes_t version) { (void)version; return 0; }
+void ps_install_sync_meta(moonbit_bytes_t version) { (void)version; }
+int32_t ps_swap_exe(moonbit_bytes_t path, moonbit_bytes_t sha256) { (void)path; (void)sha256; return 0; }
 // (ps_ocr / ps_ocr_now: ocr_mac.m)
 
 // (ps_long_*: longshot_mac.m)

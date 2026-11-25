@@ -11,17 +11,80 @@ jobs:
   package:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - name: Install MoonBit
+      - name: Checkout PinShot
+        uses: actions/checkout@v4
+        with:
+          path: pinshot
+
+      - name: Checkout invar
+        uses: actions/checkout@v4
+        with:
+          repository: AFK-surf/invar
+          ref: b7bc367279840d3ecba8fb461a901c62deea5da3
+          path: invar
+
+      - name: Checkout pion-packages
+        uses: actions/checkout@v4
+        with:
+          repository: AFK-surf/pion-packages
+          ref: 8014f92596624ab01af599b03851c7d3ad1f9701
+          path: pion-packages
+
+      - name: Checkout pion
+        uses: actions/checkout@v4
+        with:
+          repository: AFK-surf/pion
+          ref: 8c1e46d10d254853366f406926347c39f5365e4d
+          path: pion
+
+      - name: Cache pion toolchain
+        id: pion-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            pion/out/pionc2
+            pion/out/qbe
+            pion/out/libpionrt.a
+          key: pion-macos-arm64-8c1e46d10d254853366f406926347c39f5365e4d
+
+      - name: Bootstrap pionc2
+        if: steps.pion-cache.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh -o "$RUNNER_TEMP/moon-install.sh"
-          bash "$RUNNER_TEMP/moon-install.sh"
-          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-      - run: bash scripts/build-mac.sh
+          set -eu
+          OUT_DIR="$PWD/pion/out"
+          COMPILER_DIR="$PWD/pion/compiler"
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          mkdir -p "$OUT_DIR"
+          export PION_QBE="$OUT_DIR/qbe"
+          export PION_RT_LIB="$OUT_DIR/libpionrt.a"
+          PION_RT_CLI_LIB="$OUT_DIR/libpionrt_cli.a"
+          sh pion/scripts/build-qbe.sh "$PION_QBE"
+          cc -std=c11 -O2 -fno-asynchronous-unwind-tables -Wall -Wextra -Werror \
+            -c pion/runtime/pion_rt.c -o "$OUT_DIR/pion_rt.o"
+          ar rcs "$PION_RT_LIB" "$OUT_DIR/pion_rt.o"
+          cc -std=c11 -O2 -fno-asynchronous-unwind-tables -Wall -Wextra -Werror \
+            -c pion/runtime/pion_cli.c -o "$OUT_DIR/pion_cli.o"
+          ar rcs "$PION_RT_CLI_LIB" "$OUT_DIR/pion_rt.o" "$OUT_DIR/pion_cli.o"
+          gzip -dc pion/bootstrap/pionc-seed.ssa.gz > "$TMP_DIR/pionc-seed.ssa"
+          "$PION_QBE" -t arm64_apple -o "$TMP_DIR/pionc0.s" "$TMP_DIR/pionc-seed.ssa"
+          cc "$TMP_DIR/pionc0.s" "$PION_RT_CLI_LIB" -lm -lpthread -o "$OUT_DIR/pionc0"
+          mkdir -p "$TMP_DIR/cas_s1" "$TMP_DIR/cas_s2"
+          PION_RT_LIB="$PION_RT_CLI_LIB" PION_CACHE_DIR="$TMP_DIR/cas_s1" "$OUT_DIR/pionc0" build --release "$COMPILER_DIR" -o "$OUT_DIR/pionc1"
+          PION_RT_LIB="$PION_RT_CLI_LIB" PION_CACHE_DIR="$TMP_DIR/cas_s2" "$OUT_DIR/pionc1" build --release "$COMPILER_DIR" -o "$OUT_DIR/pionc2"
+
+      - name: Build PinShot.app
+        env:
+          PIONC: ${{ github.workspace }}/pion/out/pionc2
+          PION_QBE: ${{ github.workspace }}/pion/out/qbe
+          PION_RT_LIB: ${{ github.workspace }}/pion/out/libpionrt.a
+        run: bash pinshot/scripts/build-mac.sh
+
       - uses: actions/upload-artifact@v4
         with:
           name: PinShot-mac-${{ runner.arch }}
-          path: out/build/PinShot-mac.zip
+          path: pinshot/out/build/PinShot-mac.zip
+
       # (a tag's build goes on its release too, once the release is there: gh release create comes first)
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -29,4 +92,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           for i in $(seq 1 20); do gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break; sleep 30; done
-          gh release upload "$GITHUB_REF_NAME" out/build/PinShot-mac.zip --clobber
+          gh release upload "$GITHUB_REF_NAME" pinshot/out/build/PinShot-mac.zip --clobber

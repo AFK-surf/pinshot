@@ -1,7 +1,7 @@
 app_bundle() {
   local plist="$1/Contents/Info.plist"
   plutil -insert LSUIElement -bool YES "$plist"
-  plutil -replace CFBundleShortVersionString -string "$(sed -n 's/^let app_version : String = "\(.*\)"$/\1/p' "$PINSHOT_ROOT/app/main.mbt")" "$plist"
+  plutil -replace CFBundleShortVersionString -string "$(sed -n 's/^let app_version : String = "\(.*\)"$/\1/p' "$PINSHOT_ROOT/src/main.pion")" "$plist"
   cp "$PINSHOT_ROOT/assets/shutter.wav" "$1/Contents/Resources/"
   local icons="$PWD/out/PinShot.iconset"
   mkdir -p "$icons"

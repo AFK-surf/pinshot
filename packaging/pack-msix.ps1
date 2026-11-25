@@ -3,10 +3,10 @@ param(
   [string]$Name = "pengx17.PinShot",
   [string]$Publisher = "CN=0A62AE73-FF5C-4B40-9E2B-F24486072C86",
   [string]$PublisherDisplayName = "pengx17",
-  [string]$Version = "1.0.0.0",
+  [string]$Version = "1.0.31.0",
   [string]$Out = ""
 )
-# Makes PinShot's MSIX for the Microsoft Store: out\build\pinshot.exe (scripts\build.ps1) as it is (one file, nothing
+# Makes PinShot's MSIX for the Microsoft Store: out\Release\pinshot.exe (scripts\build.ps1) as it is (one file, nothing
 # beside it), the tiles made from assets\icon.png, the manifest filled in, and makeappx's package. Unsigned: the Store
 # signs what it is given; a local test signs it with signtool and a certificate whose subject is $Publisher.
 $ErrorActionPreference = 'Stop'
@@ -17,7 +17,7 @@ $stage = Join-Path $Out 'stage'
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force "$stage\Assets" | Out-Null
 
-Copy-Item "$repo\out\build\pinshot.exe" $stage
+Copy-Item "$repo\out\Release\pinshot.exe" $stage
 $git = (git -C $repo rev-parse --short HEAD).Trim()
 Set-Content -Path "$stage\build.txt" -Value "$Version $git" -Encoding ascii
 
