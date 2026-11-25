@@ -17,7 +17,6 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <CoreMedia/CoreMedia.h>
 #import <ImageIO/ImageIO.h>
-#import <QuartzCore/QuartzCore.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <VideoToolbox/VideoToolbox.h>
@@ -25,7 +24,6 @@
 
 extern void mb_post(const char *, const char *, size_t, const uint8_t *, size_t);
 extern void mb_app_window_clear(int wid);
-extern int32_t ps_reduce_motion(void);
 
 // ---- what is told ----
 
@@ -276,88 +274,12 @@ static PSRecFrameWindow *frameWin;
 static PSRecFrameView *frameView;
 static void recDrawRegion(void);
 
-@interface PSRecVeilView : NSView
-@property NSRect hole;  // in view points
-@end
-
-@implementation PSRecVeilView
-- (void)drawRect:(NSRect)dirty {
-  NSBezierPath *path = [NSBezierPath bezierPathWithRect:self.bounds];
-  if (!NSIsEmptyRect(self.hole))
-    [path appendBezierPathWithRect:self.hole];
-  path.windingRule = NSWindingRuleEvenOdd;
-  [[NSColor colorWithSRGBRed:0 green:0 blue:0 alpha:(CGFloat)0x72 / 255.0] setFill];
-  [path fill];
-}
-@end
-
-static PSRecFrameWindow *veilWin;
-static PSRecVeilView *veilView;
-static BOOL veilFading;
-
-static void veilHide(void) {
-  veilFading = NO;
-  if (!veilWin)
-    return;
-  [excluded removeObject:@(veilWin.windowNumber)];
-  [veilWin orderOut:nil];
-  [veilWin close];
-  veilWin = nil;
-  veilView = nil;
-}
-
-static void veilUpdateHole(void) {
-  if (!veilWin || !veilView || !recScreen)
-    return;
-  NSRect reg = regionPoints();
-  NSRect sf = recScreen.frame;
-  veilView.hole = NSMakeRect(reg.origin.x - sf.origin.x, reg.origin.y - sf.origin.y, reg.size.width, reg.size.height);
-  veilView.needsDisplay = YES;
-}
-
-static void veilPrepare(void) {
-  veilHide();
-  const char *cl = getenv("PINSHOT_TEST_CLOAKED");
-  if ((cl && cl[0]) || ps_reduce_motion() || !recScreen)
-    return;
-  if (R.x <= R.mx && R.y <= R.my && R.x + R.w >= R.mx + R.mw && R.y + R.h >= R.my + R.mh)
-    return;
-  NSRect sf = recScreen.frame;
-  PSRecFrameWindow *w = [[PSRecFrameWindow alloc] initWithContentRect:sf
-                                                            styleMask:NSWindowStyleMaskBorderless
-                                                              backing:NSBackingStoreBuffered
-                                                                defer:NO];
-  w.opaque = NO;
-  w.backgroundColor = NSColor.clearColor;
-  w.hasShadow = NO;
-  w.releasedWhenClosed = NO;
-  w.level = NSFloatingWindowLevel;
-  w.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary |
-                         NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle;
-  w.ignoresMouseEvents = YES;
-  if (!getenv("PINSHOT_REC_SHOW"))
-    w.sharingType = NSWindowSharingNone;
-  PSRecVeilView *v = [[PSRecVeilView alloc] initWithFrame:NSMakeRect(0, 0, sf.size.width, sf.size.height)];
-  w.contentView = v;
-  veilWin = w;
-  veilView = v;
-  [excluded addObject:@(w.windowNumber)];
-  veilUpdateHole();
-  NSWindow *ov = mb_app_window_of(0);
-  if (ov && ov.isVisible)
-    [w orderWindow:NSWindowBelow relativeTo:ov.windowNumber];
-  else
-    [w orderFrontRegardless];
-}
-
 static void framePlace(void) {
   if (!frameWin)
     return;
   NSRect r = NSInsetRect(regionPoints(), -framePad, -framePad);
   [frameWin setFrame:r display:YES];
   frameView.needsDisplay = YES;
-  if (veilWin)
-    veilUpdateHole();
 }
 
 static NSBezierPath *ps_superellipse_path(NSRect r, CGFloat rad) {
@@ -1362,7 +1284,6 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
                                                                                              error:nil];
                                                 }];
   }
-  veilHide();
   frameHide();
   if (w < 16 || h < 16)
     return 0;
@@ -1397,25 +1318,8 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   R.prepared = YES;
   R.x = x, R.y = y, R.w = w, R.h = h;
   R.mx = mx, R.my = my, R.mw = mw, R.mh = mh;
-  veilPrepare();
   frameShow(rgb(0x2F9BFF), NO, YES);
   return 1;
-}
-
-void ps_rec_veil_fade(void) {
-  if (!veilWin || veilFading)
-    return;
-  veilFading = YES;
-  PSRecFrameWindow *w = veilWin;
-  [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-    ctx.duration = 0.22;
-    ctx.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0.0f :0.0f :0.58f :1.0f];
-    w.animator.alphaValue = 0.0;
-  }
-                      completionHandler:^{
-                        if (veilWin == w)
-                          veilHide();
-                      }];
 }
 
 moonbit_bytes_t ps_rec_rect(void) {
@@ -1478,7 +1382,6 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
   __weak PSRecorder *weak = r;
   dispatch_source_set_event_handler(r->ticker, ^{ [weak tick]; });
   dispatch_resume(r->ticker);
-  ps_rec_veil_fade();
   frameShow(rgb(0xEF4444), NO, NO);
   drawRecording = YES;
   drawSync();
@@ -1500,7 +1403,6 @@ void ps_rec_pause(int32_t on) {
 }
 
 void ps_rec_stop(int32_t cancel) {
-  veilHide();
   frameHide();
   drawRecording = NO;
   drawSync();
@@ -2442,7 +2344,6 @@ int32_t ps_rec_has_av1(void) { return 0; }
 moonbit_bytes_t ps_rec_preview(void) { return ps_data(masterPreview); }
 
 void ps_rec_end(void) {
-  veilHide();
   frameHide();
   drawRecording = NO;
   R.prepared = NO;

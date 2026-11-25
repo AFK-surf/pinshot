@@ -673,7 +673,6 @@ fn rec_start_now() -> Unit {
     rec_closing_overlay.v = false
     close_capture()
     ps_capture_open(1)
-    ps_rec_veil_fade()
   }
   let fps = rec_fps.untracked()
   let cur = if rec_cursor.untracked() { 1 } else { 0 }
@@ -2632,7 +2631,6 @@ fn rec_window(root : view::View) -> Unit {
                 rec_closing_overlay.v = false
                 close_capture()
                 ps_capture_open(1)
-                ps_rec_veil_fade()
               }
               if rec_morph_in.untracked() {
                 rec_morph_in.set(false)

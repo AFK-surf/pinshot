@@ -90,7 +90,6 @@ public:
 
 extern "C" void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
 extern "C" void *mb_app_hwnd_of(int wid);
-extern "C" int32_t ps_reduce_motion(void);
 extern "C" int ps_wgc_mon_hdr(HMONITOR mon, float *white);
 extern "C" int ps_wgc_borderless_ok(void);
 
@@ -244,8 +243,6 @@ static struct {
   HMONITOR mon;
   int mx, my, mw, mh;      // monitor bounds
   HWND frame;
-  HWND veil;               // hardware DWM LWA_ALPHA outer scrim (0x72 -> 0 over 220ms on screenshot->record handoff)
-  ULONGLONG veil_fade_ms;  // 0 while parked behind overlay waiting for handoff; >0 once fading out
   COLORREF frame_color;
   int frame_dashed;
   int frame_interactive;   // 1 in Ready phase (resizable border/corners), 0 once recording starts (100% click-through)
@@ -423,8 +420,6 @@ static void rec_post_rect(void) {
   if (n > 0) mb_post("ps", buf, (size_t)n, NULL, 0);
 }
 
-static void rec_veil_update_hole(HWND h);
-
 static LRESULT CALLBACK rec_frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_NCHITTEST) {
     if (!R.frame_interactive) return HTTRANSPARENT;
@@ -497,7 +492,6 @@ static LRESULT CALLBACK rec_frame_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         R.w = nw;
         R.h = nh;
         ps_update_region_frame(h, R.x, R.y, R.w, R.h, R.frame_color, 0, 1);
-        if (R.veil) rec_veil_update_hole(R.veil);
         rec_post_rect();
       }
     }
@@ -556,141 +550,6 @@ static void rec_frame_hide(void) {
     DestroyWindow(R.frame);
     R.frame = NULL;
   }
-}
-
-// ---- hardware-composited DWM outer scrim fade-out (screenshot -> recording handoff) ----
-// A single solid-black WS_EX_LAYERED | WS_EX_TRANSPARENT window with a SetWindowRgn cutout for the selected region.
-// Parked directly behind the screenshot overlay at alpha 0x72 (exact match to overlay.pion's 0x00000072L scrim) so
-// when the overlay cloaks on Frame 1 there is zero 1-frame flash or double-dimming, then dissolved via LWA_ALPHA
-// (pure DWM scalar opacity blend: zero pixel upload, zero rasterization, WDA_EXCLUDEFROMCAPTURE) over 220ms and
-// immediately destroyed so zero resources remain while Ready/Recording.
-static const UINT_PTR REC_VEIL_TIMER_ID = 0x5256;
-static const UINT_PTR REC_VEIL_GUARD_TIMER_ID = 0x5257;
-static const BYTE REC_VEIL_ALPHA = 0x72;
-static const DWORD REC_VEIL_FADE_MS = 220;
-
-static void rec_veil_update_hole(HWND h) {
-  if (!h || R.mw <= 0 || R.mh <= 0) return;
-  HRGN outer = CreateRectRgn(0, 0, R.mw, R.mh);
-  if (!outer) return;
-  int hx0 = std::max(0, R.x - R.mx);
-  int hy0 = std::max(0, R.y - R.my);
-  int hx1 = std::min(R.mw, hx0 + R.w);
-  int hy1 = std::min(R.mh, hy0 + R.h);
-  if (hx1 > hx0 && hy1 > hy0) {
-    HRGN hole = CreateRectRgn(hx0, hy0, hx1, hy1);
-    if (hole) {
-      CombineRgn(outer, outer, hole, RGN_DIFF);
-      DeleteObject(hole);
-    }
-  }
-  if (!SetWindowRgn(h, outer, FALSE)) DeleteObject(outer);
-}
-
-static void rec_veil_hide(void) {
-  R.veil_fade_ms = 0;
-  if (R.veil) {
-    KillTimer(R.veil, REC_VEIL_TIMER_ID);
-    KillTimer(R.veil, REC_VEIL_GUARD_TIMER_ID);
-    DestroyWindow(R.veil);
-    R.veil = NULL;
-  }
-}
-
-static void rec_veil_start_fade(void) {
-  if (!R.veil || R.veil_fade_ms != 0) return;
-  KillTimer(R.veil, REC_VEIL_GUARD_TIMER_ID);
-  R.veil_fade_ms = GetTickCount64();
-  if (R.veil_fade_ms == 0) R.veil_fade_ms = 1;
-  SetTimer(R.veil, REC_VEIL_TIMER_ID, 8, NULL);
-}
-
-static LRESULT CALLBACK rec_veil_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
-  switch (msg) {
-    case WM_ERASEBKGND: {
-      RECT rc;
-      GetClientRect(h, &rc);
-      FillRect((HDC)wp, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
-      return 1;
-    }
-    case WM_PAINT: {
-      PAINTSTRUCT ps;
-      HDC dc = BeginPaint(h, &ps);
-      FillRect(dc, &ps.rcPaint, (HBRUSH)GetStockObject(BLACK_BRUSH));
-      EndPaint(h, &ps);
-      return 0;
-    }
-    case WM_TIMER:
-      if (wp == REC_VEIL_GUARD_TIMER_ID) {
-        rec_veil_start_fade();
-        return 0;
-      }
-      if (wp == REC_VEIL_TIMER_ID) {
-        if (R.veil_fade_ms == 0) {
-          KillTimer(h, REC_VEIL_TIMER_ID);
-          return 0;
-        }
-        ULONGLONG now = GetTickCount64();
-        ULONGLONG elapsed = (now >= R.veil_fade_ms) ? (now - R.veil_fade_ms) : 0;
-        if (elapsed >= REC_VEIL_FADE_MS) {
-          rec_veil_hide();
-          return 0;
-        }
-        float t = (float)elapsed / (float)REC_VEIL_FADE_MS;
-        float inv = 1.0f - t;
-        // Quadratic ease-out keeps sRGB perceived brightness dropping smoothly across the full 220ms handoff.
-        BYTE alpha = (BYTE)roundf((float)REC_VEIL_ALPHA * inv * inv);
-        if (alpha == 0) {
-          rec_veil_hide();
-          return 0;
-        }
-        SetLayeredWindowAttributes(h, 0, alpha, LWA_ALPHA);
-        return 0;
-      }
-      break;
-    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
-    case WM_NCHITTEST: return HTTRANSPARENT;
-  }
-  return DefWindowProcW(h, msg, wp, lp);
-}
-
-static void rec_veil_prepare(void) {
-  rec_veil_hide();
-  const char *cl = getenv("PINSHOT_TEST_CLOAKED");
-  if ((cl && cl[0]) || ps_reduce_motion()) return;
-  if (R.mw <= 0 || R.mh <= 0) return;
-  // Whole monitor selected -> no outer veil exists around the selection.
-  if (R.x <= R.mx && R.y <= R.my && R.x + R.w >= R.mx + R.mw && R.y + R.h >= R.my + R.mh) return;
-  static int registered = 0;
-  if (!registered) {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof wc;
-    wc.lpfnWndProc = rec_veil_proc;
-    wc.hInstance = GetModuleHandleW(NULL);
-    wc.lpszClassName = L"PinShot.RecVeil";
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    RegisterClassExW(&wc);
-    registered = 1;
-  }
-  DWORD ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-  R.veil = CreateWindowExW(ex, L"PinShot.RecVeil", L"", WS_POPUP, R.mx, R.my, R.mw, R.mh, NULL, NULL,
-                           GetModuleHandleW(NULL), NULL);
-  if (!R.veil) return;
-  DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
-  DwmSetWindowAttribute(R.veil, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
-  COLORREF no_border = 0xFFFFFFFEu;
-  DwmSetWindowAttribute(R.veil, 34 /* DWMWA_BORDER_COLOR */, &no_border, sizeof no_border);
-  DWMNCRENDERINGPOLICY ncrp = DWMNCRP_DISABLED;
-  DwmSetWindowAttribute(R.veil, DWMWA_NCRENDERING_POLICY, &ncrp, sizeof ncrp);
-  rec_exclude_hwnd(R.veil);
-  rec_veil_update_hole(R.veil);
-  SetLayeredWindowAttributes(R.veil, 0, REC_VEIL_ALPHA, LWA_ALPHA);
-  HWND ov = (HWND)mb_app_hwnd_of(0);
-  HWND after = (ov && IsWindowVisible(ov)) ? ov : HWND_TOPMOST;
-  SetWindowPos(R.veil, after, R.mx, R.my, R.mw, R.mh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-  UpdateWindow(R.veil);
-  // Safety watchdog: never allow the veil to stay parked if handoff is interrupted.
-  SetTimer(R.veil, REC_VEIL_GUARD_TIMER_ID, 600, NULL);
 }
 
 // ---- MP4 HEVC 'hev1' -> 'hvc1' in-place box patcher ----
@@ -3535,7 +3394,6 @@ extern "C" {
 
 int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   if (InterlockedCompareExchange(&R.running, 0, 0) != 0 || InterlockedCompareExchange(&R.exporting, 0, 0) != 0) return 0;
-  rec_veil_hide();
   rec_frame_hide();
   rec_draw_close();
   if (w < 16 || h < 16) return 0;
@@ -3569,14 +3427,9 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   R.mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
   // (the clicks' and keys' overlay only told where: nothing of it is made until a recording asks for it)
   rec_draw_open(x, y, w, h);
-  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) {
-    rec_veil_prepare();
-    rec_frame_show(RGB(0x2F, 0x9B, 0xFF), 0, 1);
-  }
+  if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) rec_frame_show(RGB(0x2F, 0x9B, 0xFF), 0, 1);
   return 1;
 }
-
-void ps_rec_veil_fade(void) { rec_veil_start_fade(); }
 
 moonbit_bytes_t ps_rec_rect(void) {
   if (!R.prepared) return moonbit_make_bytes(0, 0);
@@ -3607,7 +3460,6 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
     return 0;
   }
   // (the red frame and the overlay's hooks only once the worker is there: none left behind where it is not)
-  rec_veil_start_fade();
   rec_frame_show(RGB(0xEF, 0x44, 0x44), 0, 0);
   rec_draw_set_recording(1);
   return 1;
@@ -3623,7 +3475,6 @@ void ps_rec_pause(int32_t on) {
 }
 
 void ps_rec_stop(int32_t cancel) {
-  rec_veil_hide();
   rec_frame_hide();
   rec_draw_close();
   if (InterlockedCompareExchange(&R.running, 0, 0) == 0) return;
@@ -3767,7 +3618,6 @@ static DWORD WINAPI rec_reaper(LPVOID arg) {
 }
 
 void ps_rec_end(void) {
-  rec_veil_hide();
   rec_frame_hide();
   rec_draw_close();
   // (another session from now: a recording still finishing keeps nothing of this one, an export is called off)

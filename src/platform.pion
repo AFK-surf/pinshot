@@ -217,7 +217,6 @@ extern "C" fn ps_long_exclude(wid : Int) -> Unit = "ps_long_exclude"
 
 // Record
 extern "C" fn ps_rec_prepare(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_rec_prepare"
-extern "C" fn ps_rec_veil_fade() -> Unit = "ps_rec_veil_fade"
 extern "C" fn c_ps_rec_rect() -> Ptr = "ps_rec_rect"
 extern "C" fn ps_rec_start(fps : Int, cursor : Int, audio : Int) -> Int = "ps_rec_start"
 extern "C" fn ps_rec_pause(on : Int) -> Unit = "ps_rec_pause"
