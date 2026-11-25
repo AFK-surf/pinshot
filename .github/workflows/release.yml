@@ -1,0 +1,59 @@
+name: Release
+# A pushed tag v<version> makes the release: pinshot.exe (Windows package) and PinShot-mac.zip (macOS package, signed
+# and notarized) built from the tag and put on its GitHub release, which is made here when it is not there yet (made
+# by hand first, with notes of its own, it is kept and only given the files).
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is the app's version
+        run: |
+          ver=$(sed -n 's/^let app_version : String = "\(.*\)"$/\1/p' src/main.pion)
+          if [ "v$ver" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME is not app_version $ver (src/main.pion)"
+            exit 1
+          fi
+
+  windows:
+    needs: version
+    uses: ./.github/workflows/windows.yml
+
+  macos:
+    needs: version
+    uses: ./.github/workflows/macos.yml
+    secrets: inherit
+
+  release:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Put the files on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l assets
+          (cd assets && sha256sum pinshot.exe PinShot-mac.zip)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" assets/pinshot.exe assets/PinShot-mac.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
+              assets/pinshot.exe assets/PinShot-mac.zip
+          fi
