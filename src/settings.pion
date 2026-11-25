@@ -733,15 +733,12 @@ fn keys_page(p : view::View) -> Unit {
     if keys_pressed_in() {
       set_row(g, "截图", fn(r) {
         key_box(r, 1)
-        key_clear_button(r, 1)
       }, note=fn() { key_note(1) })
       set_row(g, "贴剪贴板图片", fn(r) {
         key_box(r, 2)
-        key_clear_button(r, 2)
       }, note=fn() { key_note(2) })
       set_row(g, "额外确认并复制", fn(r) {
         key_box(r, 3)
-        key_clear_button(r, 3)
       }, note=fn() { key_note(3) }, note_ink=fn() { if key_trouble.get().0 == 3 { 0xF5A524FFL } else { set_muted } })
     } else {
       let choice_labels = fn(cs : Array[(String, Int, Int)]) -> Array[String] {
@@ -812,8 +809,8 @@ fn key_note(which : Int) -> String {
   }
 }
 
-/// The × beside a shortcut's box: it cleared. Laid out only while there is one to clear (and it is not being asked for).
-fn key_clear_button(parent : view::View, which : Int) -> Unit {
+/// A shortcut's box: what it is; pressed, it waits for the keys to be pressed ("按下快捷键…"), with an inline × inside the right edge when bound.
+fn key_box(parent : view::View, which : Int) -> Unit {
   let has = fn() {
     let s = settings.get()
     let vk = if which == 1 {
@@ -825,41 +822,6 @@ fn key_clear_button(parent : view::View, which : Int) -> Unit {
     }
     recording.get() != which && vk != 0
   }
-  let _ = parent.box(fn(b) {
-    let hov = smooth_hover(b)
-    tactile_press(b, sink_px=0.8)
-    hig_focus(b)
-    let _ = b
-    .laid_nowhere(view::Live::By(fn() { !has() }))
-    .width(view::Live::Is(Some(22.0)))
-    .height(view::Live::Is(Some(22.0)))
-    .radius(view::Live::Is(11.0))
-    .shrink(view::Live::Is(0.0))
-    .lines_up(view::Live::Is(Some(view::Along::Middle)))
-    .lies_along(view::Live::Is(view::Lies::Middle))
-    .presses(view::Live::Is(true))
-    .cursor(view::Live::Is(Some(view::Cursor::Hand)))
-    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("清空快捷键"))) }))
-    .on_press(fn() { clear_key(which) })
-    .ground(view::Live::By(fn() {
-      if b.pressed() {
-        0xFFFFFF26L
-      } else {
-        mix_rgba(0L, 0xFFFFFF18L, hov())
-      }
-    }))
-    let _ = b.box(fn(g) {
-      let _ = g
-      .width(view::Live::Is(Some(10.0)))
-      .height(view::Live::Is(Some(10.0)))
-      .picture(view::Live::Is(Some(pixels::Vector::{ w: 10.0, h: 10.0, layers: [stroke_layer("M2.2 2.2l5.6 5.6M7.8 2.2l-5.6 5.6", 0x000000FFL, 1.35)] })))
-      .tint(view::Live::By(fn() { mix_rgba(0x8E95A4FFL, 0xFFFFFFFFL, hov()) }))
-    })
-  })
-}
-
-/// A shortcut's box: what it is; pressed, it waits for the keys to be pressed ("按下快捷键…").
-fn key_box(parent : view::View, which : Int) -> Unit {
   let words = fn() {
     if recording.get() == which {
       tr("按下快捷键…")
@@ -871,33 +833,74 @@ fn key_box(parent : view::View, which : Int) -> Unit {
       key_words(settings.get().confirm_key, confirm_choices)
     }
   }
-  let _ = parent.box(fn(b) {
-    let _ = b
-    .min_width(view::Live::Is(Some(160.0)))
+  let box_w = 180.0
+  let _ = parent.box(fn(wrap) {
+    let _ = wrap
+    .width(view::Live::Is(Some(box_w)))
     .height(view::Live::Is(Some(28.0)))
-    .padding(view::Live::Is((12.0, 0.0, 12.0, 0.0)))
-    .radius(view::Live::Is(8.0))
     .shrink(view::Live::Is(0.0))
-    .lines_up(view::Live::Is(Some(view::Along::Middle)))
-    .lies_along(view::Live::Is(view::Lies::Middle))
-    .presses(view::Live::Is(true))
-    .cursor(view::Live::Is(Some(view::Cursor::Hand)))
-    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=words())) }))
-    .on_press(fn() { record_key(which) })
-    .edge(view::Live::By(fn() { (1.0, if recording.get() == which { 0x2F9BFFFFL } else { 0xFFFFFF24L }) }))
-    .ground(view::Live::By(fn() {
-      if recording.get() == which {
-        0x17324FFFL
-      } else if b.pointed() {
-        0x2B2E36FFL
-      } else {
-        0x141518FFL
-      }
-    }))
-    let _ = b.box(fn(t) {
-      let _ = t
-      .words(view::Live::By(words), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 500, line: 16.0, wrap: false })
-      .ink(view::Live::By(fn() { if recording.get() == which { 0x8CC8FFFFL } else { set_ink } }))
+    let _ = wrap.box(fn(b) {
+      hig_focus(b)
+      let _ = b
+      .width(view::Live::Is(Some(box_w)))
+      .height(view::Live::Is(Some(28.0)))
+      .padding(view::Live::By(fn() { if has() { (26.0, 0.0, 26.0, 0.0) } else { (12.0, 0.0, 12.0, 0.0) } }))
+      .radius(view::Live::Is(8.0))
+      .shrink(view::Live::Is(0.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      .presses(view::Live::Is(true))
+      .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+      .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=words())) }))
+      .on_press(fn() { record_key(which) })
+      .edge(view::Live::By(fn() { (1.0, if recording.get() == which { 0x2F9BFFFFL } else { 0xFFFFFF24L }) }))
+      .ground(view::Live::By(fn() {
+        if recording.get() == which {
+          0x17324FFFL
+        } else if b.pointed() {
+          0x2B2E36FFL
+        } else {
+          0x141518FFL
+        }
+      }))
+      let _ = b.box(fn(t) {
+        let _ = t
+        .words(view::Live::By(words), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 500, line: 16.0, wrap: false })
+        .ink(view::Live::By(fn() { if recording.get() == which { 0x8CC8FFFFL } else { set_ink } }))
+      })
+    })
+    let _ = wrap.box(fn(clr) {
+      let hov = smooth_hover(clr)
+      tactile_press(clr, sink_px=0.6)
+      hig_focus(clr)
+      let _ = clr
+      .over(view::Live::Is(true))
+      .laid_nowhere(view::Live::By(fn() { !has() }))
+      .width(view::Live::Is(Some(20.0)))
+      .height(view::Live::Is(Some(20.0)))
+      .offset(view::Live::Is((box_w - 24.0, 4.0)))
+      .radius(view::Live::Is(10.0))
+      .shrink(view::Live::Is(0.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      .presses(view::Live::Is(true))
+      .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+      .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("清空快捷键"))) }))
+      .on_press(fn() { clear_key(which) })
+      .ground(view::Live::By(fn() {
+        if clr.pressed() {
+          0xFFFFFF2CL
+        } else {
+          mix_rgba(0L, 0xFFFFFF1EL, hov())
+        }
+      }))
+      let _ = clr.box(fn(g) {
+        let _ = g
+        .width(view::Live::Is(Some(9.0)))
+        .height(view::Live::Is(Some(9.0)))
+        .picture(view::Live::Is(Some(pixels::Vector::{ w: 9.0, h: 9.0, layers: [stroke_layer("M2 2l5 5M7 2l-5 5", 0x000000FFL, 1.35)] })))
+        .tint(view::Live::By(fn() { mix_rgba(0x7E8594FFL, 0xFFFFFFFFL, hov()) }))
+      })
     })
   })
 }
