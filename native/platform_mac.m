@@ -463,6 +463,11 @@ moonbit_bytes_t ps_window_rect(int wid) {
                                               NSHeight(r), 96 * s.backingScaleFactor]);
 }
 int ps_shift_down(void) { return (NSEvent.modifierFlags & NSEventModifierFlagShift) != 0; }
+int ps_reduce_motion(void) {
+  const char *env = getenv("PINSHOT_REDUCE_MOTION");
+  if (env && env[0] && env[0] != '0') return 1;
+  return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ? 1 : 0;
+}
 moonbit_bytes_t ps_pointer(void) {
   NSPoint p = NSEvent.mouseLocation;
   NSRect r = ps_screen_pixels(ps_capture_screen() ?: ps_mouse_screen(), NSMakeRect(p.x, p.y, 0, 0));

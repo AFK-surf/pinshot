@@ -242,6 +242,7 @@ fn close_capture() -> Unit {
   }
   let key = frozen_key.untracked()
   signals::start_batch()
+  overlay_disarm_discard()
   capturing.set(false)
   overlay_seen.set(false)
   sel.set(None)

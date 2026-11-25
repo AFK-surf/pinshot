@@ -535,10 +535,10 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
     let _ = o.box(fn(bar) {
       let _ = bar
       .row(view::Live::Is(true))
-      .height(view::Live::Is(Some(28.0)))
+      .height(view::Live::Is(Some(36.0)))
       .padding(view::Live::Is((4.0, 0.0, 4.0, 0.0)))
-      .gap(view::Live::Is(3.0))
-      .radius(view::Live::Is(9.0))
+      .gap(view::Live::Is(4.0))
+      .radius(view::Live::Is(11.0))
       .ground(view::Live::Is(0x16181DE8L))
       .edge(view::Live::Is((1.0, 0xFFFFFF24L)))
       .lines_up(view::Live::Is(Some(view::Along::Middle)))
@@ -568,10 +568,11 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
       })
       // Retry button (Failed only)
       let _ = bar.box(fn(rb) {
+        hig_focus(rb)
         let _ = rb
-        .height(view::Live::Is(Some(20.0)))
-        .padding(view::Live::Is((7.0, 0.0, 7.0, 0.0)))
-        .radius(view::Live::Is(6.0))
+        .height(view::Live::Is(Some(28.0)))
+        .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+        .radius(view::Live::Is(7.0))
         .lines_up(view::Live::Is(Some(view::Along::Middle)))
         .lies_along(view::Live::Is(view::Lies::Middle))
         .presses(view::Live::Is(true))
@@ -590,16 +591,17 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         }))
         let _ = rb.box(fn(t) {
           let _ = t
-          .words(view::Live::By(fn() { tr("重试") }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+          .words(view::Live::By(fn() { tr("重试") }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
           .ink(view::Live::Is(0xEDEEF0FFL))
         })
       })
       // Primary Copy chip (Ready only): copies selected text when selected, else copies all recognized text.
       let _ = bar.box(fn(cb) {
+        hig_focus(cb)
         let _ = cb
-        .height(view::Live::Is(Some(20.0)))
-        .padding(view::Live::Is((8.0, 0.0, 8.0, 0.0)))
-        .radius(view::Live::Is(6.0))
+        .height(view::Live::Is(Some(28.0)))
+        .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+        .radius(view::Live::Is(7.0))
         .lines_up(view::Live::Is(Some(view::Along::Middle)))
         .lies_along(view::Live::Is(view::Lies::Middle))
         .presses(view::Live::Is(true))
@@ -637,16 +639,17 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
             } else {
               tr("复制全部")
             }
-          }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+          }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
           .ink(view::Live::Is(0xFFFFFFFFL))
         })
       })
       // Select-all ghost chip (Ready with boxes and wide enough pin)
       let _ = bar.box(fn(ab) {
+        hig_focus(ab)
         let _ = ab
-        .height(view::Live::Is(Some(20.0)))
-        .padding(view::Live::Is((6.0, 0.0, 6.0, 0.0)))
-        .radius(view::Live::Is(6.0))
+        .height(view::Live::Is(Some(28.0)))
+        .padding(view::Live::Is((9.0, 0.0, 9.0, 0.0)))
+        .radius(view::Live::Is(7.0))
         .lines_up(view::Live::Is(Some(view::Along::Middle)))
         .lies_along(view::Live::Is(view::Lies::Middle))
         .presses(view::Live::Is(true))
@@ -676,16 +679,17 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         }))
         let _ = ab.box(fn(t) {
           let _ = t
-          .words(view::Live::By(fn() { tr("全选") }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
+          .words(view::Live::By(fn() { tr("全选") }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
           .ink(view::Live::By(fn() { if ab.pointed() { 0xFFFFFFFFL } else { 0xC8CDD8FFL } }))
         })
       })
       // Exit Live Text × button
       let _ = bar.box(fn(xb) {
+        hig_focus(xb)
         let _ = xb
-        .width(view::Live::Is(Some(20.0)))
-        .height(view::Live::Is(Some(20.0)))
-        .radius(view::Live::Is(6.0))
+        .width(view::Live::Is(Some(28.0)))
+        .height(view::Live::Is(Some(28.0)))
+        .radius(view::Live::Is(7.0))
         .lines_up(view::Live::Is(Some(view::Along::Middle)))
         .lies_along(view::Live::Is(view::Lies::Middle))
         .presses(view::Live::Is(true))
@@ -703,8 +707,8 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         }))
         let _ = xb.box(fn(ic) {
           let _ = ic
-          .width(view::Live::Is(Some(11.0)))
-          .height(view::Live::Is(Some(11.0)))
+          .width(view::Live::Is(Some(12.5)))
+          .height(view::Live::Is(Some(12.5)))
           .picture(view::Live::Is(Some(close_vec)))
           .tint(view::Live::By(fn() { if xb.pointed() { 0xFFFFFFFFL } else { 0x9FA7B5FFL } }))
         })

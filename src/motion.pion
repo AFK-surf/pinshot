@@ -13,6 +13,25 @@ import "view"
 /// Crisp ease-out glide for segmented thumbs & sidebar indicators (fast 150ms, zero mushy tail).
 let pill_glide : motion::Spec = motion::tween(150.0, ease=ui::Ease::Out)
 
+/// Whether the OS user prefers reduced motion (Windows SPI_GETCLIENTAREAANIMATION=FALSE / macOS Reduce Motion).
+fn reduce_motion() -> Bool {
+  ps_reduce_motion() != 0
+}
+
+/// Tween helper that collapses to instant when system Reduce Motion is active.
+fn motion_tween(ms : Double, ease~ : ui::Ease = ui::Ease::Out) -> motion::Spec {
+  if reduce_motion() {
+    motion::tween(0.0, ease=ease)
+  } else {
+    motion::tween(ms, ease=ease)
+  }
+}
+
+/// Standard Apple HIG keyboard focus ring (shown only on keyboard focus navigation, never on pointer click).
+fn hig_focus(v : view::View) -> Unit {
+  let _ = v.focusable(view::Live::Is(true)).focus_ring(view::Live::Is(Some((2.0, 2.0, 0x3B9EFFFFL))))
+}
+
 /// Smooth per-channel RGBA interpolation between 0xRRGGBBAA colors (`t` clamped to 0..1).
 fn mix_rgba(a : Int64, b : Int64, t : Double) -> Int64 {
   let k = clamp(t, 0.0, 1.0)
@@ -30,13 +49,16 @@ fn mix_rgba(a : Int64, b : Int64, t : Double) -> Int64 {
   ch(24) | ch(16) | ch(8) | ch(0)
 }
 
-/// Smooth 0..1 hover progress on `v` (110ms ease-out by default).
+/// Smooth 0..1 hover progress on `v` (110ms ease-out by default; instant under Reduce Motion).
 fn smooth_hover(v : view::View, live~ : () -> Bool  = fn() { true }, ms~ : Double = 110.0) -> () -> Double {
-  motion::hover_fade(v, fn() { live() && v.pointed() }, duration_ms=ms)
+  motion::hover_fade(v, fn() { live() && v.pointed() }, duration_ms=if reduce_motion() { 0.0 } else { ms })
 }
 
-/// Subtle tactile press micro-sink + spring-back on `v` (zero relayout via View::scale).
+/// Subtle tactile press micro-sink + spring-back on `v` (zero relayout via View::scale; suppressed under Reduce Motion).
 fn tactile_press(v : view::View, live~ : () -> Bool  = fn() { true }, sink_px~ : Double = 1.2) -> Unit {
+  if reduce_motion() {
+    return
+  }
   let _ = motion::press_feel(v, live=live, sink_px=sink_px, sink_most=0.032, hovers=false)
 }
 
@@ -50,6 +72,14 @@ fn dropdown_unfold(
   leave_ms~ : Double = 115.0,
   upward~ : Bool = false,
 ) -> Unit {
+  if reduce_motion() {
+    let _ = slot.height(view::Live::Is(Some(full_h))).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Start)))
+    let _ = slot.box(fn(panel) {
+      let _ = panel.shrink(view::Live::Is(0.0))
+      build(panel)
+    })
+    return
+  }
   let p = motion::presence_in(
     slot,
     motion::tween(enter_ms, ease=ui::Ease::Out),
@@ -77,6 +107,9 @@ fn enter_reveal(
   dy~ : Double = 4.0,
   from_scale~ : Double = 0.975,
 ) -> Unit {
+  if reduce_motion() {
+    return
+  }
   let w = motion::NodeWay::new(0.0)
   w.go_from(v, 0.0, 1.0, motion::tween(ms, ease=ui::Ease::Out))
   let _ = v.alpha(view::Live::By(fn() { w.shown(v) }))
@@ -160,7 +193,7 @@ fn sliding_thumb(
           }
           let dx = ix - ox
           let dy = iy - oy
-          if !placed.v || snapped {
+          if !placed.v || snapped || reduce_motion() {
             wx.put(dx)
             wy.put(dy)
             ww.put(iw)
@@ -245,7 +278,7 @@ fn rolling_label(
           if c == shown.untracked() {
             return
           }
-          if !signals::untracked(rolls) {
+          if !signals::untracked(rolls) || reduce_motion() {
             gone.set("")
             shown.set(c)
             roll.put(1.0)

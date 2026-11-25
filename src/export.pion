@@ -122,7 +122,7 @@ fn write_picture_file(path : String, png : Bytes) -> Unit {
     }
     match picture_rgba(png) {
       Some((w, h, px)) => {
-        let _ = ps_write_file(cstr(path), pixels::jpeg(w, h, px, quality=q))
+        let _ = ps_write_file(cstr(path), pixels::jpeg(w, h, pixels::bytes_to_fixed(px), quality=q))
         trim_soon()
         return
       }

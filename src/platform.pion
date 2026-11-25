@@ -190,6 +190,7 @@ extern "C" fn ps_topmost(wid : Int, on : Int, front : Int) -> Unit = "ps_topmost
 extern "C" fn ps_opacity(wid : Int, alpha : Int) -> Unit = "ps_opacity"
 extern "C" fn c_ps_window_rect(wid : Int) -> Ptr = "ps_window_rect"
 extern "C" fn ps_shift_down() -> Int = "ps_shift_down"
+extern "C" fn ps_reduce_motion() -> Int = "ps_reduce_motion"
 extern "C" fn c_ps_pointer() -> Ptr = "ps_pointer"
 extern "C" fn ps_gpu_flush() -> Unit = "ps_gpu_flush"
 extern "C" fn c_ps_memory() -> Ptr = "ps_memory"
@@ -504,6 +505,16 @@ fn str_replace_all(s : String, old : String, rep : String) -> String {
 }
 
 fn bytes_from_arr(arr : Array[Byte]) -> Bytes {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < arr.length() {
+    sb.write_byte(arr[i])
+    i += 1
+  }
+  sb.to_string().to_bytes()
+}
+
+fn bytes_from_fixed(arr : FixedArray[Byte]) -> Bytes {
   let sb = StringBuilder::new()
   let mut i = 0
   while i < arr.length() {

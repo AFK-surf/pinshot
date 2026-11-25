@@ -51,6 +51,7 @@ fn welcome_button(parent : view::View, label : () -> String, primary : Bool, pre
   let _ = parent.box(fn(b) {
     let hov = smooth_hover(b)
     tactile_press(b)
+    hig_focus(b)
     let _ = b
     .height(view::Live::Is(Some(32.0)))
     .padding(view::Live::Is((if primary { 16.0 } else { 14.0 }, 0.0, if primary { 16.0 } else { 14.0 }, 0.0)))

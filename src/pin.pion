@@ -405,7 +405,7 @@ fn shown_picture(p : Pin) -> Bytes {
   }
   guard picture_rgba(p.png) is Some((w, h, px)) else { return p.png }
   let (tw, th, out) = oriented(w, h, px, p.turns, p.flipped)
-  pixels::png(tw, th, out)
+  pixels::png(tw, th, pixels::bytes_to_fixed(out))
 }
 
 /// RGBA pixels `w` by `h` mirrored left to right first (`flipped`), then turned `turns` quarters clockwise: their size
@@ -452,7 +452,7 @@ fn shown_bytes(w : Int, h : Int, px : Bytes) -> Bytes {
   }
   // (the BMP's way only on Windows, whose host the patch is to: elsewhere a PNG)
   if !solid || hostapi::platform() != 3 {
-    return pixels::png(w, h, px)
+    return pixels::png(w, h, pixels::bytes_to_fixed(px))
   }
   let size = 54 + n * 4
   let b = Array::make(size, (0x00 as Byte))
@@ -486,10 +486,10 @@ fn shown_bytes(w : Int, h : Int, px : Bytes) -> Bytes {
 /// A picture's pixels (RGBA, a row after another), as a pin has it: a PNG, a JPEG or a BMP (the clipboard's bitmap).
 fn picture_rgba(b : Bytes) -> Option[(Int, Int, Bytes)] {
   match pixels::decode_png(b) {
-    Some(r) => Some(r)
+    Some((w, h, px)) => Some((w, h, bytes_from_fixed(px)))
     None =>
       match pixels::decode_jpeg(b) {
-        Some(r) => Some(r)
+        Some((w, h, px)) => Some((w, h, bytes_from_fixed(px)))
         None => bmp_rgba(b)
       }
   }

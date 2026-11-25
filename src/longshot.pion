@@ -910,9 +910,9 @@ fn long_preview_viewport(page : view::View) -> Unit {
       let _ = rail
       .over(view::Live::Is(true))
       .laid_nowhere(view::Live::By(fn() { long_max_scroll(long_h.get()) <= 0 }))
-      .width(view::Live::Is(Some(16.0)))
+      .width(view::Live::Is(Some(24.0)))
       .height(view::Live::Is(Some(track_h)))
-      .offset(view::Live::Is((box_w - 16.0, track_pad)))
+      .offset(view::Live::Is((box_w - 24.0, track_pad)))
       .presses(view::Live::Is(true))
       .cursor(view::Live::Is(Some(view::Cursor::Hand)))
       .on_drag(fn(d) {
@@ -954,7 +954,7 @@ fn long_preview_viewport(page : view::View) -> Unit {
         .presses(view::Live::Is(false))
         .width(view::Live::Is(Some(6.0)))
         .height(view::Live::Is(Some(track_h)))
-        .offset(view::Live::Is((6.0, 0.0)))
+        .offset(view::Live::Is((14.0, 0.0)))
         .radius(view::Live::Is(3.0))
         .ground(view::Live::Is(0x0D0E12B8L))
         .edge(view::Live::Is((1.0, 0xFFFFFF18L)))
@@ -979,11 +979,11 @@ fn long_preview_viewport(page : view::View) -> Unit {
         .offset(view::Live::By(fn() {
           let h = long_h.get()
           if h <= 0 {
-            (7.0, 0.0)
+            (15.0, 0.0)
           } else {
             let lh = clamp(track_h * long_part.v.h.to_double() / h.to_double(), 6.0, track_h)
             let ly = clamp(track_h * long_live_at.get().to_double() / h.to_double(), 0.0, track_h - lh)
-            (7.0, ly)
+            (15.0, ly)
           }
         }))
       })
@@ -1016,11 +1016,11 @@ fn long_preview_viewport(page : view::View) -> Unit {
           let h = long_h.get()
           let max_s = long_max_scroll(h)
           if h <= 0 || max_s <= 0 {
-            (6.0, 0.0)
+            (14.0, 0.0)
           } else {
             let th = clamp(track_h * long_vis_rows().to_double() / h.to_double(), 28.0, track_h)
             let ty = (track_h - th) * (long_scroll.get().to_double() / max_s.to_double())
-            (6.0, ty)
+            (14.0, ty)
           }
         }))
       })
@@ -1061,11 +1061,12 @@ fn long_preview_viewport(page : view::View) -> Unit {
 
       // Detached manual-inspect interactive jump pill
       let _ = overlay_bar.box(fn(jump) {
+        hig_focus(jump)
         let _ = jump
         .laid_nowhere(view::Live::By(fn() { long_follow.get() }))
-        .height(view::Live::Is(Some(26.0)))
+        .height(view::Live::Is(Some(28.0)))
         .padding(view::Live::Is((11.0, 0.0, 11.0, 0.0)))
-        .radius(view::Live::Is(13.0))
+        .radius(view::Live::Is(14.0))
         .lines_up(view::Live::Is(Some(view::Along::Middle)))
         .lies_along(view::Live::Is(view::Lies::Middle))
         .presses(view::Live::Is(true))

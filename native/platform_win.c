@@ -1561,6 +1561,15 @@ moonbit_bytes_t ps_window_rect(int32_t wid) {
 // Whether Shift is held now.
 int32_t ps_shift_down(void) { return GetKeyState(VK_SHIFT) < 0; }
 
+// Whether the user prefers reduced motion (Windows SPI_GETCLIENTAREAANIMATION == FALSE, or PINSHOT_REDUCE_MOTION=1).
+int32_t ps_reduce_motion(void) {
+  const char *env = getenv("PINSHOT_REDUCE_MOTION");
+  if (env && env[0] && env[0] != '0') return 1;
+  BOOL anim = TRUE;
+  if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &anim, 0) && !anim) return 1;
+  return 0;
+}
+
 // The pointer on the screen: "x,y" (pixels).
 moonbit_bytes_t ps_pointer(void) {
   POINT p = {0, 0};
