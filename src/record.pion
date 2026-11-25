@@ -167,12 +167,18 @@ fn rec_fps_should_open_up() -> Bool {
   room_below < need && room_above >= need
 }
 
-/// Transparent shadow halo around the floating FPS dropdown popup window (>= 3*sigma for blur=14pt, dy=4pt; click-through via ps_hit_inset).
-let rec_fps_pad_x : Double = 44.0
+/// Transparent shadow halo around the floating FPS dropdown popup window, derived from `ui::shadow_halo` (click-through via ps_hit_inset).
+let rec_fps_shadow_blur : Double = 14.0
 
-let rec_fps_pad_t : Double = 40.0
+let rec_fps_shadow_dy : Double = 4.0
 
-let rec_fps_pad_b : Double = 48.0
+let rec_fps_halo : (Double, Double, Double, Double) = ui::shadow_halo(rec_fps_shadow_blur, rec_fps_shadow_dy)
+
+let rec_fps_pad_x : Double = rec_fps_halo.0
+
+let rec_fps_pad_t : Double = rec_fps_halo.1
+
+let rec_fps_pad_b : Double = rec_fps_halo.3
 
 let rec_fps_card_w : Double = 98.0
 
@@ -254,15 +260,21 @@ fn rec_active(wid : Int, on : Bool, other : Int) -> Unit {
   }
 }
 
-/// Transparent shadow halo around the floating superellipse card (L, T, R, B points; click-through via ps_hit_inset).
-/// Top/bottom leave full 3*sigma shadow clearance even when the 24pt discard/size pill or tooltips appear above or below the bar.
-let rec_pad_l : Double = 36.0
+/// Transparent shadow halo around the floating superellipse card (L, T, R, B points; click-through via ps_hit_inset),
+/// derived from `ui::shadow_halo` for both the main card (blur=11, dy=4) and attached 24pt discard/size/tooltip pills (blur=8, dy=2).
+let rec_card_halo : (Double, Double, Double, Double) = ui::shadow_halo(11.0, 4.0)
 
-let rec_pad_t : Double = 54.0
+let rec_tip_halo : (Double, Double, Double, Double) = ui::shadow_halo(8.0, 2.0)
 
-let rec_pad_r : Double = 36.0
+let rec_tip_slot_h : Double = 30.0 // 24pt pill + 6pt gap to bar
 
-let rec_pad_b : Double = 58.0
+let rec_pad_l : Double = dmax(rec_card_halo.0, rec_tip_halo.0)
+
+let rec_pad_t : Double = dmax(rec_card_halo.1, rec_tip_slot_h + rec_tip_halo.1)
+
+let rec_pad_r : Double = dmax(rec_card_halo.2, rec_tip_halo.2)
+
+let rec_pad_b : Double = dmax(rec_card_halo.3, rec_tip_slot_h + rec_tip_halo.3)
 
 fn rec_combo_key(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> String {
   let (ow, oh) = rec_out_dims(max_side)
@@ -2649,9 +2661,9 @@ fn rec_window(root : view::View) -> Unit {
         let _ = tip_row
         .over_at(view::Live::By(fn() {
           if rec_confirm_discard.get() && rec_phase.get() < 4 && rec_fps_should_open_up() {
-            (Some(rec_pad_l), Some(24.0), Some(rec_pad_r), None)
+            (Some(rec_pad_l), Some(rec_tip_halo.1), Some(rec_pad_r), None)
           } else {
-            (Some(rec_pad_l), None, Some(rec_pad_r), Some(28.0))
+            (Some(rec_pad_l), None, Some(rec_pad_r), Some(rec_tip_halo.3))
           }
         }))
         .laid_nowhere(view::Live::By(fn() { shown_text() == "" }))
@@ -2714,7 +2726,7 @@ fn rec_fps_menu_view(dd_wrap : view::View) -> Unit {
     .radius(view::Live::Is(11.0))
     .ground(view::Live::Is(0x18191DF7L))
     .edge(view::Live::Is((1.0, 0xFFFFFF2EL)))
-    .shadow(view::Live::Is((14.0, 4.0, 0x00000070L)))
+    .shadow(view::Live::Is((rec_fps_shadow_blur, rec_fps_shadow_dy, 0x00000070L)))
     .presses(view::Live::Is(true))
     for f in [30, 60, 90, 120] {
       let _ = menu.box(fn(item) {

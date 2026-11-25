@@ -1,0 +1,75 @@
+// Automated shadow-clipping regression tests for all 4 transparent floating popup windows in PinShot
+// using upstream `ui::shadow_halo` + `ui::Tester::assert_shadow_clip` (AFK-surf/invar#66).
+
+test "floating popups: toast window passes 3-sigma shadow_clip audit" {
+  toast_wid.v = 0
+  toast_text.set("Copied to clipboard")
+  let t = ui::Tester::tree(toast_window, width=toast_w, height=toast_h)
+  t.assert_shadow_clip(sigma=3.0, label="toast_window")
+  t.dispose()
+}
+
+test "floating popups: rec_fps dropdown window passes 3-sigma shadow_clip audit" {
+  rec_wid.v = 0
+  rec_fps_wid.v = 0
+  let w = rec_fps_card_w + rec_fps_pad_x * 2.0
+  let h = rec_fps_card_h + rec_fps_pad_t + rec_fps_pad_b
+  let t = ui::Tester::tree(rec_fps_window, width=w, height=h)
+  t.assert_shadow_clip(sigma=3.0, label="rec_fps_window")
+  t.dispose()
+}
+
+test "floating popups: rec_window (ready, recording + discard pill, export card) passes 3-sigma shadow_clip audit" {
+  rec_wid.v = 0
+  rec_fps_open.set(false)
+  rec_morph_in.set(false)
+  rec_tip.set("")
+
+  // 1. Ready bar (phase 0)
+  rec_phase.set(0)
+  rec_confirm_discard.set(false)
+  let t = ui::Tester::tree(rec_window, width=480.0, height=bar_height + rec_pad_t + rec_pad_b)
+  t.assert_shadow_clip(sigma=3.0, label="rec_window-ready")
+
+  // 2. Recording bar (phase 1) with "Press again to discard" pill visible below bar
+  rec_phase.set(1)
+  rec_ms.set(1500)
+  rec_confirm_discard.set(true)
+  t.frame(ms=16.0)
+  t.assert_shadow_clip(sigma=3.0, label="rec_window-discard-pill")
+
+  // 3. Export Card (phase 4) at its laid-out window size
+  rec_confirm_discard.set(false)
+  rec_phase.set(4)
+  rec_part.v = Rect::{ x: 0, y: 0, w: 1920, h: 1080 }
+  rec_master_bytes.set(4.0 * 1024.0 * 1024.0)
+  t.frame(ms=16.0)
+  let (cw, ch) = match rec_content.v {
+    Some(c) => c.laid_size()
+    None => (960.0, 540.0)
+  }
+  t.resize(cw, ch)
+  t.frame(ms=16.0)
+  t.assert_shadow_clip(sigma=3.0, label="rec_window-export-card")
+
+  rec_root.v = None
+  rec_content.v = None
+  rec_confirm_discard.set(false)
+  t.dispose()
+}
+
+test "floating popups: longshot panel (including detached jump pill inside clipped viewport) passes 3-sigma shadow_clip audit" {
+  long_wid.v = 0
+  long_part.v = Rect::{ x: 0, y: 0, w: 800, h: 600 }
+  long_scale.v = 1.0
+  long_box_h.v = 360.0
+  long_h.set(2400)
+  long_follow.set(false)
+  long_dir.set(1)
+  let w = long_panel_w + long_halo_x * 2.0
+  let h = long_panel_h() + long_halo_t + long_halo_b
+  let t = ui::Tester::tree(long_window, width=w, height=h)
+  t.assert_shadow_clip(sigma=3.0, label="long_window")
+  long_root.v = None
+  t.dispose()
+}

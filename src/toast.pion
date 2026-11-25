@@ -12,12 +12,18 @@ let toast_text : signals::Signal[String] = signals::signal("")
 /// A repeated message extends the lifetime of the existing window.
 let toast_generation : signals::Signal[Int] = signals::signal(0)
 
-/// Transparent shadow halo around the floating superellipse pill (>= 3.3*sigma so alpha reaches 0 before every edge).
-let toast_pad_x : Double = 30.0
+/// Floating toast pill shadow & transparent halo derived from `ui::shadow_halo` so alpha reaches 0 before every window edge.
+let toast_shadow_blur : Double = 9.0
 
-let toast_pad_t : Double = 28.0
+let toast_shadow_dy : Double = 3.0
 
-let toast_pad_b : Double = 34.0
+let toast_halo : (Double, Double, Double, Double) = ui::shadow_halo(toast_shadow_blur, toast_shadow_dy)
+
+let toast_pad_x : Double = toast_halo.0
+
+let toast_pad_t : Double = toast_halo.1
+
+let toast_pad_b : Double = toast_halo.3
 
 let toast_pill_h : Double = 34.0
 
@@ -68,7 +74,7 @@ fn toast_window(root : view::View) -> Unit {
       .radius(view::Live::Is(11.0))
       .ground(view::Live::Is(0x1E2026F2L))
       .edge(view::Live::Is((1.0, 0xFFFFFF22L)))
-      .shadow(view::Live::Is((9.0, 3.0, 0x00000060L)))
+      .shadow(view::Live::Is((toast_shadow_blur, toast_shadow_dy, 0x00000060L)))
       .lines_up(view::Live::Is(Some(view::Along::Middle)))
       .lies_along(view::Live::Is(view::Lies::Middle))
       let _ = pill.box(fn(t) {

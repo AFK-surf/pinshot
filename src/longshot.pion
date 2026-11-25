@@ -108,12 +108,18 @@ let long_panel_w : Double = 316.0
 
 let long_pad : Double = 14.0
 
-/// Transparent shadow halo around the floating superellipse panel (>= 3.3*sigma so alpha reaches 0 before every edge).
-let long_halo_x : Double = 38.0
+/// Transparent shadow halo around the floating superellipse panel, derived from `ui::shadow_halo` (click-through via ps_hit_inset).
+let long_shadow_blur : Double = 11.0
 
-let long_halo_t : Double = 34.0
+let long_shadow_dy : Double = 4.0
 
-let long_halo_b : Double = 42.0
+let long_halo : (Double, Double, Double, Double) = ui::shadow_halo(long_shadow_blur, long_shadow_dy)
+
+let long_halo_x : Double = long_halo.0
+
+let long_halo_t : Double = long_halo.1
+
+let long_halo_b : Double = long_halo.3
 
 let long_head_h : Double = 26.0
 
@@ -221,6 +227,13 @@ fn long_out() -> Unit {
   long_wid.v = wid
   let _ = ps_own(wid, 1)
   ps_long_exclude(wid)
+  ps_hit_inset(
+    wid,
+    (long_halo_x * k).round().to_int(),
+    (long_halo_t * k).round().to_int(),
+    (long_halo_x * k).round().to_int(),
+    (long_halo_b * k).round().to_int(),
+  )
   long_place(work)
   log("long: begun \{part.w}x\{part.h} at \{part.x},\{part.y}")
 }
@@ -691,7 +704,7 @@ fn long_window(root : view::View) -> Unit {
       .radius(view::Live::Is(16.0))
       .ground(view::Live::Is(0x18191DF8L))
       .edge(view::Live::Is((1.0, 0xFFFFFF22L)))
-      .shadow(view::Live::Is((11.0, 4.0, 0x0000007AL)))
+      .shadow(view::Live::Is((long_shadow_blur, long_shadow_dy, 0x0000007AL)))
       .padding(view::Live::Is((long_pad, long_pad, long_pad, long_pad)))
       .lines_up(view::Live::Is(Some(view::Along::Start)))
 
@@ -1033,7 +1046,7 @@ fn long_preview_viewport(page : view::View) -> Unit {
       .laid_nowhere(view::Live::By(fn() { long_max_scroll(long_h.get()) <= 0 }))
       .width(view::Live::Is(Some(box_w)))
       .height(view::Live::Is(Some(36.0)))
-      .offset(view::Live::Is((0.0, box_h - 38.0)))
+      .offset(view::Live::Is((0.0, box_h - 46.0)))
       .lines_up(view::Live::Is(Some(view::Along::Middle)))
       .lies_along(view::Live::Is(view::Lies::Middle))
 
@@ -1083,7 +1096,7 @@ fn long_preview_viewport(page : view::View) -> Unit {
           }
         }))
         .edge(view::Live::Is((1.0, 0x2F9BFF88L)))
-        .shadow(view::Live::Is((10.0, 2.0, 0x00000066L)))
+        .shadow(view::Live::Is((4.0, 1.5, 0x00000055L)))
         let _ = jump.box(fn(t) {
           let _ = t
           .words(view::Live::By(fn() {
