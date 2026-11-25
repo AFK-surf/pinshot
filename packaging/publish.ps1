@@ -25,7 +25,7 @@ if (-not $NoMac) {
     if ($i -eq 0) { Write-Host "waiting for PinShot-mac.zip on release v$Version (the macOS package workflow)..." }
     Start-Sleep 20
   }
-  if (-not (Test-Path $mac)) { throw "no PinShot-mac.zip on release v$Version: see the macOS package workflow, or -NoMac" }
+  if (-not (Test-Path $mac)) { throw "no PinShot-mac.zip on release v${Version}: see the macOS package workflow, or -NoMac" }
 }
 
 function Put([string]$file, [string]$key, [string]$type) {
