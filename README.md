@@ -112,7 +112,7 @@ Requires Xcode Command Line Tools and [Pion](https://github.com/AFK-surf/pion) (
 pionc build --release . -o out/Release/PinShot
 ```
 
-The **macOS package** GitHub Actions workflow also builds `PinShot-mac.zip` on demand and on every `v*` tag, signed with AFK AI's Developer ID and notarized (`scripts/sign-mac.sh`, from the `MACOS_DEVELOPER_ID_KEYCHAIN_B64_1` / `_2` and `KEYCHAIN_PASSWORD_AFK` secrets), and attaches it to the tag's release, where `packaging/publish.ps1` takes it for the download site and `latest.json`.
+A pushed `v<version>` tag makes the release (`.github/workflows/release.yml`): the **Windows package** and **macOS package** workflows build `pinshot.exe` and `PinShot-mac.zip` from the tag and put them on its GitHub release; then, once approved in the `release` environment (which alone holds the update-signing key and the Cloudflare token), `packaging/publish.ps1` signs `latest.json`, puts the downloads in R2 and deploys the site. The **macOS package** workflow builds `PinShot-mac.zip`, signed with AFK AI's Developer ID and notarized (`scripts/sign-mac.sh`, from the `MACOS_DEVELOPER_ID_KEYCHAIN_B64_1` / `_2` and `KEYCHAIN_PASSWORD_AFK` secrets); both package workflows also run on demand.
 
 ## Sponsor
 
