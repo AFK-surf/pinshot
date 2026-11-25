@@ -1,0 +1,1257 @@
+// A long screenshot (the user, 2026-11-19: 「加一个长截图功能」, 2026-11-20: bidirectional scrolling + interactive
+// scrollable preview UI): the part picked in a capture is taken repeatedly from the live screen while the person
+// scrolls up or down under it, stitched into one tall picture (longshot_win.c). A coloured frame around the part
+// reflects live state (blue active, amber lost/max, muted paused), and a movable dark panel beside it shows a
+// virtualized scrollable preview (wheel, drag-to-pan, interactive scrollbar with live capture window marker, smart
+// auto-follow with one-click jump back), Pause/Resume, Reset, and Copy/Save/Pin actions.
+
+import "hostapi"
+import "signals"
+import "ui"
+import "view"
+
+/// A long screenshot begun of the part x, y, w by h (the screen's pixels): 1 begun.
+
+/// The taking stopped, the picture kept (its frame gone).
+
+/// Pause (1) or resume (0) capturing while keeping the stitched picture and frame.
+
+/// Discard stitched content and restart fresh on the exact same capture frame.
+
+/// The long screenshot let go, all it held.
+
+/// The picture as it stands: "w,h,pictures,lost,full"; "" none.
+
+/// A viewport slice of the picture starting at source row `from_row`, scaled to fit `w` by `h` pixels, as mbui takes
+/// pixels kept elsewhere ("MBRAWPTR"...).
+
+/// The picture as a PNG; empty: none.
+
+/// The previews' pixels kept on the native side let go (each forgotten by mbui first).
+
+/// Whether a scrolling screenshot can be taken here: Windows' alone (its taking is longshot_win.c's).
+fn long_shot_here() -> Bool {
+  hostapi::platform() == 3 || hostapi::platform() == 0
+}
+
+/// Window `wid` kept out of what is taken (it may stand over the part).
+
+/// The panel's window (0: none, no long screenshot under way).
+let long_wid : signals::Ref[Int] = signals::ref_new(0)
+
+/// The part taken (the screen's pixels) and its monitor's scale.
+let long_part : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+
+let long_scale : signals::Ref[Double] = signals::ref_new(1.0)
+
+/// The monitor the part is on (the screen's pixels).
+let long_mon : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
+
+/// Stitched picture state told from the native side.
+let long_h : signals::Signal[Int] = signals::signal(0)
+
+let long_lost : signals::Signal[Bool] = signals::signal(false)
+
+let long_full : signals::Signal[Bool] = signals::signal(false)
+
+let long_paused : signals::Signal[Bool] = signals::signal(false)
+
+let long_pics : signals::Signal[Int] = signals::signal(0)
+
+/// Last stitch direction: 1 down (bottom growing), -1 up (top growing), 0 initial.
+let long_dir : signals::Signal[Int] = signals::signal(0)
+
+/// Source row where the live capture frame sits inside the stitched image.
+let long_live_at : signals::Signal[Int] = signals::signal(0)
+
+/// Whether the taking has stopped permanently (e.g. a save dialog was cancelled: what is taken is kept as it was).
+let long_stopped : signals::Signal[Bool] = signals::signal(false)
+
+/// Virtualized preview scroll state: top source row shown, whether auto-following live growth, drag/scrub flags.
+let long_scroll : signals::Signal[Int] = signals::signal(0)
+
+let long_follow : signals::Signal[Bool] = signals::signal(true)
+
+let long_panning : signals::Signal[Bool] = signals::signal(false)
+
+let long_scrubbing : signals::Signal[Bool] = signals::signal(false)
+
+let long_pan_start : signals::Ref[(Double, Int)] = signals::ref_new((0.0, 0))
+
+let long_scrub_grab : signals::Ref[Double] = signals::ref_new(0.0)
+
+/// The preview shown: its key ("" none) and its size (pixels); and the next, shown once it is decoded.
+let long_preview : signals::Signal[(String, Int, Int)] = signals::signal_by(("", 0, 0), fn(a, b) { a.0 == b.0 && a.1 == b.1 && a.2 == b.2 })
+
+let long_pending : signals::Signal[(String, Int, Int)] = signals::signal_by(("", 0, 0), fn(a, b) { a.0 == b.0 && a.1 == b.1 && a.2 == b.2 })
+
+/// The panel's tree (None: none open).
+let long_root : signals::Ref[Option[view::View]] = signals::ref_new(None)
+
+/// Inline 2-step confirmation for destructive Reset once multiple frames have been stitched.
+let long_confirm_reset : signals::Signal[Bool] = signals::signal(false)
+
+let long_reset_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
+
+/// Unified Monoid-style fluid tooltip coordinator for the scrolling screenshot panel (same rules as toolbar.mbt).
+let long_tips : TipScope = TipScope::new()
+
+let long_preview_n : signals::Ref[Int] = signals::ref_new(0)
+
+/// When the preview was last made (ps_now_ms), and whether one is due.
+let long_preview_at : signals::Ref[Double] = signals::ref_new(-10000.0)
+
+let long_preview_due : signals::Ref[Bool] = signals::ref_new(false)
+
+/// Panel layout constants (points).
+let long_panel_w : Double = 316.0
+
+let long_pad : Double = 14.0
+
+/// Transparent shadow halo around the floating superellipse panel, derived from `ui::shadow_halo` (click-through via ps_hit_inset).
+let long_shadow_blur : Double = 11.0
+
+let long_shadow_dy : Double = 4.0
+
+let long_halo : (Double, Double, Double, Double) = ui::shadow_halo(long_shadow_blur, long_shadow_dy)
+
+let long_halo_x : Double = long_halo.0
+
+let long_halo_t : Double = long_halo.1
+
+let long_halo_b : Double = long_halo.3
+
+let long_head_h : Double = 26.0
+
+let long_status_h : Double = 28.0
+
+let long_ctrl_h : Double = 30.0
+
+fn long_box_w() -> Double {
+  long_panel_w - long_pad * 2.0
+}
+
+let long_box_h : signals::Ref[Double] = signals::ref_new(400.0)
+
+fn long_chrome_h() -> Double {
+  long_pad + long_head_h + 8.0 + long_status_h + 10.0 + 10.0 + long_ctrl_h + 10.0 + bar_button + long_pad
+}
+
+fn long_panel_h() -> Double {
+  long_chrome_h() + long_box_h.v
+}
+
+/// Scale from source image pixels to preview physical pixels (fit width, never upscale).
+fn long_preview_k() -> Double {
+  let w = long_part.v.w
+  if w <= 0 {
+    return 1.0
+  }
+  dmin(1.0, long_box_w() * long_scale.v / w.to_double())
+}
+
+/// How many source image rows fit in the preview viewport at once.
+fn long_vis_rows() -> Int {
+  let k = long_preview_k()
+  let rows = (long_box_h.v * long_scale.v / k).round().to_int()
+  if rows < 1 { 1 } else { rows }
+}
+
+/// Maximum valid scroll offset (top source row) for a stitched image of height `h`.
+fn long_max_scroll(h : Int) -> Int {
+  let m = h - long_vis_rows()
+  if m > 0 { m } else { 0 }
+}
+
+/// Source image rows per 1 logical point in the preview viewport.
+fn long_src_per_pt() -> Double {
+  long_scale.v / long_preview_k()
+}
+
+/// The part picked in the capture taken long: the capture closed, the taking begun, the panel put beside the part.
+fn long_out() -> Unit {
+  if !long_shot_here() || exporting.v != "" || long_wid.v != 0 {
+    return
+  }
+  let r = match sel.untracked() {
+    Some(_v) => _v
+    None => { return }
+  }
+  let m = mon.v
+  let mw = mon_work.v
+  let work : Rect = if mw.w > 0 && mw.h > 0 {
+    Rect::{ x: m.x + mw.x, y: m.y + mw.y, w: mw.w, h: mw.h }
+  } else {
+    m
+  }
+  let k = mon_scale.untracked()
+  let part : Rect = Rect::{ x: m.x + r.x, y: m.y + r.y, w: r.w, h: r.h }
+  close_capture()
+  if ps_long_begin(part.x, part.y, part.w, part.h) == 0 {
+    toast(tr("选区太小，不能长截图"))
+    return
+  }
+  // (no capture taken meanwhile: its overlay would be taken into the picture)
+  ps_capture_open(1)
+  long_part.v = part
+  long_scale.v = k
+  long_mon.v = work
+  signals::start_batch()
+  long_h.set(0)
+  long_lost.set(false)
+  long_full.set(false)
+  long_paused.set(false)
+  long_pics.set(0)
+  long_dir.set(0)
+  long_live_at.set(0)
+  long_stopped.set(false)
+  long_scroll.set(0)
+  long_follow.set(true)
+  long_panning.set(false)
+  long_scrubbing.set(false)
+  long_preview.set(("", 0, 0))
+  long_pending.set(("", 0, 0))
+  signals::end_batch()
+  long_preview_due.v = false
+  // (the preview as tall as the monitor's usable work area leaves room for, accounting for the transparent shadow halo)
+  let mh = work.h.to_double() / k
+  long_box_h.v = clamp(mh - 56.0 - long_halo_t - long_halo_b - long_chrome_h(), 220.0, 560.0)
+  ps_next_win_clear()
+  let wid = ui::window_open_here("long")
+  if wid <= 0 {
+    log("long: no window")
+    ps_long_end()
+    ps_capture_open(0)
+    return
+  }
+  long_wid.v = wid
+  let _ = ps_own(wid, 1)
+  ps_long_exclude(wid)
+  ps_hit_inset(
+    wid,
+    (long_halo_x * k).round().to_int(),
+    (long_halo_t * k).round().to_int(),
+    (long_halo_x * k).round().to_int(),
+    (long_halo_b * k).round().to_int(),
+  )
+  long_place(work)
+  log("long: begun \{part.w}x\{part.h} at \{part.x},\{part.y}")
+}
+
+/// The panel put beside the part: at its right, else its left, else inside it at its right (out of what is taken
+/// whatever it stands over), its top by the part's, kept on the monitor (accounting for the transparent shadow halo).
+fn long_place(m : Rect) -> Unit {
+  let k = long_scale.v
+  let p = long_part.v
+  let cw = (long_panel_w * k).round().to_int()
+  let ch = (long_panel_h() * k).round().to_int()
+  let hx = (long_halo_x * k).round().to_int()
+  let ht = (long_halo_t * k).round().to_int()
+  let win_w = ((long_panel_w + long_halo_x * 2.0) * k).round().to_int()
+  let win_h = ((long_panel_h() + long_halo_t + long_halo_b) * k).round().to_int()
+  let gap = (12.0 * k).round().to_int()
+  let cx = if p.right() + gap + cw <= m.right() {
+    p.right() + gap
+  } else if p.x - gap - cw >= m.x {
+    p.x - gap - cw
+  } else {
+    p.right() - gap - cw
+  }
+  let cy = clampi(p.y, m.y + gap, m.bottom() - gap - ch)
+  let x = clampi(cx - hx, m.x, m.right() - win_w)
+  let y = clampi(cy - ht, m.y, m.bottom() - win_h)
+  ps_place(long_wid.v, x, y, win_w, win_h, 1, 0)
+}
+
+/// What the native side told of the picture ({"do":"long"}): height, flags, direction, live frame position, top growth.
+fn long_told(
+  h : Int,
+  lost : Bool,
+  full : Bool,
+  paused : Bool,
+  pics : Int,
+  dir : Int,
+  at : Int,
+  top_added : Int,
+) -> Unit {
+  if long_wid.v == 0 {
+    return
+  }
+  let prev_h = long_h.untracked()
+  let max_s = long_max_scroll(h)
+  let mut next_scroll = long_scroll.untracked()
+  let follow = long_follow.untracked()
+  if max_s <= 0 {
+    next_scroll = 0
+  } else if follow {
+    next_scroll = if dir < 0 { 0 } else { max_s }
+  } else {
+    if top_added > 0 {
+      next_scroll = next_scroll + top_added
+    }
+    next_scroll = clampi(next_scroll, 0, max_s)
+  }
+  signals::start_batch()
+  long_h.set(h)
+  long_lost.set(lost)
+  long_full.set(full)
+  long_paused.set(paused)
+  long_pics.set(pics)
+  long_dir.set(dir)
+  long_live_at.set(at)
+  long_scroll.set(next_scroll)
+  if max_s <= 0 {
+    long_follow.set(true)
+  }
+  signals::end_batch()
+  if h == 0 {
+    long_clear_preview_images()
+  } else if h != prev_h || top_added > 0 || long_preview.untracked().0 == "" {
+    long_preview_soon(35.0)
+  }
+}
+
+fn long_clear_preview_images() -> Unit {
+  let (shown, _, _) = long_preview.untracked()
+  let (waiting, _, _) = long_pending.untracked()
+  signals::start_batch()
+  long_preview.set(("", 0, 0))
+  long_pending.set(("", 0, 0))
+  signals::end_batch()
+  for k in [shown, waiting] {
+    if k != "" {
+      ui::forget_image(k)
+    }
+  }
+}
+
+/// Scroll the preview to source row `row`, updating auto-follow state and refreshing the viewport slice.
+fn long_scroll_to(row : Int, reengage~ : Bool = true) -> Unit {
+  let h = long_h.untracked()
+  let max_s = long_max_scroll(h)
+  if max_s <= 0 {
+    return
+  }
+  let clamped = clampi(row, 0, max_s)
+  let dir = long_dir.untracked()
+  let at_live = if dir < 0 { clamped <= 16 } else { clamped >= max_s - 16 }
+  let prev = long_scroll.untracked()
+  signals::start_batch()
+  long_scroll.set(clamped)
+  long_follow.set(if reengage { at_live } else { false })
+  signals::end_batch()
+  if clamped != prev {
+    long_preview_soon(18.0)
+  }
+}
+
+/// Scroll by a relative number of source rows.
+fn long_scroll_by(delta_rows : Int) -> Unit {
+  long_scroll_to(long_scroll.untracked() + delta_rows)
+}
+
+/// Snap back to the active growth edge (bottom when scrolling down, top when scrolling up) and re-enable auto-follow.
+fn long_jump_live() -> Unit {
+  let max_s = long_max_scroll(long_h.untracked())
+  let target = if long_dir.untracked() < 0 { 0 } else { max_s }
+  signals::start_batch()
+  long_scroll.set(target)
+  long_follow.set(true)
+  signals::end_batch()
+  long_preview_soon(0.0)
+}
+
+fn long_toggle_pause() -> Unit {
+  if long_wid.v == 0 || long_stopped.untracked() || long_full.untracked() {
+    return
+  }
+  let next = !long_paused.untracked()
+  ps_long_pause(if next { 1 } else { 0 })
+}
+
+fn long_disarm_reset() -> Unit {
+  (long_reset_cancel.v)()
+  long_reset_cancel.v = fn() {  }
+  if long_confirm_reset.untracked() {
+    long_confirm_reset.set(false)
+  }
+}
+
+fn long_request_reset() -> Unit {
+  if long_wid.v == 0 || long_h.untracked() == 0 {
+    return
+  }
+  if long_pics.untracked() <= 1 || long_confirm_reset.untracked() {
+    long_disarm_reset()
+    long_reset()
+    return
+  }
+  long_confirm_reset.set(true)
+  (long_reset_cancel.v)()
+  match long_root.v {
+    Some(root) =>
+      long_reset_cancel.v = root.at_moment(
+        root.cause_at() + 3000.0,
+        fn() {
+          long_reset_cancel.v = fn() {  }
+          long_confirm_reset.set(false)
+        },
+        later=true,
+      )
+    None => ()
+  }
+}
+
+fn long_reset() -> Unit {
+  if long_wid.v == 0 {
+    return
+  }
+  long_disarm_reset()
+  long_clear_preview_images()
+  signals::start_batch()
+  long_h.set(0)
+  long_lost.set(false)
+  long_full.set(false)
+  long_paused.set(false)
+  long_stopped.set(false)
+  long_pics.set(0)
+  long_dir.set(0)
+  long_live_at.set(0)
+  long_scroll.set(0)
+  long_follow.set(true)
+  signals::end_batch()
+  ps_long_reset()
+}
+
+/// The preview made again, throttled to `min_ms`: at once if enough time has elapsed, else scheduled when due.
+fn long_preview_soon(min_ms : Double) -> Unit {
+  let since = ps_now_ms() - long_preview_at.v
+  if since >= min_ms {
+    long_preview_make()
+    return
+  }
+  if long_preview_due.v {
+    return
+  }
+  long_preview_due.v = true
+  match long_root.v {
+    Some(r) => {
+      let _ = r.at_moment(r.cause_at() + min_ms - since, fn() {
+        long_preview_due.v = false
+        if long_wid.v != 0 && long_h.untracked() > 0 {
+          long_preview_make()
+        }
+      }, later=true)
+    }
+    None => ()
+  }
+}
+
+fn long_preview_make() -> Unit {
+  long_preview_at.v = ps_now_ms()
+  let k = long_scale.v
+  let from_row = long_scroll.untracked()
+  let b = ps_long_preview(
+    (long_box_w() * k).round().to_int(),
+    (long_box_h.v * k).round().to_int(),
+    from_row,
+  )
+  if b.length() < 28 {
+    return
+  }
+  let pw = le32(b, 16)
+  let ph = le32(b, 20)
+  long_preview_n.v += 1
+  let key = "mem:long/\{long_preview_n.v}"
+  ui::add_image(key, b)
+  // (shown only once it is decoded, the one shown kept till then so the preview never blinks out between slices)
+  let (waiting, _, _) = long_pending.untracked()
+  if waiting != "" {
+    ui::forget_image(waiting)
+  }
+  long_pending.set((key, pw, ph))
+  match long_root.v {
+    Some(r) => r.image_ask(key, (if pw > ph { pw } else { ph }).to_double())
+    None => ()
+  }
+}
+
+/// The preview decoded: shown in the place of the one before, which is let go.
+fn long_preview_shown(key : String) -> Unit {
+  let (waiting, pw, ph) = long_pending.untracked()
+  if key == "" || key != waiting {
+    return
+  }
+  let (shown, _, _) = long_preview.untracked()
+  signals::start_batch()
+  long_pending.set(("", 0, 0))
+  long_preview.set((key, pw, ph))
+  signals::end_batch()
+  if shown != "" {
+    ui::forget_image(shown)
+  }
+}
+
+/// The little-endian 32-bit number at `at` of `b`.
+fn le32(b : Bytes, at : Int) -> Int {
+  b[at].to_int() | (b[at + 1].to_int() << 8) | (b[at + 2].to_int() << 16) | (b[at + 3].to_int() << 24)
+}
+
+/// The picture as it stands, its taking stopped: its PNG (None: there is none).
+fn long_png() -> Option[Bytes] {
+  ps_long_stop()
+  long_stopped.set(true)
+  let png = ps_long_png()
+  if png.length() == 0 {
+    None
+  } else {
+    Some(png)
+  }
+}
+
+/// The picture's size: (w, h) pixels.
+fn long_size() -> (Int, Int) {
+  let n = numbers_of(text_of(ps_long_info()))
+  if n.length() >= 2 {
+    (n[0].to_int(), n[1].to_int())
+  } else {
+    (0, 0)
+  }
+}
+
+/// The picture copied (and kept in the pictures' folder where the settings say so), the long screenshot over.
+fn long_copy() -> Unit {
+  // (nothing taken yet, its first moment: a key pressed then does nothing, rather than close it with nothing)
+  if long_h.untracked() == 0 {
+    return
+  }
+  let (w, h) = long_size()
+  guard long_png() is Some(png) else {
+    long_close()
+    return
+  }
+  shutter()
+  let test_to = ui::env("PINSHOT_TEST_COPY")
+  if test_to != "" {
+    let _ = ps_write_file(cstr(test_to), png)
+  } else {
+    hostapi::clipboard_set_image(png)
+  }
+  log("long: copied \{w}x\{h}, \{png.length()} bytes")
+  if settings.untracked().keep_copies {
+    write_picture_file(file_in(settings.untracked().save_dir, file_name()), png)
+  }
+  long_close()
+}
+
+/// The picture saved (where the settings say to ask, where the system's dialog says), the long screenshot over; the
+/// dialog called off, the panel stays, the taking stopped.
+fn long_save() -> Unit {
+  if long_h.untracked() == 0 {
+    return
+  }
+  // (the taking stopped and where it goes asked first, the picture encoded only once there is somewhere to put it:
+  // the dialog comes at once, and called off, nothing was encoded for nothing)
+  ps_long_stop()
+  long_stopped.set(true)
+  let s = settings.untracked()
+  let path = if s.ask_where {
+    text_of(ps_save_dialog(long_wid.v, cstr(s.save_dir), cstr(file_name())))
+  } else {
+    file_in(s.save_dir, file_name())
+  }
+  if path == "" {
+    return
+  }
+  guard long_png() is Some(png) else {
+    long_close()
+    return
+  }
+  write_picture_file(path, png)
+  shutter()
+  log("long: saved \{path}")
+  long_close()
+}
+
+/// The picture pinned where the part was, as tall as the monitor leaves room for (its zoom brought down to fit), the
+/// long screenshot over.
+fn long_pin() -> Unit {
+  if long_h.untracked() == 0 {
+    return
+  }
+  let (w, h) = long_size()
+  guard long_png() is Some(png) else {
+    long_close()
+    return
+  }
+  let p = long_part.v
+  let m = long_mon.v
+  // (its top where the part's was, kept on the monitor: its zoom brought down to what is left under it, 1/4 at least)
+  let y = clampi(p.y, m.y, m.y + m.h * 3 / 4)
+  let room = (m.bottom() - y).to_double()
+  let z = if h.to_double() > room { room / h.to_double() } else { 1.0 }
+  shutter()
+  long_close()
+  open_pin(png, p.x, y, w, h, zoom=z)
+}
+
+/// The long screenshot over: the taking stopped, what it held let go, the panel closed.
+fn long_close() -> Unit {
+  if long_wid.v == 0 {
+    return
+  }
+  ps_long_end()
+  ps_capture_open(0)
+  let wid = long_wid.v
+  long_wid.v = 0
+  close_window(wid)
+  long_gone()
+}
+
+/// The panel's window gone (closed here or by the system): what the long screenshot held let go.
+fn long_gone() -> Unit {
+  if long_wid.v != 0 {
+    long_wid.v = 0
+    ps_long_end()
+    ps_capture_open(0)
+  }
+  long_disarm_reset()
+  long_tips.off()
+  long_clear_preview_images()
+  long_root.v = None
+  // (the previews let go now: one still being made a texture is freed as that is through, the native side counts)
+  ps_long_preview_free()
+  trim_soon()
+}
+
+/// Status copy, dot colour, and warning flag for the panel's status strip.
+fn long_state() -> (String, Int64, Bool) {
+  if long_stopped.get() {
+    (tr("已停止截取"), 0xAEB3BCFFL, false)
+  } else if long_full.get() {
+    (tr("已到最大高度，可复制或保存"), 0xF5A524FFL, true)
+  } else if long_paused.get() {
+    (tr("已暂停拼接 · 按空格继续"), 0xAEB3BCFFL, false)
+  } else if long_lost.get() {
+    (tr("没接上，往回滚一点即可续接"), 0xF5A524FFL, true)
+  } else {
+    let pics = long_pics.get()
+    if pics <= 1 || long_h.get() <= long_part.v.h {
+      (tr("在蓝框内上下滚动滚轮，自动拼接"), 0x4CC38AFFL, false)
+    } else {
+      let arrow = if long_dir.get() < 0 { "↑ " } else if long_dir.get() > 0 { "↓ " } else { "" }
+      (arrow + tr("已拼接 ") + pics.to_string() + tr(" 帧"), 0x4CC38AFFL, false)
+    }
+  }
+}
+
+/// Scroll percentage (0..100) for the current preview viewport.
+fn long_scroll_pct() -> Int {
+  let max_s = long_max_scroll(long_h.get())
+  if max_s <= 0 {
+    return 0
+  }
+  clampi((long_scroll.get().to_double() * 100.0 / max_s.to_double()).round().to_int(), 0, 100)
+}
+
+/// Compact screen-height multiplier / scroll readout for the control bar.
+fn long_meta_label() -> String {
+  let h = long_h.get()
+  let fh = long_part.v.h
+  if h <= 0 || fh <= 0 {
+    return ""
+  }
+  let screens = (h.to_double() * 10.0 / fh.to_double()).round() / 10.0
+  if long_max_scroll(h) > 0 {
+    let pct = long_scroll_pct()
+    "\{num(screens)}" + tr(" 屏") + " · \{pct}%"
+  } else if screens >= 1.1 {
+    "\{num(screens)}" + tr(" 屏")
+  } else {
+    ""
+  }
+}
+
+let long_ink : Int64 = 0xF5F6F8FFL
+
+let long_muted : Int64 = 0xB2B7C2FFL
+
+/// The panel's window: movable header with live status dot & dimensions, contextual status strip, true scrollable
+/// virtualized preview (wheel, drag-to-pan, scrollbar with live frame marker, floating jump-to-live pill), pause/reset
+/// controls, and Copy/Save/Pin/Cancel actions.
+fn long_window(root : view::View) -> Unit {
+  long_root.v = Some(root)
+  root.tree.hand_over_presses(false)
+  root.reacts(fn() {
+    let (key, pw, ph) = long_pending.get()
+    if key != "" && root.image_ready(key, (if pw > ph { pw } else { ph }).to_double()) {
+      key
+    } else {
+      ""
+    }
+  }, long_preview_shown)
+  let _ = root.keymap(view::Live::Is(long_keys()))
+  // Transparent DirectComposition window carrying an mbui superellipse card + soft shadow (zero DWM grey border).
+  let _ = root.box(fn(outer) {
+    let _ = outer
+    .over(view::Live::Is(true))
+    .padding(view::Live::Is((long_halo_x, long_halo_t, long_halo_x, long_halo_b)))
+    .lines_up(view::Live::Is(Some(view::Along::Start)))
+    let _ = outer.box(fn(page) {
+      let _ = page
+      .width(view::Live::Is(Some(long_panel_w)))
+      .height(view::Live::Is(Some(long_panel_h())))
+      .radius(view::Live::Is(16.0))
+      .ground(view::Live::Is(0x18191DF8L))
+      .edge(view::Live::Is((1.0, 0xFFFFFF22L)))
+      .shadow(view::Live::Is((long_shadow_blur, long_shadow_dy, 0x0000007AL)))
+      .padding(view::Live::Is((long_pad, long_pad, long_pad, long_pad)))
+      .lines_up(view::Live::Is(Some(view::Along::Start)))
+
+    // 1. Draggable Header: live status dot + title + tabular dimension badge
+    let _ = page.box(fn(head) {
+      let _ = head
+      .row(view::Live::Is(true))
+      .gap(view::Live::Is(8.0))
+      .height(view::Live::Is(Some(long_head_h)))
+      .width(view::Live::Is(Some(long_box_w())))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .presses(view::Live::Is(true))
+      .on_drag(fn(d) {
+        if d.kind == view::DragIs::Down && long_wid.v != 0 {
+          ps_move_window(long_wid.v)
+        }
+      }, whole=true)
+      let _ = head.box(fn(d) {
+        let _ = d.width(view::Live::Is(Some(8.0))).height(view::Live::Is(Some(8.0))).radius(view::Live::Is(4.0)).ground(view::Live::By(fn() { long_state().1 }))
+      })
+      let _ = head.box(fn(l) {
+        let _ = l
+        .grow(view::Live::Is(1.0))
+        .words(view::Live::By(fn() { tr("长截图") }), look=view::WordsLook::{ ..view::words_plain, size: 14.0, weight: 600, line: 20.0, wrap: false })
+        .ink(view::Live::Is(long_ink))
+      })
+      let _ = head.box(fn(s) {
+        let _ = s
+        .height(view::Live::Is(Some(22.0)))
+        .padding(view::Live::Is((8.0, 0.0, 8.0, 0.0)))
+        .radius(view::Live::Is(6.0))
+        .ground(view::Live::Is(0xFFFFFF16L))
+        .edge(view::Live::Is((1.0, 0xFFFFFF24L)))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .laid_nowhere(view::Live::By(fn() { long_h.get() == 0 }))
+        let _ = s.box(fn(w) {
+          let _ = w
+          .words(view::Live::By(fn() { "\{long_part.v.w} × \{long_h.get()}" }), look=view::WordsLook::{ ..view::words_plain,
+            size: 12.0,
+            weight: 500,
+            line: 16.0,
+            wrap: false,
+          })
+          .ink(view::Live::Is(long_ink))
+        })
+      })
+    })
+
+    let _ = page.box(fn(g) { let _ = g.height(view::Live::Is(Some(8.0))) })
+
+    // 2. Contextual Status Banner
+    let _ = page.box(fn(st) {
+      let _ = st
+      .row(view::Live::Is(true))
+      .width(view::Live::Is(Some(long_box_w())))
+      .height(view::Live::Is(Some(long_status_h)))
+      .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+      .radius(view::Live::Is(7.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Start))
+      .ground(view::Live::By(fn() { if long_state().2 { 0xF5A52424L } else { 0xFFFFFF10L } }))
+      .edge(view::Live::By(fn() { if long_state().2 { (1.0, 0xF5A5245CL) } else { (1.0, 0xFFFFFF1EL) } }))
+      let _ = st.box(fn(t) {
+        let _ = t
+        .words(view::Live::By(fn() { long_state().0 }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+        .ink(view::Live::By(fn() { if long_state().2 { 0xF5A524FFL } else { long_muted } }))
+      })
+    })
+
+    let _ = page.box(fn(g) { let _ = g.height(view::Live::Is(Some(10.0))) })
+
+    // 3. Scrollable Virtualized Preview Viewport
+    long_preview_viewport(page)
+
+    let _ = page.box(fn(g) { let _ = g.height(view::Live::Is(Some(10.0))) })
+
+    // 4. Capture Controls Strip: Pause/Resume, Reset, and Screen/Progress Readout
+    let _ = page.box(fn(ctrl) {
+      let _ = ctrl
+      .row(view::Live::Is(true))
+      .gap(view::Live::Is(6.0))
+      .width(view::Live::Is(Some(long_box_w())))
+      .height(view::Live::Is(Some(long_ctrl_h)))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      long_pill_button(
+        ctrl,
+        fn() { if long_paused.get() { "play" } else { "pause" } },
+        fn() { if long_paused.get() { tr("继续") } else { tr("暂停") } },
+        fn() { tr("暂停 / 继续 Space") },
+        fn() { long_paused.get() },
+        fn() { long_stopped.get() || long_full.get() },
+        long_toggle_pause,
+      )
+      long_pill_button(
+        ctrl,
+        fn() { "reset" },
+        fn() { if long_confirm_reset.get() { tr("确认重来") } else { tr("重来") } },
+        fn() { key_hint(tr("重新开始 Ctrl+R")) },
+        fn() { false },
+        fn() { long_h.get() == 0 },
+        long_request_reset,
+        danger=fn() { long_confirm_reset.get() },
+      )
+      let _ = ctrl.box(fn(g) { let _ = g.grow(view::Live::Is(1.0)) })
+      let _ = ctrl.box(fn(meta) {
+        let _ = meta
+        .words(view::Live::By(long_meta_label), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 16.0, wrap: false })
+        .ink(view::Live::Is(long_muted))
+      })
+    })
+
+    let _ = page.box(fn(g) { let _ = g.height(view::Live::Is(Some(10.0))) })
+
+    // 5. Primary Action Bar: Cancel, Pin, Save | Copy (accent)
+    let _ = page.box(fn(bar) {
+      let _ = bar.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).width(view::Live::Is(Some(long_box_w()))).lines_up(view::Live::Is(Some(view::Along::Middle)))
+      tool_button(bar, "close", "取消", fn() { false }, long_close, tips=long_tips, keys=fn() { "Esc" })
+      tool_button(bar, "pin", "贴到屏幕", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tips=long_tips, keys=fn() { "Ctrl+T" })
+      tool_button(bar, "save", "保存截图", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tips=long_tips, keys=fn() { "Ctrl+S" })
+      let _ = bar.box(fn(g) { let _ = g.grow(view::Live::Is(1.0)) })
+      long_copy_button(bar)
+    })
+  })
+  long_tips.mount(outer)
+  })
+
+  let on = fn(name : String, f : () -> Unit) {
+    let _ = root.on_action(name, fn(_) {
+      f()
+      true
+    })
+  }
+  on("close", long_close)
+  on("copy", long_copy)
+  on("save", long_save)
+  on("pin", long_pin)
+  on("pause", long_toggle_pause)
+  on("reset", long_request_reset)
+  on("scroll-up", fn() { long_scroll_by(-(long_vis_rows() / 5)) })
+  on("scroll-down", fn() { long_scroll_by(long_vis_rows() / 5) })
+  on("page-up", fn() { long_scroll_by(-(long_vis_rows() * 4 / 5)) })
+  on("page-down", fn() { long_scroll_by(long_vis_rows() * 4 / 5) })
+  on("home", fn() { long_scroll_to(0) })
+  on("end", fn() { long_scroll_to(long_max_scroll(long_h.untracked())) })
+}
+
+/// The virtualized scrollable preview well: wheel scrolls, drag pans the image, right-edge scrollbar scrubs directly
+/// and displays the live capture window position, and a floating pill jumps back to live stitching when detached.
+fn long_preview_viewport(page : view::View) -> Unit {
+  let box_w = long_box_w()
+  let box_h = long_box_h.v
+  let track_pad = 6.0
+  let track_h = box_h - track_pad * 2.0
+  let _ = page.box(fn(vp) {
+    let _ = vp
+    .width(view::Live::Is(Some(box_w)))
+    .height(view::Live::Is(Some(box_h)))
+    .radius(view::Live::Is(10.0))
+    .ground(view::Live::Is(0x111215FFL))
+    .edge(view::Live::Is((1.0, 0xFFFFFF18L)))
+    .clips(view::Live::Is(true))
+    .presses(view::Live::Is(true))
+    .on_wheel(fn(w) {
+      if long_max_scroll(long_h.untracked()) <= 0 || w.dy == 0.0 {
+        return
+      }
+      let delta_rows = (w.dy * long_src_per_pt()).round().to_int()
+      if delta_rows != 0 {
+        long_scroll_by(delta_rows)
+      }
+    })
+
+    // Pan surface + preview image (sibling of scrollbar & floating pill so drag never eats their clicks)
+    let _ = vp.box(fn(canvas) {
+      let _ = canvas
+      .over(view::Live::Is(true))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Start))
+      .presses(view::Live::Is(true))
+      .on_drag(fn(d) {
+        if long_max_scroll(long_h.untracked()) <= 0 {
+          return
+        }
+        match d.kind {
+          Down => {
+            long_pan_start.v = (d.wy, long_scroll.untracked())
+            long_panning.set(true)
+          }
+          Moved => {
+            let (wy0, row0) = long_pan_start.v
+            let delta = ((wy0 - d.wy) * long_src_per_pt()).round().to_int()
+            long_scroll_to(row0 + delta)
+          }
+          Up | Off => long_panning.set(false)
+        }
+      })
+      let _ = canvas.box(fn(img) {
+        let _ = img
+        .presses(view::Live::Is(false))
+        .width(view::Live::By(fn() { Some(long_preview.get().1.to_double() / long_scale.v) }))
+        .height(view::Live::By(fn() { Some(long_preview.get().2.to_double() / long_scale.v) }))
+        .image(view::Live::By(fn() {
+          let (key, pw, ph) = long_preview.get()
+          if key == "" {
+            None
+          } else {
+            Some((key, "", if pw > ph { pw } else { ph }))
+          }
+        }))
+      })
+    })
+
+    // Right-edge interactive scrollbar + live capture frame marker (shown only when taller than viewport)
+    let _ = vp.box(fn(rail) {
+      let _ = rail
+      .over(view::Live::Is(true))
+      .laid_nowhere(view::Live::By(fn() { long_max_scroll(long_h.get()) <= 0 }))
+      .width(view::Live::Is(Some(24.0)))
+      .height(view::Live::Is(Some(track_h)))
+      .offset(view::Live::Is((box_w - 24.0, track_pad)))
+      .presses(view::Live::Is(true))
+      .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+      .on_drag(fn(d) {
+        let h = long_h.untracked()
+        let max_s = long_max_scroll(h)
+        if max_s <= 0 {
+          return
+        }
+        let vis = long_vis_rows()
+        let thumb_h = clamp(track_h * vis.to_double() / h.to_double(), 28.0, track_h)
+        let travel = track_h - thumb_h
+        if travel <= 0.0 {
+          return
+        }
+        match d.kind {
+          Down => {
+            long_scrubbing.set(true)
+            let cur_y = travel * (long_scroll.untracked().to_double() / max_s.to_double())
+            if d.y >= cur_y && d.y <= cur_y + thumb_h {
+              long_scrub_grab.v = d.y - cur_y
+            } else {
+              long_scrub_grab.v = thumb_h / 2.0
+              let ny = clamp(d.y - long_scrub_grab.v, 0.0, travel)
+              long_scroll_to((ny / travel * max_s.to_double()).round().to_int())
+            }
+          }
+          Moved => {
+            let ny = clamp(d.y - long_scrub_grab.v, 0.0, travel)
+            long_scroll_to((ny / travel * max_s.to_double()).round().to_int())
+          }
+          Up | Off => long_scrubbing.set(false)
+        }
+      })
+
+      // Track backdrop
+      let _ = rail.box(fn(tr_bg) {
+        let _ = tr_bg
+        .over(view::Live::Is(true))
+        .presses(view::Live::Is(false))
+        .width(view::Live::Is(Some(6.0)))
+        .height(view::Live::Is(Some(track_h)))
+        .offset(view::Live::Is((14.0, 0.0)))
+        .radius(view::Live::Is(3.0))
+        .ground(view::Live::Is(0x0D0E12B8L))
+        .edge(view::Live::Is((1.0, 0xFFFFFF18L)))
+      })
+
+      // Live capture region indicator inside the track (shows where the active frame sits in the full image)
+      let _ = rail.box(fn(live) {
+        let _ = live
+        .over(view::Live::Is(true))
+        .presses(view::Live::Is(false))
+        .width(view::Live::Is(Some(4.0)))
+        .radius(view::Live::Is(2.0))
+        .ground(view::Live::By(fn() { if long_paused.get() { 0x8C919988L } else { 0x2F9BFF99L } }))
+        .height(view::Live::By(fn() {
+          let h = long_h.get()
+          if h <= 0 {
+            Some(0.0)
+          } else {
+            Some(clamp(track_h * long_part.v.h.to_double() / h.to_double(), 6.0, track_h))
+          }
+        }))
+        .offset(view::Live::By(fn() {
+          let h = long_h.get()
+          if h <= 0 {
+            (15.0, 0.0)
+          } else {
+            let lh = clamp(track_h * long_part.v.h.to_double() / h.to_double(), 6.0, track_h)
+            let ly = clamp(track_h * long_live_at.get().to_double() / h.to_double(), 0.0, track_h - lh)
+            (15.0, ly)
+          }
+        }))
+      })
+
+      // Draggable viewport thumb
+      let _ = rail.box(fn(thumb) {
+        let _ = thumb
+        .over(view::Live::Is(true))
+        .presses(view::Live::Is(false))
+        .width(view::Live::Is(Some(6.0)))
+        .radius(view::Live::Is(3.0))
+        .ground(view::Live::By(fn() {
+          if long_scrubbing.get() {
+            0xFFFFFFD9L
+          } else if rail.pointed() {
+            0xFFFFFFB3L
+          } else {
+            0xFFFFFF78L
+          }
+        }))
+        .height(view::Live::By(fn() {
+          let h = long_h.get()
+          if h <= 0 {
+            Some(0.0)
+          } else {
+            Some(clamp(track_h * long_vis_rows().to_double() / h.to_double(), 28.0, track_h))
+          }
+        }))
+        .offset(view::Live::By(fn() {
+          let h = long_h.get()
+          let max_s = long_max_scroll(h)
+          if h <= 0 || max_s <= 0 {
+            (14.0, 0.0)
+          } else {
+            let th = clamp(track_h * long_vis_rows().to_double() / h.to_double(), 28.0, track_h)
+            let ty = (track_h - th) * (long_scroll.get().to_double() / max_s.to_double())
+            (14.0, ty)
+          }
+        }))
+      })
+    })
+
+    // Floating position / jump-to-live pill overlaid near the bottom of the viewport when scrollable
+    let _ = vp.box(fn(overlay_bar) {
+      let _ = overlay_bar
+      .over(view::Live::Is(true))
+      .laid_nowhere(view::Live::By(fn() { long_max_scroll(long_h.get()) <= 0 }))
+      .width(view::Live::Is(Some(box_w)))
+      .height(view::Live::Is(Some(36.0)))
+      .offset(view::Live::Is((0.0, box_h - 46.0)))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+
+      // Auto-follow passive hint pill
+      let _ = overlay_bar.box(fn(hint) {
+        let _ = hint
+        .laid_nowhere(view::Live::By(fn() { !long_follow.get() }))
+        .height(view::Live::Is(Some(24.0)))
+        .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+        .radius(view::Live::Is(12.0))
+        .ground(view::Live::Is(0x16171BD9L))
+        .edge(view::Live::Is((1.0, 0xFFFFFF20L)))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::Is(false))
+        let _ = hint.box(fn(t) {
+          let _ = t
+          .words(view::Live::By(fn() {
+            let edge = if long_dir.get() < 0 { tr("顶部") } else { tr("底部") }
+            edge + " · " + tr("滚轮可浏览")
+          }), look=view::WordsLook::{ ..view::words_plain, size: 11.0, weight: 500, line: 15.0, wrap: false })
+          .ink(view::Live::Is(0xD5D8E0FFL))
+        })
+      })
+
+      // Detached manual-inspect interactive jump pill
+      let _ = overlay_bar.box(fn(jump) {
+        hig_focus(jump)
+        let _ = jump
+        .laid_nowhere(view::Live::By(fn() { long_follow.get() }))
+        .height(view::Live::Is(Some(28.0)))
+        .padding(view::Live::Is((11.0, 0.0, 11.0, 0.0)))
+        .radius(view::Live::Is(14.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::Is(true))
+        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+        .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=if long_dir.get() < 0 { tr("回到顶部 ↑") } else { tr("回到底部 ↓") })) }))
+        .on_press(long_jump_live)
+        .ground(view::Live::By(fn() {
+          if jump.pressed() {
+            0x233852F5L
+          } else if jump.pointed() {
+            0x2A476AF5L
+          } else {
+            0x1D2D42EEL
+          }
+        }))
+        .edge(view::Live::Is((1.0, 0x2F9BFF88L)))
+        .shadow(view::Live::Is((4.0, 1.5, 0x00000055L)))
+        let _ = jump.box(fn(t) {
+          let _ = t
+          .words(view::Live::By(fn() {
+            let pct = long_scroll_pct()
+            let go = if long_dir.get() < 0 { tr("回到顶部 ↑") } else { tr("回到底部 ↓") }
+            "\{pct}% · " + go
+          }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 600, line: 16.0, wrap: false })
+          .ink(view::Live::Is(0x88C8FFFFL))
+        })
+      })
+    })
+  })
+}
+
+/// Secondary pill button for the control strip (Pause/Resume, Reset).
+fn long_pill_button(
+  row : view::View,
+  icon : () -> String,
+  label : () -> String,
+  a11y : () -> String,
+  lit : () -> Bool,
+  dim : () -> Bool,
+  press : () -> Unit,
+  danger~ : () -> Bool  = fn() { false },
+) -> Unit {
+  let _ = row.box(fn(b) {
+    let live = fn() { !dim() }
+    let hov = smooth_hover(b, live=live)
+    tactile_press(b, live=live)
+    let _ = b
+    .row(view::Live::Is(true))
+    .gap(view::Live::Is(5.0))
+    .height(view::Live::Is(Some(28.0)))
+    .padding(view::Live::Is((9.0, 0.0, 11.0, 0.0)))
+    .radius(view::Live::Is(8.0))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Middle))
+    .presses(view::Live::Is(true))
+    .cursor(view::Live::By(fn() { if dim() { None } else { Some(view::Cursor::Hand) } }))
+    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=a11y())) }))
+    .on_press(fn() { if !dim() { press() } })
+    .ground(view::Live::By(fn() {
+      if dim() {
+        0xFFFFFF06L
+      } else if danger() {
+        mix_rgba(0xD4333938L, 0xD4333952L, hov())
+      } else if lit() {
+        mix_rgba(0x2F9BFF29L, 0x2F9BFF3DL, hov())
+      } else if b.pressed() {
+        0xFFFFFF2CL
+      } else {
+        mix_rgba(0xFFFFFF16L, 0xFFFFFF24L, hov())
+      }
+    }))
+    .edge(view::Live::By(fn() {
+      if danger() && !dim() {
+        (1.0, 0xF8717199L)
+      } else if lit() && !dim() {
+        (1.0, 0x2F9BFF7AL)
+      } else {
+        (1.0, 0xFFFFFF22L)
+      }
+    }))
+    let _ = b.box(fn(g) {
+      let _ = g
+      .width(view::Live::Is(Some(14.0)))
+      .height(view::Live::Is(Some(14.0)))
+      .picture(view::Live::By(fn() { Some(glyph(icon())) }))
+      .tint(view::Live::By(fn() {
+        if dim() {
+          0xFFFFFF44L
+        } else if danger() {
+          0xFCA5A5FFL
+        } else if lit() {
+          0x88C8FFFFL
+        } else {
+          0xDCDEE4FFL
+        }
+      }))
+    })
+    let _ = b.box(fn(t) {
+      let _ = t
+      .words(view::Live::By(label), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+      .ink(view::Live::By(fn() {
+        if dim() {
+          0xFFFFFF44L
+        } else if danger() {
+          0xFCA5A5FFL
+        } else if lit() {
+          0x88C8FFFFL
+        } else {
+          long_ink
+        }
+      }))
+    })
+  })
+}
+
+/// The panel's copy: the accent's, its glyph and its name.
+fn long_copy_button(bar : view::View) -> Unit {
+  let _ = bar.box(fn(b) {
+    let live = fn() { long_h.get() > 0 }
+    let hov = smooth_hover(b, live=live)
+    tactile_press(b, live=live)
+    let _ = b
+    .row(view::Live::Is(true))
+    .gap(view::Live::Is(6.0))
+    .height(view::Live::Is(Some(bar_button)))
+    .padding(view::Live::Is((13.0, 0.0, 15.0, 0.0)))
+    .radius(view::Live::Is(9.0))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .presses(view::Live::Is(true))
+    .cursor(view::Live::By(fn() { if long_h.get() == 0 { None } else { Some(view::Cursor::Hand) } }))
+    .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("复制 Enter"))) }))
+    .on_press(fn() { if long_h.untracked() > 0 { long_copy() } })
+    .ground(view::Live::By(fn() {
+      if long_h.get() == 0 {
+        0x1472E055L
+      } else if b.pressed() {
+        0x0E5EC0FFL
+      } else {
+        mix_rgba(0x1472E0FFL, 0x1E80F0FFL, hov())
+      }
+    }))
+    let _ = b.box(fn(g) {
+      let _ = g.width(view::Live::Is(Some(16.0))).height(view::Live::Is(Some(16.0))).picture(view::Live::Is(Some(glyph("check")))).tint(view::Live::Is(0xFFFFFFFFL))
+    })
+    let _ = b.box(fn(t) {
+      let _ = t
+      .words(view::Live::By(fn() { tr("复制") }), look=view::WordsLook::{ ..view::words_plain, size: 13.0, weight: 600, line: 18.0, wrap: false })
+      .ink(view::Live::Is(0xFFFFFFFFL))
+    })
+  })
+}
+
+fn long_keys() -> view::Keymap {
+  let k = fn(code : Int, action : String, mods : Int) -> view::Binding {
+    view::Binding::{ keys: [view::Stroke::{ code, mods }], action, when: view::KeyWhen::Always }
+  }
+  let ch = fn(c : Char, action : String, mods : Int) { k(ui::key_of_char(c), action, mods) }
+  view::Keymap::new([
+    k(ui::key_escape, "close", 0),
+    k(ui::key_code_enter, "copy", 0),
+    k(ui::key_space, "pause", 0),
+    ch('r', "reset", shortcut_mod()),
+    ch('c', "copy", shortcut_mod()),
+    k(ui::key_code_copy, "copy", shortcut_mod()),
+    k(ui::key_code_copy, "copy", 0),
+    ch('s', "save", shortcut_mod()),
+    ch('t', "pin", shortcut_mod()),
+    k(ui::key_code_up, "scroll-up", 0),
+    k(ui::key_code_down, "scroll-down", 0),
+    k(ui::key_code_page_up, "page-up", 0),
+    k(ui::key_code_page_down, "page-down", 0),
+    k(ui::key_code_home, "home", 0),
+    k(ui::key_code_end, "end", 0),
+  ])
+}

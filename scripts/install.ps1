@@ -5,7 +5,8 @@
 # shortcuts) and `--quit` finds no window to tell.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$src = Join-Path $root "out\build\pinshot.exe"
+$src = Join-Path $root "out\Release\pinshot.exe"
+if (-not (Test-Path $src)) { $src = Join-Path $root "out\build\pinshot.exe" }
 $dir = Join-Path $env:LOCALAPPDATA "Programs\PinShot"
 $exe = Join-Path $dir "pinshot.exe"
 New-Item -ItemType Directory -Force $dir | Out-Null

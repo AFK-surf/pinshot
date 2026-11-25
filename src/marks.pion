@@ -1,0 +1,971 @@
+// The marks drawn on a capture: boxes, ovals, arrows, pen lines, numbered dots, mosaic and words. Each is kept in the
+// monitor's pixels (where the picture's pixels are), so the overlay draws it at its scale and a copy draws it at the
+// picture's own, the same marks both ways (export.mbt). Undone and done again a mark at a time.
+
+import "dmath"
+import "pixels"
+import "signals"
+import "ui"
+
+/// What a press on the picked part does: nothing of its own (it moves the part), or draws a mark of a kind.
+#derive(Eq)
+enum Tool {
+  Move
+  Box
+  Oval
+  Arrow
+  Line
+  Pen
+  Eraser
+  Mosaic
+  MosaicBrush
+  Blur
+  /// a part in focus: the rest of the picture dimmed round it (all of them one dimming: focus_picture)
+  Focus
+  Number
+  Words
+}
+
+/// A mark: of what kind, its points (two corners or an arrow's tail and head; a pen's line; a number's or words' place),
+/// its colour (RGBA), how thick (0 thin, 1, 2 thick), a number's number, words' words.
+struct Mark {
+  id : Int
+  tool : Tool
+  pts : Array[(Double, Double)]
+  color : Int64
+  size : Int
+  n : Int
+  words : String
+}
+
+let marks : signals::Signal[Array[Mark]] = signals::signal_ref([])
+
+/// The mark being drawn now (None: none).
+let draft : signals::Signal[Option[Mark]] = signals::signal_ref(None)
+
+let undone : signals::Ref[Array[Array[Mark]]] = signals::ref_new([])
+
+let done_before : signals::Ref[Array[Array[Mark]]] = signals::ref_new([])
+
+let mark_ids : signals::Ref[Int] = signals::ref_new(0)
+
+let tool : signals::Signal[Tool] = signals::signal_by(Move, fn(a, b) { a == b })
+
+/// The colours a mark is drawn in, the first red.
+let colors : Array[Int64] = [0xD84A2FFFL, 0xFFB020FFL, 0x2ECC71FFL, 0x2F80EDFFL, 0xFFFFFFFFL, 0x111214FFL]
+
+let color_now : signals::Signal[Int64] = signals::signal(0xD84A2FFFL)
+
+let size_now : signals::Signal[Int] = signals::signal(1)
+
+/// A line's width in points by its size; a mosaic's square; words' size.
+fn line_pt(size : Int) -> Double {
+  match size {
+    0 => 2.0
+    1 => 3.5
+    _ => 6.0
+  }
+}
+
+fn eraser_pt(size : Int) -> Double {
+  match size {
+    0 => 10.0
+    1 => 18.0
+    _ => 28.0
+  }
+}
+
+fn mosaic_pt(size : Int) -> Double {
+  match size {
+    0 => 6.0
+    1 => 10.0
+    _ => 16.0
+  }
+}
+
+fn mosaic_brush_pt(size : Int) -> Double {
+  match size {
+    0 => 14.0
+    1 => 22.0
+    _ => 34.0
+  }
+}
+
+fn words_pt(size : Int) -> Double {
+  match size {
+    0 => 14.0
+    1 => 18.0
+    _ => 26.0
+  }
+}
+
+fn number_pt(size : Int) -> Double {
+  match size {
+    0 => 20.0
+    1 => 26.0
+    _ => 34.0
+  }
+}
+
+fn reset_marks() -> Unit {
+  marks.set([])
+  draft.set(None)
+  selected.set(None)
+  undone.v = []
+  done_before.v = []
+}
+
+/// A mark added (what was before kept to undo it).
+fn add_mark(m : Mark) -> Unit {
+  done_before.v.push(marks.untracked())
+  undone.v = []
+  let next = marks.untracked().copy()
+  next.push(m)
+  marks.set(next)
+  // (picked as it is made: its colour, its thickness, Delete, the arrows its at once; except freehand pen strokes,
+  // which stay unselected so sketching never flashes a selection frame or grabs the last stroke)
+  if m.tool == Pen {
+    selected.set(None)
+  } else {
+    selected.set(Some(m.id))
+  }
+}
+
+/// The marks as they were before the last change.
+fn undo() -> Bool {
+  let before = match done_before.v.pop() {
+    Some(_v) => _v
+    None => { return false }
+  }
+  undone.v.push(marks.untracked())
+  marks.set(before)
+  selected.set(None)
+  true
+}
+
+fn redo() -> Bool {
+  let after = match undone.v.pop() {
+    Some(_v) => _v
+    None => { return false }
+  }
+  done_before.v.push(marks.untracked())
+  marks.set(after)
+  selected.set(None)
+  true
+}
+
+fn new_mark(t : Tool, pts : Array[(Double, Double)]) -> Mark {
+  mark_ids.v += 1
+  let n = if t == Number {
+    let mut most = 0
+    for m in marks.untracked() {
+      if m.tool == Number && m.n > most {
+        most = m.n
+      }
+    }
+    most + 1
+  } else {
+    0
+  }
+  Mark::{
+    id: mark_ids.v,
+    tool: t,
+    pts,
+    color: color_now.untracked(),
+    size: size_now.untracked(),
+    n,
+    words: "",
+  }
+}
+
+/// A mark that is too small to keep (a click where a drag was meant).
+fn too_small(m : Mark) -> Bool {
+  match m.tool {
+    Box | Oval | Mosaic | Blur | Focus | Arrow | Line => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      (x1 - x0).abs() < 3.0 && (y1 - y0).abs() < 3.0
+    }
+    Pen | MosaicBrush => m.pts.length() < 2
+    _ => false
+  }
+}
+
+// ---- drawn ----
+
+/// A stroked path in `c`, `w` wide, as a picture's layer.
+fn stroke_layer(d : String, c : Int64, w : Double) -> pixels::VectorPath {
+  pixels::VectorPath::{ d, fill: 0L, stroke: c, width: w, even_odd: false, sx: 1.0, sy: 1.0, tx: 0.0, ty: 0.0 }
+}
+
+fn fill_layer(d : String, c : Int64, even_odd~ : Bool = false) -> pixels::VectorPath {
+  pixels::VectorPath::{ d, fill: c, stroke: 0L, width: 0.0, even_odd, sx: 1.0, sy: 1.0, tx: 0.0, ty: 0.0 }
+}
+
+fn rect_path(x : Double, y : Double, w : Double, h : Double) -> String {
+  "M\{num(x)} \{num(y)}h\{num(w)}v\{num(h)}h\{num(-w)}z"
+}
+
+/// An ellipse in (x, y, w, h) as two arcs.
+fn oval_path(x : Double, y : Double, w : Double, h : Double) -> String {
+  let rx = w / 2.0
+  let ry = h / 2.0
+  "M\{num(x)} \{num(y + ry)}a\{num(rx)} \{num(ry)} 0 1 0 \{num(w)} 0a\{num(rx)} \{num(ry)} 0 1 0 \{num(-w)} 0z"
+}
+
+/// A circle about (cx, cy).
+fn circle_path(cx : Double, cy : Double, r : Double) -> String {
+  oval_path(cx - r, cy - r, r * 2.0, r * 2.0)
+}
+
+/// The layers that draw mark `m` in the monitor's pixels, `k` of them a point.
+fn mark_layers(m : Mark, k : Double) -> Array[pixels::VectorPath] {
+  let w = line_pt(m.size) * k
+  match m.tool {
+    Box => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      let x = dmin(x0, x1)
+      let y = dmin(y0, y1)
+      [stroke_layer(rect_path(x, y, (x1 - x0).abs(), (y1 - y0).abs()), m.color, w)]
+    }
+    Oval => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      [stroke_layer(oval_path(dmin(x0, x1), dmin(y0, y1), (x1 - x0).abs(), (y1 - y0).abs()), m.color, w)]
+    }
+    Arrow => {
+      let sw = w * 0.88
+      let d = arrow_path(m.pts[0], m.pts[m.pts.length() - 1], w, k=k)
+      if d == "" { [] } else { [stroke_layer(d, m.color, sw)] }
+    }
+    Line => {
+      let (ax, ay) = m.pts[0]
+      let (bx, by) = m.pts[m.pts.length() - 1]
+      [stroke_layer("M\{num(ax)} \{num(ay)}L\{num(bx)} \{num(by)}", m.color, w)]
+    }
+    Pen => {
+      // Single open polyline stroked via mbui's exact GPU analytical SDF (round caps, round joins, 360° smooth AA).
+      let sb = StringBuilder::new()
+      let mut last = m.pts[0]
+      sb.write_string("M\{num(last.0)} \{num(last.1)}")
+      for p in m.pts {
+        let dx = p.0 - last.0
+        let dy = p.1 - last.1
+        if dx * dx + dy * dy >= 1.0 {
+          sb.write_string("L\{num(p.0)} \{num(p.1)}")
+          last = p
+        }
+      }
+      [stroke_layer(sb.to_string(), m.color, w)]
+    }
+    Number => {
+      let (cx, cy) = m.pts[0]
+      let r = number_pt(m.size) * k / 2.0
+      [
+        fill_layer(circle_path(cx, cy, r + k), 0xFFFFFFFFL),
+        fill_layer(circle_path(cx, cy, r), m.color),
+      ]
+    }
+    Mosaic => mosaic_layers(m, k, blur=false)
+    Blur => mosaic_layers(m, k, blur=true)
+    MosaicBrush => mosaic_brush_layers(m, k)
+    Move | Words | Focus | Eraser => []
+  }
+}
+
+/// A minimalist open V-chevron arrow from `a` to `b` (`w` line width, `k` pixels per point): open 3-segment stroke
+/// path (stem + symmetric chevron wings) rendered with mbui's analytical GPU SDF stroke (round caps, seamless round
+/// tip join, 360° smooth antialiasing, tip outer edge landing exactly on `b`).
+fn arrow_path(a : (Double, Double), b : (Double, Double), w : Double, k~ : Double = 1.0) -> String {
+  let (ax, ay) = a
+  let (bx, by) = b
+  let dx = bx - ax
+  let dy = by - ay
+  let len = (dx * dx + dy * dy).sqrt()
+  if len < 0.5 {
+    return ""
+  }
+  let ux = dx / len
+  let uy = dy / len
+  // (across it)
+  let nx = -uy
+  let ny = ux
+  let sw = w * 0.88
+  let tip_inset = dmin(len * 0.5, sw * 0.5)
+  let tx = bx - ux * tip_inset
+  let ty = by - uy * tip_inset
+  let wing_len = dmin(len * 0.36, w * 2.0 + 3.0 * k)
+  let wing_w = wing_len * 0.54
+  let p1x = tx - ux * wing_len + nx * wing_w
+  let p1y = ty - uy * wing_len + ny * wing_w
+  let p2x = tx - ux * wing_len - nx * wing_w
+  let p2y = ty - uy * wing_len - ny * wing_w
+  "M\{num(ax)} \{num(ay)}L\{num(tx)} \{num(ty)}M\{num(p1x)} \{num(p1y)}L\{num(tx)} \{num(ty)}L\{num(p2x)} \{num(p2y)}"
+}
+
+/// A mosaic (or smooth box-blur when `blur` is true) over the rectangle between its two points: squares `cell` pixels
+/// across, each the mean colour of `sample` pixels under it; a run of one colour along a row drawn as one.
+fn mosaic_layers(m : Mark, k : Double, blur~ : Bool) -> Array[pixels::VectorPath] {
+  let (x0, y0) = m.pts[0]
+  let (x1, y1) = m.pts[m.pts.length() - 1]
+  let r = rect_between(x0.round().to_int(), y0.round().to_int(), x1.round().to_int(), y1.round().to_int()).within(
+    mon.v.w,
+    mon.v.h,
+  )
+  let r = match r {
+    Some(_v) => _v
+    None => { return [] }
+  }
+  let cell = if blur {
+    dmax(2.0, (3.0 * k).round()).to_int()
+  } else {
+    dmax(2.0, (mosaic_pt(m.size) * k).round()).to_int()
+  }
+  let sample = if blur {
+    dmax(6.0, (mosaic_pt(m.size) * 2.2 * k).round()).to_int()
+  } else {
+    cell
+  }
+  // (squares on the monitor's grid of them, so one dragged further keeps the squares it had)
+  let gx0 = r.x / cell
+  let gy0 = r.y / cell
+  let gx1 = (r.right() + cell - 1) / cell
+  let gy1 = (r.bottom() + cell - 1) / cell
+  let by_color : Map[Int, StringBuilder] = Map::new()
+  for gy in gy0..<gy1 {
+    let mut run_color = -1
+    let mut run_x = 0
+    let mut run_n = 0
+    let cy = gy * cell
+    let ch = clampi(r.bottom(), 0, mon.v.h) - cy
+    let top = clampi(cy, r.y, r.bottom())
+    let bottom = clampi(cy + cell, r.y, r.bottom())
+    let flush = fn(c : Int, x : Int, n : Int) {
+      if c >= 0 && n > 0 {
+        let sb = match by_color.get(c) {
+          Some(sb) => sb
+          None => {
+            let sb = StringBuilder::new()
+            by_color[c] = sb
+            sb
+          }
+        }
+        let left = clampi(x, r.x, r.right())
+        let right = clampi(x + n * cell, r.x, r.right())
+        sb.write_string(rect_path(left.to_double(), top.to_double(), (right - left).to_double(), (bottom - top).to_double()))
+      }
+    }
+    ignore(ch)
+    for gx in gx0..<gx1 {
+      let c = cell_mean(gx, gy, cell, sample)
+      if c == run_color {
+        run_n += 1
+      } else {
+        flush(run_color, run_x, run_n)
+        run_color = c
+        run_x = gx * cell
+        run_n = 1
+      }
+    }
+    flush(run_color, run_x, run_n)
+  }
+  let out : Array[pixels::VectorPath] = []
+  for c in by_color.keys() {
+    match by_color.get(c) {
+      Some(sb) => out.push(fill_layer(sb.to_string(), (c.to_int64() << 8) | 0xFFL))
+      None => ()
+    }
+  }
+  out
+}
+
+/// A brushed mosaic along `m.pts`: grid squares whose centers fall within `mosaic_brush_pt(m.size) / 2` of the stroke.
+fn mosaic_brush_layers(m : Mark, k : Double) -> Array[pixels::VectorPath] {
+  if m.pts.length() == 0 {
+    return []
+  }
+  let cell = dmax(2.0, (mosaic_pt(m.size) * k).round()).to_int()
+  let rad = mosaic_brush_pt(m.size) * k / 2.0
+  let (bx0, by0, bx1, by1) = mark_box(m, k)
+  let max_gx = (mon.v.w + cell - 1) / cell
+  let max_gy = (mon.v.h + cell - 1) / cell
+  let gx0 = clampi((bx0 / cell.to_double()).floor().to_int(), 0, max_gx)
+  let gy0 = clampi((by0 / cell.to_double()).floor().to_int(), 0, max_gy)
+  let gx1 = clampi(((bx1 + cell.to_double() - 1.0) / cell.to_double()).ceil().to_int(), 0, max_gx)
+  let gy1 = clampi(((by1 + cell.to_double() - 1.0) / cell.to_double()).ceil().to_int(), 0, max_gy)
+  let by_color : Map[Int, StringBuilder] = Map::new()
+  let half = cell.to_double() / 2.0
+  // (which squares the stroke covers, found segment by segment over the squares near each, not every square of the
+  // box against every segment: the same squares, as a square's centre within `rad` of any segment)
+  let gw = gx1 - gx0
+  let gh = gy1 - gy0
+  let hit : Array[Bool] = Array::make(if gw > 0 && gh > 0 { gw * gh } else { 0 }, false)
+  let cover = fn(a : (Double, Double), b : (Double, Double)) {
+    let lo_x = dmin(a.0, b.0) - rad
+    let hi_x = dmax(a.0, b.0) + rad
+    let lo_y = dmin(a.1, b.1) - rad
+    let hi_y = dmax(a.1, b.1) + rad
+    let sx0 = clampi(((lo_x - half) / cell.to_double()).floor().to_int(), gx0, gx1)
+    let sx1 = clampi(((hi_x - half) / cell.to_double()).ceil().to_int() + 1, gx0, gx1)
+    let sy0 = clampi(((lo_y - half) / cell.to_double()).floor().to_int(), gy0, gy1)
+    let sy1 = clampi(((hi_y - half) / cell.to_double()).ceil().to_int() + 1, gy0, gy1)
+    for gy in sy0..<sy1 {
+      let py = (gy * cell).to_double() + half
+      for gx in sx0..<sx1 {
+        let i = (gy - gy0) * gw + (gx - gx0)
+        if !hit[i] && to_segment((gx * cell).to_double() + half, py, a, b) <= rad {
+          hit[i] = true
+        }
+      }
+    }
+  }
+  if gw > 0 && gh > 0 {
+    if m.pts.length() == 1 {
+      cover(m.pts[0], m.pts[0])
+    } else {
+      for i in 1..<m.pts.length() {
+        cover(m.pts[i - 1], m.pts[i])
+      }
+    }
+  }
+  for gy in gy0..<gy1 {
+    let mut run_color = -1
+    let mut run_x = 0
+    let mut run_n = 0
+    let cy = gy * cell
+    let top = clampi(cy, 0, mon.v.h)
+    let bottom = clampi(cy + cell, 0, mon.v.h)
+    let flush = fn(c : Int, x : Int, n : Int) {
+      if c >= 0 && n > 0 && bottom > top {
+        let sb = match by_color.get(c) {
+          Some(sb) => sb
+          None => {
+            let sb = StringBuilder::new()
+            by_color[c] = sb
+            sb
+          }
+        }
+        let left = clampi(x, 0, mon.v.w)
+        let right = clampi(x + n * cell, 0, mon.v.w)
+        if right > left {
+          sb.write_string(rect_path(left.to_double(), top.to_double(), (right - left).to_double(), (bottom - top).to_double()))
+        }
+      }
+    }
+    for gx in gx0..<gx1 {
+      if hit[(gy - gy0) * gw + (gx - gx0)] {
+        let c = cell_mean(gx, gy, cell, cell)
+        if c == run_color {
+          run_n += 1
+        } else {
+          flush(run_color, run_x, run_n)
+          run_color = c
+          run_x = gx * cell
+          run_n = 1
+        }
+      } else {
+        flush(run_color, run_x, run_n)
+        run_color = -1
+        run_n = 0
+      }
+    }
+    flush(run_color, run_x, run_n)
+  }
+  let out : Array[pixels::VectorPath] = []
+  for c in by_color.keys() {
+    match by_color.get(c) {
+      Some(sb) => out.push(fill_layer(sb.to_string(), (c.to_int64() << 8) | 0xFFL))
+      None => ()
+    }
+  }
+  out
+}
+
+/// The mean colour (0xRRGGBB) of the `cell` square at (x, y) of the picture taken (read where the native side keeps it).
+fn mean_color(x : Int, y : Int, cell : Int) -> Int {
+  ps_mean(x, y, cell)
+}
+
+/// The squares' means asked of the picture taken, kept by square (grid `cell`, each `sample` pixels round it) for the
+/// capture: a mosaic or a blur dragged out asks each square once, not again at each pixel the drag moves. The last few
+/// grids kept (a mosaic and a blur of other sizes beside each other), let go as the capture closes (mean_cache_clear).
+struct MeanGrid {
+  key : String
+  cell : Int
+  sample : Int
+  gw : Int
+  gh : Int
+  means : Array[Int] // -1: not asked yet
+}
+
+let mean_grids : Array[MeanGrid] = []
+
+fn mean_cache_clear() -> Unit {
+  mean_grids.clear()
+}
+
+/// The mean of grid square (gx, gy): the `sample` pixels square centred on the `cell` square there.
+fn cell_mean(gx : Int, gy : Int, cell : Int, sample : Int) -> Int {
+  let off = (sample - cell) / 2
+  let key = frozen_key.untracked()
+  let gw = (mon.v.w + cell - 1) / cell + 1
+  let gh = (mon.v.h + cell - 1) / cell + 1
+  if gx < 0 || gy < 0 || gx >= gw || gy >= gh || key == "" {
+    return mean_color(gx * cell - off, gy * cell - off, sample)
+  }
+  let mut found : Option[MeanGrid] = None
+  for mg in mean_grids {
+    if mg.key == key && mg.cell == cell && mg.sample == sample && mg.gw == gw && mg.gh == gh {
+      found = Some(mg)
+      break
+    }
+  }
+  let g = match found {
+    Some(g) => g
+    None => {
+      let g = MeanGrid::{ key, cell, sample, gw, gh, means: Array::make(gw * gh, -1) }
+      if mean_grids.length() >= 3 {
+        let _ = ui::array_remove_at(mean_grids, 0)
+      }
+      mean_grids.push(g)
+      g
+    }
+  }
+  let i = gy * gw + gx
+  let v = g.means[i]
+  if v >= 0 {
+    return v
+  }
+  let c = mean_color(gx * cell - off, gy * cell - off, sample)
+  g.means[i] = c
+  c
+}
+
+test "arrow path open chevron" {
+  let d = arrow_path((0.0, 0.0), (100.0, 0.0), 4.0)
+  assert_true(str_has_prefix(d, "M"))
+  assert_true(str_contains(d, "L"))
+  assert_eq(arrow_path((0.0, 0.0), (0.0, 0.0), 4.0), "")
+}
+
+/// The end of a line or an arrow from (`ax`, `ay`) to (`x`, `y`) kept to a multiple of 45 degrees (Shift held: straight
+/// across, straight up and down, or diagonal), as far as the pointer along it.
+fn snap45(ax : Double, ay : Double, x : Double, y : Double) -> (Double, Double) {
+  let dx = x - ax
+  let dy = y - ay
+  let len = (dx * dx + dy * dy).sqrt()
+  if len < 0.5 {
+    return (x, y)
+  }
+  let step = 3.141592653589793 / 4.0
+  let a = (dmath::atan2(dy, dx) / step).round() * step
+  (ax + len * dmath::cos(a), ay + len * dmath::sin(a))
+}
+
+test "snap45" {
+  let (x, y) = snap45(0.0, 0.0, 100.0, 7.0)
+  assert_true((y).abs() < 0.001 && x > 99.0)
+  let (x2, y2) = snap45(0.0, 0.0, 3.0, 100.0)
+  assert_true(x2.abs() < 0.001 && y2 > 99.0)
+}
+
+// ---- moved ----
+
+/// How far (pixels) the point (`px`, `py`) is from the segment `a`-`b`.
+fn to_segment(px : Double, py : Double, a : (Double, Double), b : (Double, Double)) -> Double {
+  let (ax, ay) = a
+  let (bx, by) = b
+  let dx = bx - ax
+  let dy = by - ay
+  let len2 = dx * dx + dy * dy
+  let t = if len2 < 0.0001 { 0.0 } else { clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0.0, 1.0) }
+  let qx = ax + dx * t - px
+  let qy = ay + dy * t - py
+  (qx * qx + qy * qy).sqrt()
+}
+
+/// Whether mark `m` is under the point (`x`, `y`) (pixels), `k` pixels a point: on a line, an arrow, a pen's line or
+/// a box's or an oval's edge (within a few points of it: inside a box another mark is drawn), on a number or words;
+/// in a mosaic only where `inside` (the move tool held: no mark is drawn then).
+fn mark_hit(m : Mark, x : Double, y : Double, k : Double, inside : Bool) -> Bool {
+  let reach = (if m.tool == MosaicBrush { mosaic_brush_pt(m.size) } else { line_pt(m.size) }) * k / 2.0 + 5.0 * k
+  match m.tool {
+    Line | Arrow => to_segment(x, y, m.pts[0], m.pts[m.pts.length() - 1]) <= reach
+    Pen | MosaicBrush => {
+      if m.pts.length() == 1 {
+        return to_segment(x, y, m.pts[0], m.pts[0]) <= reach
+      }
+      for i in 1..<m.pts.length() {
+        if to_segment(x, y, m.pts[i - 1], m.pts[i]) <= reach {
+          return true
+        }
+      }
+      false
+    }
+    Box | Focus => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      let (a, b, c, d) = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+      // (anywhere in it as well with the select tool held)
+      (inside && x >= dmin(x0, x1) && x <= dmax(x0, x1) && y >= dmin(y0, y1) && y <= dmax(y0, y1)) ||
+      to_segment(x, y, a, b) <= reach ||
+      to_segment(x, y, b, c) <= reach ||
+      to_segment(x, y, c, d) <= reach ||
+      to_segment(x, y, d, a) <= reach
+    }
+    Oval => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      let rx = dmax((x1 - x0).abs() / 2.0, 0.5)
+      let ry = dmax((y1 - y0).abs() / 2.0, 0.5)
+      let dx = (x - (x0 + x1) / 2.0) / rx
+      let dy = (y - (y0 + y1) / 2.0) / ry
+      // (how far off its edge, near enough: along the nearer radius)
+      (inside && dx * dx + dy * dy <= 1.0) || ((dx * dx + dy * dy).sqrt() - 1.0).abs() * dmin(rx, ry) <= reach
+    }
+    Mosaic | Blur => {
+      let (x0, y0) = m.pts[0]
+      let (x1, y1) = m.pts[m.pts.length() - 1]
+      let (l, t, r, b) = (dmin(x0, x1), dmin(y0, y1), dmax(x0, x1), dmax(y0, y1))
+      let within = x >= l && x <= r && y >= t && y <= b
+      // (anywhere in it with the move tool held; else by its edge, a few points either side, as a box's: inside it a
+      // mosaic or another mark is drawn)
+      let near = x >= l - reach && x <= r + reach && y >= t - reach && y <= b + reach
+      (inside && within) ||
+      (
+        near &&
+        (
+          (x - l).abs() <= reach ||
+          (x - r).abs() <= reach ||
+          (y - t).abs() <= reach ||
+          (y - b).abs() <= reach
+        )
+      )
+    }
+    Number => {
+      let (cx, cy) = m.pts[0]
+      let r = number_pt(m.size) * k / 2.0 + 2.0 * k
+      (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r
+    }
+    Words => {
+      let (wx, wy) = m.pts[0]
+      let size = words_pt(m.size) * k
+      // (as wide as its letters about are: a CJK one its size, another a little over half)
+      let mut wide = 0.0
+      for c in str_chars(m.words) {
+        wide += if c.to_int() >= 0x2E80 { size } else { size * 0.6 }
+      }
+      x >= wx - 3.0 * k && x <= wx + wide + 6.0 * k && y >= wy - 3.0 * k && y <= wy + size * 1.3 + 3.0 * k
+    }
+    Move | Eraser => false
+  }
+}
+
+/// Which of the marks is under the point (pixels), the one drawn last first; None none. (Read as a signal: what is
+/// under the pointer changes as marks are.)
+fn mark_at(x : Double, y : Double, inside : Bool) -> Option[Int] {
+  let k = mon_scale.untracked()
+  let ms = marks.get()
+  for i = ms.length() - 1; i >= 0; i = i - 1 {
+    if mark_hit(ms[i], x, y, k, inside) {
+      return Some(i)
+    }
+  }
+  None
+}
+
+/// Mark `m` moved by (`dx`, `dy`) pixels.
+fn moved_by(m : Mark, dx : Double, dy : Double) -> Mark {
+  let pts : Array[(Double, Double)] = []
+  for p in m.pts {
+    pts.push((p.0 + dx, p.1 + dy))
+  }
+  Mark::{ ..m, pts }
+}
+
+test "mark hit" {
+  let line = Mark::{ id: 1, tool: Line, pts: [(0.0, 0.0), (100.0, 0.0)], color: 0L, size: 1, n: 0, words: "" }
+  assert_true(mark_hit(line, 50.0, 4.0, 1.0, false))
+  assert_false(mark_hit(line, 50.0, 30.0, 1.0, false))
+  let box = Mark::{ ..line, tool: Box, pts: [(0.0, 0.0), (100.0, 100.0)] }
+  assert_true(mark_hit(box, 100.0, 50.0, 1.0, false))
+  assert_false(mark_hit(box, 50.0, 50.0, 1.0, false))
+  assert_true(mark_hit(box, 50.0, 50.0, 1.0, true))
+  let oval = Mark::{ ..line, tool: Oval, pts: [(0.0, 0.0), (100.0, 50.0)] }
+  assert_true(mark_hit(oval, 50.0, 1.0, 1.0, false))
+  assert_false(mark_hit(oval, 50.0, 25.0, 1.0, false))
+  let moved = moved_by(line, 10.0, 5.0)
+  assert_true(moved.pts[1].0 == 110.0 && moved.pts[1].1 == 5.0)
+}
+
+// ---- picked ----
+
+/// The mark picked (its id; None none): its handles shown, Delete takes it away, the arrows move it, a colour or a
+/// thickness chosen is its.
+let selected : signals::Signal[Option[Int]] = signals::signal_by(None, fn(a, b) {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+})
+
+/// Where the mark with id `id` is among the marks.
+fn mark_index(id : Int) -> Option[Int] {
+  for i, m in marks.untracked() {
+    if m.id == id {
+      return Some(i)
+    }
+  }
+  None
+}
+
+/// The handles of mark `m` (pixels): (hx, hy, x, y), a corner (x of its point hx, y of its point hy) or a line's end
+/// (both of the same point). A pen's line, a number and words have none (they are moved whole).
+fn mark_handles(m : Mark) -> Array[(Int, Int, Double, Double)] {
+  let (x0, y0) = m.pts[0]
+  let (x1, y1) = m.pts[m.pts.length() - 1]
+  match m.tool {
+    Line | Arrow => [(0, 0, x0, y0), (1, 1, x1, y1)]
+    Box | Oval | Mosaic | Blur | Focus => [(0, 0, x0, y0), (1, 0, x1, y0), (1, 1, x1, y1), (0, 1, x0, y1)]
+    _ => []
+  }
+}
+
+/// Mark `m` with handle (hx, hy) put at (x, y).
+fn reshaped(m : Mark, hx : Int, hy : Int, x : Double, y : Double) -> Mark {
+  let pts = [m.pts[0], m.pts[m.pts.length() - 1]]
+  pts[hx] = (x, pts[hx].1)
+  pts[hy] = (pts[hy].0, y)
+  { ..m, pts, }
+}
+
+/// The marks with the one at `i` put in place of what it was: one step to undo, it picked (a new id: its node drawn
+/// anew).
+fn replace_mark(i : Int, m : Mark) -> Unit {
+  let before = marks.untracked()
+  done_before.v.push(before)
+  undone.v = []
+  let next = before.copy()
+  mark_ids.v += 1
+  next[i] = Mark::{ ..m, id: mark_ids.v }
+  marks.set(next)
+  selected.set(Some(mark_ids.v))
+}
+
+/// The mark picked given colour `c` / thickness `s`: whether one is picked.
+fn restyle_selected(c? : Int64, s? : Int) -> Unit {
+  guard selected.untracked() is Some(id) && mark_index(id) is Some(i) else { return }
+  let m = marks.untracked()[i]
+  let m2 = Mark::{
+    ..m,
+    color: match c {
+      Some(c) => c
+      None => m.color
+    },
+    size: match s {
+      Some(s) => s
+      None => m.size
+    },
+  }
+  if m2.color != m.color || m2.size != m.size {
+    replace_mark(i, m2)
+  }
+}
+
+/// Split a pen stroke's polyline by removing every point/segment within `hit_r` of the eraser sweep `a`-`b`.
+/// Returns `(changed, surviving_runs)`.
+fn split_pen_erased(
+  pts : Array[(Double, Double)],
+  a : (Double, Double),
+  b : (Double, Double),
+  hit_r : Double,
+) -> (Bool, Array[Array[(Double, Double)]]) {
+  if pts.length() < 2 {
+    return (false, [])
+  }
+  let step = dmax(2.0, hit_r * 0.45)
+  let sampled : Array[(Double, Double)] = [pts[0]]
+  for i in 1..<pts.length() {
+    let (x0, y0) = pts[i - 1]
+    let (x1, y1) = pts[i]
+    let len = ((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)).sqrt()
+    if len > step {
+      let n = clampi((len / step).ceil().to_int(), 1, 64)
+      for s in 1..=n {
+        let t = s.to_double() / n.to_double()
+        sampled.push((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+      }
+    } else {
+      sampled.push((x1, y1))
+    }
+  }
+  let mut changed = false
+  let runs : Array[Array[(Double, Double)]] = []
+  let mut cur : Array[(Double, Double)] = []
+  for p in sampled {
+    if to_segment(p.0, p.1, a, b) <= hit_r {
+      changed = true
+      if cur.length() >= 2 {
+        runs.push(cur)
+      }
+      cur = []
+    } else {
+      cur.push(p)
+    }
+  }
+  if cur.length() >= 2 {
+    runs.push(cur)
+  }
+  (changed, runs)
+}
+
+/// Erase any portion of freehand Pen strokes touched by the eraser swept from `(ax, ay)` to `(bx, by)` (pixels).
+fn erase_pen_segment(ax : Double, ay : Double, bx : Double, by : Double) -> Bool {
+  let k = mon_scale.untracked()
+  let r = eraser_pt(size_now.untracked()) * k
+  let ex0 = dmin(ax, bx) - r
+  let ey0 = dmin(ay, by) - r
+  let ex1 = dmax(ax, bx) + r
+  let ey1 = dmax(ay, by) + r
+  let cur = marks.untracked()
+  let next : Array[Mark] = []
+  let mut changed = false
+  for m in cur {
+    if m.tool != Pen {
+      next.push(m)
+      continue
+    }
+    let (mx0, my0, mx1, my1) = mark_box(m, k)
+    if mx1 < ex0 || mx0 > ex1 || my1 < ey0 || my0 > ey1 {
+      next.push(m)
+      continue
+    }
+    let hit_r = r + line_pt(m.size) * k / 2.0
+    let (hit, runs) = split_pen_erased(m.pts, (ax, ay), (bx, by), hit_r)
+    if !hit {
+      next.push(m)
+    } else {
+      changed = true
+      for run in runs {
+        mark_ids.v += 1
+        next.push(Mark::{ ..m, id: mark_ids.v, pts: run })
+      }
+    }
+  }
+  if changed {
+    marks.set(next)
+  }
+  changed
+}
+
+test "split_pen_erased" {
+  let stroke = [(0.0, 0.0), (100.0, 0.0)]
+  let (hit, runs) = split_pen_erased(stroke, (50.0, -5.0), (50.0, 5.0), 12.0)
+  assert_true(hit)
+  assert_eq(runs.length(), 2)
+  assert_true(runs[0][runs[0].length() - 1].0 < 40.0)
+  assert_true(runs[1][0].0 > 60.0)
+  let (miss, runs2) = split_pen_erased(stroke, (50.0, 40.0), (60.0, 40.0), 12.0)
+  assert_false(miss)
+  assert_eq(runs2.length(), 1)
+}
+
+/// The mark picked taken away (one step to undo); whether there was one.
+fn delete_selected() -> Bool {
+  guard selected.untracked() is Some(id) && mark_index(id) is Some(i) else { return false }
+  let before = marks.untracked()
+  done_before.v.push(before)
+  undone.v = []
+  let next = before.copy()
+  let _ = ui::array_remove_at(next, i)
+  marks.set(next)
+  selected.set(None)
+  true
+}
+
+/// The mark picked moved by (dx, dy) pixels; whether there was one.
+fn nudge_selected(dx : Double, dy : Double) -> Bool {
+  guard selected.untracked() is Some(id) && mark_index(id) is Some(i) else { return false }
+  replace_mark(i, moved_by(marks.untracked()[i], dx, dy))
+  true
+}
+
+test "reshaped" {
+  let box = Mark::{ id: 1, tool: Box, pts: [(0.0, 0.0), (100.0, 100.0)], color: 0L, size: 1, n: 0, words: "" }
+  let b = reshaped(box, 1, 0, 150.0, -20.0)
+  assert_true(b.pts.length() == 2 && b.pts[0].0 == 0.0 && b.pts[0].1 == -20.0 && b.pts[1].0 == 150.0 && b.pts[1].1 == 100.0)
+  let line = Mark::{ ..box, tool: Line }
+  let l = reshaped(line, 1, 1, 30.0, 40.0)
+  assert_true(l.pts.length() == 2 && l.pts[0].0 == 0.0 && l.pts[0].1 == 0.0 && l.pts[1].0 == 30.0 && l.pts[1].1 == 40.0)
+}
+
+/// What mark `m` covers (pixels, `k` a point): (x0, y0, x1, y1).
+fn mark_box(m : Mark, k : Double) -> (Double, Double, Double, Double) {
+  match m.tool {
+    Number => {
+      let (cx, cy) = m.pts[0]
+      let r = number_pt(m.size) * k / 2.0
+      (cx - r, cy - r, cx + r, cy + r)
+    }
+    Words => {
+      let (wx, wy) = m.pts[0]
+      let size = words_pt(m.size) * k
+      let mut wide = 0.0
+      for c in str_chars(m.words) {
+        wide += if c.to_int() >= 0x2E80 { size } else { size * 0.6 }
+      }
+      (wx, wy, wx + wide + 3.0 * k, wy + size * 1.3)
+    }
+    _ => {
+      let half = (if m.tool == MosaicBrush { mosaic_brush_pt(m.size) } else { line_pt(m.size) }) * k / 2.0
+      let mut x0 = m.pts[0].0
+      let mut y0 = m.pts[0].1
+      let mut x1 = x0
+      let mut y1 = y0
+      for p in m.pts {
+        x0 = dmin(x0, p.0)
+        y0 = dmin(y0, p.1)
+        x1 = dmax(x1, p.0)
+        y1 = dmax(y1, p.1)
+      }
+      (x0 - half, y0 - half, x1 + half, y1 + half)
+    }
+  }
+}
+
+/// The dimming of the focus marks (the made ones and the one being drawn): the part picked (else the whole monitor)
+/// darkened but where each is, in the monitor's pixels; None where there are none.
+fn focus_picture() -> Option[pixels::Vector] {
+  let parts : Array[Mark] = []
+  for m in marks.get() {
+    if m.tool == Focus {
+      parts.push(m)
+    }
+  }
+  match draft.get() {
+    Some(d) if d.tool == Focus => parts.push(d)
+    _ => ()
+  }
+  if parts.length() == 0 {
+    return None
+  }
+  let w = mon.v.w.to_double()
+  let h = mon.v.h.to_double()
+  let (ox, oy, ow, oh) = match sel.get() {
+    Some(r) => (r.x.to_double(), r.y.to_double(), r.w.to_double(), r.h.to_double())
+    None => (0.0, 0.0, w, h)
+  }
+  // (the part picked one way round, each focus the other: what is in a focus not dimmed, nonzero)
+  let sb = StringBuilder::new()
+  sb.write_string(rect_path(ox, oy, ow, oh))
+  for m in parts {
+    let (x0, y0) = m.pts[0]
+    let (x1, y1) = m.pts[m.pts.length() - 1]
+    let (x, y) = (dmin(x0, x1), dmin(y0, y1))
+    let (fw, fh) = ((x1 - x0).abs(), (y1 - y0).abs())
+    sb.write_string("M\{num(x)} \{num(y)}v\{num(fh)}h\{num(fw)}v\{num(-fh)}z")
+  }
+  Some(pixels::Vector::{ w, h, layers: [fill_layer(sb.to_string(), 0x0000008CL)] })
+}

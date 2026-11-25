@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md) · [Download](https://pin-shot.pages.dev) · [Releases](https://github.com/motion-space/pinshot/releases/latest)
 
-Fast, PixPin-style screenshot, annotation, pinning, and screen recording for Windows and macOS. Written in MoonBit with still.fail's [mbui](https://github.com/AFK-surf/still.fail): the UI and core logic are written once, backed by a thin native layer in `app/` for Windows and macOS.
+Fast, PixPin-style screenshot, annotation, pinning, and screen recording for Windows and macOS. Written in [Pion](https://github.com/AFK-surf/pion) with [Invar](https://github.com/AFK-surf/invar): the UI and core logic are written once in `src/`, backed by a thin native layer in `native/` for Windows and macOS (zero local framework patches).
 
 ![PinShot](site/public/img/en-markup.jpg)
 
@@ -86,32 +86,30 @@ Settings and logs live in `~/Library/Application Support/PinShot/`. macOS builds
 
 ## How It Works
 
-- **Single resident process**: the frozen-screen overlay is mbui's main window (kept hidden between captures); pins, settings, and the recording HUD are child windows in the same process.
+- **Single resident process**: the frozen-screen overlay is Invar's main window (kept hidden between captures); pins, settings, and the recording HUD are child windows in the same process.
 - **Low-latency capture**: on Windows, each monitor keeps a `Windows.Graphics.Capture` session holding only its latest frame, copied to a staging texture in a few milliseconds on hotkey press. Frames older than 5 s trigger a fresh session; sessions also rebuild on monitor wake, resume, and unlock. HDR monitors capture in FP16 and tone-map by the OS SDR white level on the GPU. GDI `BitBlt` is the automatic fallback (`PINSHOT_CAPTURE=gdi` forces GDI).
-- **GPU-composed export**: annotations are stored in monitor pixels and rendered identically in the overlay and GPU export (`mbui` `take_picture`) at native resolution.
-- **`patches/mbui-pinshot.patch`**: lets mbui build textures directly from raw staging pixels and trims the glyph atlas from 4096² to 1024² (saving ~64 MB VRAM).
+- **GPU-composed export**: annotations are stored in monitor pixels and rendered identically in the overlay and GPU export (`ui::take_picture`) at native resolution.
+- **Upstream Invar host fast-paths**: uses Invar's native raw-pixel (`MBRAWPTR`) texture upload and `mb_render_set_atlas_size(1024)` / `mb_render_set_video_support(0)` (zero local patches).
 
 ## Build from Source
 
 ### Windows
 
-Requires Visual Studio 2022 (C++ Desktop workload), Git for Windows (Git Bash), and [MoonBit](https://www.moonbitlang.com/) (`moon` on `PATH`).
+Requires Visual Studio 2022 (C++ Desktop workload), `clang`/`clang++` (LLVM or llvm-mingw), [Pion](https://github.com/AFK-surf/pion) (`pionc` + `qbe`), and sibling checkouts of [Invar](https://github.com/AFK-surf/invar) (`../invar`) and [pion-packages](https://github.com/AFK-surf/pion-packages) (`../pion-packages`).
 
 ```powershell
-scripts/build.ps1                # out/build/pinshot.exe (warnings are errors; self-installing single file)
+scripts/build.ps1                # out/Release/pinshot.exe (self-installing single file)
+scripts/build.ps1 -Test          # build + run Pion unit tests
 scripts/install.ps1              # installs to %LOCALAPPDATA%\Programs\PinShot and launches it
 packaging/pack-msix.ps1          # Microsoft Store MSIX package
 ```
 
-`scripts/fetch-stillfail.sh` (invoked automatically by the build) fetches still.fail's `apps/mbui` and `libs/mbui` at the commit pinned in `stillfail.lock` into `deps/stillfail` and applies `patches/`.
-
 ### macOS
 
-Requires Xcode Command Line Tools and [MoonBit](https://www.moonbitlang.com/) (`moon` on `PATH`).
+Requires Xcode Command Line Tools and [Pion](https://github.com/AFK-surf/pion) (`pionc`).
 
 ```bash
-bash scripts/build-mac.sh
-open out/build/PinShot.app
+pionc build --release . -o out/Release/PinShot
 ```
 
 The **macOS package** GitHub Actions workflow also builds `PinShot-mac.zip` on demand and on every `v*` tag.

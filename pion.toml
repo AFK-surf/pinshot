@@ -1,0 +1,92 @@
+[package]
+name = "pinshot"
+version = "1.0.31"
+license = "MIT"
+
+[dependencies]
+dmath = { path = "../invar/packages/dmath" }
+host = { path = "../invar/packages/host" }
+hostapi = { path = "../invar/packages/hostapi" }
+motion = { path = "../invar/packages/motion" }
+paint = { path = "../invar/packages/paint" }
+pixels = { path = "../invar/packages/pixels" }
+signals = { path = "../invar/packages/signals" }
+text = { path = "../invar/packages/text" }
+ui = { path = "../invar/packages/ui" }
+view = { path = "../invar/packages/view" }
+json = { path = "../pion-packages/packages/json" }
+
+[link.windows]
+c_sources = [
+  "native/pion_ps_bridge.c",
+  "native/platform_win.c",
+  "native/capture_wgc.cpp",
+  "native/startup_task.cpp",
+  "native/install_win.c",
+  "native/update_win.c",
+  "native/ocr_win.cpp",
+  "native/longshot_win.c",
+  "native/record_win.cpp",
+  "native/record_draw_win.cpp",
+  "native/picture_win.c",
+]
+rc_sources = ["assets/pinshot.rc"]
+cc_flags = ["-O2", "-D_CRT_SECURE_NO_WARNINGS"]
+libs = [
+  "user32",
+  "gdi32",
+  "dwmapi",
+  "shell32",
+  "ole32",
+  "oleaut32",
+  "advapi32",
+  "comctl32",
+  "comdlg32",
+  "shcore",
+  "shlwapi",
+  "winmm",
+  "winhttp",
+  "bcrypt",
+  "crypt32",
+  "d3d11",
+  "dxgi",
+  "windowscodecs",
+  "runtimeobject",
+  "mfplat",
+  "mfreadwrite",
+  "mfuuid",
+  "gdiplus",
+  "delayimp",
+]
+flags = [
+  "-mwindows",
+  "-Wl,/DELAYLOAD:mfplat.dll",
+  "-Wl,/DELAYLOAD:mfreadwrite.dll",
+  "-Wl,/DELAYLOAD:gdiplus.dll",
+  "-Wl,/DELAYLOAD:d3dcompiler_47.dll",
+  "-Wl,/DELAYLOAD:urlmon.dll",
+  "-Wl,/DELAYLOAD:iphlpapi.dll",
+]
+
+[link.macos]
+c_sources = [
+  "native/pion_ps_bridge.c",
+  "native/platform_mac.m",
+  "native/capture_mac.m",
+  "native/ocr_mac.m",
+  "native/longshot_mac.m",
+  "native/record_mac.m",
+  "native/picture_mac.m",
+]
+frameworks = [
+  "Cocoa",
+  "Carbon",
+  "QuartzCore",
+  "ScreenCaptureKit",
+  "CoreMedia",
+  "AVFoundation",
+  "Vision",
+  "ServiceManagement",
+  "UniformTypeIdentifiers",
+]
+flags = ["-fobjc-arc"]
