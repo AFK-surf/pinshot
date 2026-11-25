@@ -100,8 +100,10 @@ typedef struct {
 int ps_wgc_restart(void);
 int ps_wgc_borderless_ok(void);
 int ps_wgc_dd_ok(void);
+int ps_wgc_dd_black(void);
 int ps_wgc_last_used_dd(void);
 int ps_wgc_mon_hdr(HMONITOR mon, float *white);
+void *ps_wgc_take_dd(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch);
 void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch);
 void ps_wgc_release(void *taken);
 void ps_wgc_trim(void);
@@ -429,24 +431,47 @@ static int cap_begin(void) {
   cap_used_helper = 0;
   cap_helper_fail[0] = 0;
   int test_screen = getenv("PINSHOT_TEST") && getenv("PINSHOT_TEST_SCREEN");
-  if (!wgc_off && !keep_gpu_warm && !test_screen && tray_hwnd && !ps_wgc_dd_ok() && ps_wgc_borderless_ok()) {
-    float hdr_white = 1.0f;
-    if (!ps_wgc_mon_hdr(cap_mon, &hdr_white)) return gdi_begin();
-    if (wgc_helper_begin()) return 1;
+  if (!wgc_off && !test_screen && tray_hwnd) {
+    if (ps_wgc_dd_ok()) {
+      uint8_t *bits = NULL;
+      int pitch = 0;
+      void *t = ps_wgc_take_dd(cap_mon, cap_w, cap_h, &bits, &pitch);
+      if (t) {
+        cap.staging = t;
+        cap.bits = bits;
+        cap.w = cap_w, cap.h = cap_h, cap.pitch = pitch;
+        cap_ok = 1;
+        cap_ms = ps_ms() - cap_t0;
+        PostMessageW(tray_hwnd, WM_PS_TAKEN, 1, 0);
+        return 1;
+      }
+      // DXGI did not produce a usable frame (timeout, pointer-only storm, or all-black guard):
+      // fall back to the out-of-process WGC helper so HDR stays accurate with 0 MB in-process WGC VRAM leak.
+      if (ps_wgc_borderless_ok()) {
+        float hdr_white = 1.0f;
+        if (!keep_gpu_warm && !ps_wgc_mon_hdr(cap_mon, &hdr_white)) return gdi_begin();
+        if (wgc_helper_begin()) return 1;
+      }
+      return gdi_begin();
+    }
+    if (!keep_gpu_warm && ps_wgc_borderless_ok()) {
+      float hdr_white = 1.0f;
+      if (!ps_wgc_mon_hdr(cap_mon, &hdr_white)) return gdi_begin();
+      if (wgc_helper_begin()) return 1;
+    }
+    uint8_t *bits = NULL;
+    int pitch = 0;
+    void *t = ps_wgc_take_now(cap_mon, cap_w, cap_h, &bits, &pitch);
+    if (t) {
+      cap.staging = t;
+      cap.bits = bits;
+      cap.w = cap_w, cap.h = cap_h, cap.pitch = pitch;
+      cap_ok = 1;
+      cap_ms = ps_ms() - cap_t0;
+      PostMessageW(tray_hwnd, WM_PS_TAKEN, 1, 0);
+      return 1;
+    }
   }
-  uint8_t *bits = NULL;
-  int pitch = 0;
-  void *t = wgc_off || test_screen ? NULL : ps_wgc_take_now(cap_mon, cap_w, cap_h, &bits, &pitch);
-  if (t && tray_hwnd) {
-    cap.staging = t;
-    cap.bits = bits;
-    cap.w = cap_w, cap.h = cap_h, cap.pitch = pitch;
-    cap_ok = 1;
-    cap_ms = ps_ms() - cap_t0;
-    PostMessageW(tray_hwnd, WM_PS_TAKEN, 1, 0);
-    return 1;
-  }
-  if (t) ps_wgc_release(t);
   return gdi_begin();
 }
 
@@ -500,17 +525,18 @@ void ps_wgc_timing(double *out);
 void ps_wgc_state(char *out, int n);
 moonbit_bytes_t ps_capture_info(void) {
   if (!cap.bits || cap_busy) return moonbit_make_bytes(0, 0);
-  char s[320], lag[48] = {0};
+  char s[320], lag[48] = {0}, blk[32] = {0};
   if (cap_key_lag >= 10.0) snprintf(lag, sizeof lag, "; key lag %.0f ms", cap_key_lag);
+  if (ps_wgc_dd_black() > 0 && !ps_wgc_last_used_dd()) snprintf(blk, sizeof blk, "; dxgi black %d", ps_wgc_dd_black());
   if (cap_used_helper) {
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc helper %.1f; hdr white %.2f%s%s", cap_x, cap_y, cap_w, cap_h, cap_dpi,
-             cap_ms, helper_ms, helper_white, helper_said_half > 0 ? " (copied first)" : "", lag);
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,wgc helper %.1f; hdr white %.2f%s%s%s", cap_x, cap_y, cap_w, cap_h, cap_dpi,
+             cap_ms, helper_ms, helper_white, helper_said_half > 0 ? " (copied first)" : "", blk, lag);
   } else if (cap.staging) {
     double t[5];
     ps_wgc_timing(t);
-    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,%s copy %.1f; hdr white %.2f%s; frame %.1f s old%s%s", cap_x, cap_y, cap_w,
+    snprintf(s, sizeof s, "%d,%d,%d,%d,%d,%.2f,%s copy %.1f; hdr white %.2f%s; frame %.1f s old%s%s%s", cap_x, cap_y, cap_w,
              cap_h, cap_dpi, cap_ms, ps_wgc_last_used_dd() ? "dxgi" : "wgc", t[0], t[1],
-             t[2] > 0 ? " (copied first)" : "", t[3], t[4] > 0 ? " (session made again)" : "", lag);
+             t[2] > 0 ? " (copied first)" : "", t[3], t[4] > 0 ? " (session made again)" : "", blk, lag);
   } else {
     char st[96];
     ps_wgc_state(st, sizeof st);
