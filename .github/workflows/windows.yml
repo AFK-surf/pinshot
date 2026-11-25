@@ -1,0 +1,97 @@
+name: Windows package
+# pinshot.exe (the single self-installing executable): built with scripts/build.ps1 by a pionc bootstrapped from the
+# same pion commit the macOS package workflow uses, kept as the run's artifact. The release workflow calls it for a tag.
+on:
+  workflow_dispatch:
+  workflow_call:
+  # (a change to what the Windows build is made of, built before it is merged)
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'native/**'
+      - 'assets/**'
+      - 'pion.toml'
+      - 'scripts/build.ps1'
+      - '.github/workflows/windows.yml'
+permissions:
+  contents: read
+jobs:
+  package:
+    # (Visual Studio 2022's headers and libraries, as the releases made by hand were built with)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout PinShot
+        uses: actions/checkout@v4
+        with:
+          path: pinshot
+
+      # (the three pins are macos.yml's: one compiler and one Invar for both platforms)
+      - name: Checkout invar
+        uses: actions/checkout@v4
+        with:
+          repository: AFK-surf/invar
+          ref: b7bc367279840d3ecba8fb461a901c62deea5da3
+          path: invar
+
+      - name: Checkout pion-packages
+        uses: actions/checkout@v4
+        with:
+          repository: AFK-surf/pion-packages
+          ref: 8014f92596624ab01af599b03851c7d3ad1f9701
+          path: pion-packages
+
+      - name: Checkout pion
+        uses: actions/checkout@v4
+        with:
+          repository: AFK-surf/pion
+          ref: 8c1e46d10d254853366f406926347c39f5365e4d
+          path: pion
+
+      - name: Cache pion toolchain
+        id: pion-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            pion/out/pionc_release.exe
+            pion/out/qbe.exe
+          key: pion-windows-x86_64-8c1e46d10d254853366f406926347c39f5365e4d
+
+      - name: Set up MSYS2 (pionc's bootstrap)
+        if: steps.pion-cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
+            gzip
+            diffutils
+
+      - name: Bootstrap pionc
+        if: steps.pion-cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        run: sh pion/scripts/build-release.sh
+
+      # (WebView2's header and static loader, which Invar's Windows host is built with)
+      - name: Fetch the WebView2 SDK
+        shell: bash
+        run: sh invar/packages/host/tools/fetch-webview2.sh
+
+      # (the runtime, runtime/pion_rt.c, is compiled for MSVC's ABI by pionc itself from the pion checkout beside it)
+      - name: Build pinshot.exe
+        shell: pwsh
+        env:
+          PIONC: ${{ github.workspace }}\pion\out\pionc_release.exe
+          PION_QBE: ${{ github.workspace }}\pion\out\qbe.exe
+        run: |
+          .\pinshot\scripts\build.ps1
+          $exe = Get-Item pinshot\out\Release\pinshot.exe
+          "pinshot.exe: $($exe.Length) bytes, sha256 $((Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower())"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PinShot-windows
+          path: pinshot/out/Release/pinshot.exe
+          if-no-files-found: error
