@@ -68,31 +68,67 @@ test "floating popups: longshot panel (including detached jump pill inside clipp
   t.dispose()
 }
 
-test "overlay: discard confirm pill wraps content width instead of full screen" {
+test "overlay: discard confirm pill wraps content width and anchors to cursor (right) or selection center (esc)" {
   mon.v = Rect::{ x: 0, y: 0, w: 3840, h: 2160 }
   mon_work.v = Rect::{ x: 0, y: 0, w: 3840, h: 2160 }
   mon_scale.set(2.0)
   sel.set(Some(Rect::{ x: 200, y: 200, w: 2164, h: 1540 }))
-  overlay_confirm_discard.set("right")
-  let t = ui::Tester::tree(overlay_window, width=1920.0, height=1080.0, scale=2.0)
+  overlay_confirm_discard.set("")
+  overlay_discard_at.set(None)
+  let t = ui::Tester::tree(overlay_window, width=1920.0, height=1080.0, scale=2.0, transitions_only=false)
   t.frame(ms=16.0)
-  let (pw, ph) = match overlay_discard_pill.v {
-    Some(dc) => dc.laid_size()
-    None => (0.0, 0.0)
+  overlay_arm_discard("right", at=Some((900.0, 520.0)))
+  t.run_shown(250.0)
+  let (rx, ry, pw, ph) = match overlay_discard_pill.v {
+    Some(dc) => dc.laid_window_now()
+    None => (0.0, 0.0, 0.0, 0.0)
   }
-  if pw <= 40.0 || pw >= 360.0 || (ph - 28.0).abs() > 0.5 {
-    panic("overlay discard pill size unexpected: \{pw}x\{ph}")
+  if pw <= 80.0 || pw >= 380.0 || (ph - 34.0).abs() > 0.5 {
+    panic("overlay right discard pill size unexpected: \{pw}x\{ph}")
   }
-  overlay_confirm_discard.set("esc")
+  if ((rx + pw * 0.5) - 900.0).abs() > 2.0 || (ry - (520.0 - 34.0 - 14.0)).abs() > 2.0 {
+    panic("overlay right discard pill not anchored above cursor: (\{rx}, \{ry}) size=\{pw}x\{ph}")
+  }
+  let right_alpha = match overlay_discard_pill.v {
+    Some(dc) => dc.tree.nodes[dc.at].look.alpha
+    None => -1.0
+  }
+  if right_alpha < 0.99 {
+    panic("overlay right discard pill alpha stuck at \{right_alpha}")
+  }
+  overlay_discard_at.set(Some((12.0, 12.0)))
   t.frame(ms=16.0)
-  let (ew, eh) = match overlay_discard_pill.v {
-    Some(dc) => dc.laid_size()
-    None => (0.0, 0.0)
+  let (cx0, cy0, _, _) = match overlay_discard_pill.v {
+    Some(dc) => dc.laid_window_now()
+    None => (0.0, 0.0, 0.0, 0.0)
   }
-  if ew <= 40.0 || ew >= 360.0 || (eh - 28.0).abs() > 0.5 {
+  if cx0 < 7.5 || cy0 < 28.0 {
+    panic("overlay top-edge right discard pill did not flip/clamp: (\{cx0}, \{cy0})")
+  }
+  overlay_disarm_discard()
+  t.frame(ms=16.0)
+  overlay_arm_discard("esc")
+  t.run_shown(250.0)
+  let (ex, ey, ew, eh) = match overlay_discard_pill.v {
+    Some(dc) => dc.laid_window_now()
+    None => (0.0, 0.0, 0.0, 0.0)
+  }
+  if ew <= 80.0 || ew >= 380.0 || (eh - 34.0).abs() > 0.5 {
     panic("overlay esc discard pill size unexpected: \{ew}x\{eh}")
   }
-  overlay_confirm_discard.set("")
+  let want_cx = (200.0 + 2164.0 * 0.5) / 2.0
+  let want_cy = (200.0 + 1540.0 * 0.5) / 2.0
+  if ((ex + ew * 0.5) - want_cx).abs() > 2.0 || ((ey + eh * 0.5) - want_cy).abs() > 2.0 {
+    panic("overlay esc discard pill not centered in selection: (\{ex}, \{ey}) size=\{ew}x\{eh} want_center=(\{want_cx}, \{want_cy})")
+  }
+  let esc_alpha = match overlay_discard_pill.v {
+    Some(dc) => dc.tree.nodes[dc.at].look.alpha
+    None => -1.0
+  }
+  if esc_alpha < 0.99 {
+    panic("overlay esc discard pill alpha stuck at \{esc_alpha}")
+  }
+  overlay_disarm_discard()
   sel.set(None)
   overlay_root.v = None
   overlay_discard_pill.v = None

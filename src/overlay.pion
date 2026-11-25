@@ -266,6 +266,17 @@ let warming : signals::Ref[Bool] = signals::ref_new(false)
 
 let overlay_confirm_discard : signals::Signal[String] = signals::signal("")
 
+let overlay_discard_at : signals::Signal[Option[(Double, Double)]] = signals::signal_by(
+  None,
+  fn(a, b) {
+    match (a, b) {
+      (None, None) => true
+      (Some((ax, ay)), Some((bx, by))) => ax == bx && ay == by
+      _ => false
+    }
+  },
+)
+
 let overlay_discard_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
 let overlay_discard_pill : signals::Ref[Option[view::View]] = signals::ref_new(None)
@@ -276,10 +287,16 @@ fn overlay_disarm_discard() -> Unit {
   if overlay_confirm_discard.untracked() != "" {
     overlay_confirm_discard.set("")
   }
+  if overlay_discard_at.untracked().is_some() {
+    overlay_discard_at.set(None)
+  }
 }
 
-fn overlay_arm_discard(why : String) -> Unit {
+fn overlay_arm_discard(why : String, at~ : Option[(Double, Double)] = None) -> Unit {
+  signals::start_batch()
+  overlay_discard_at.set(at)
   overlay_confirm_discard.set(why)
+  signals::end_batch()
   (overlay_discard_cancel.v)()
   match overlay_root.v {
     Some(root) =>
@@ -287,7 +304,10 @@ fn overlay_arm_discard(why : String) -> Unit {
         root.cause_at() + 3000.0,
         fn() {
           overlay_discard_cancel.v = fn() {  }
+          signals::start_batch()
           overlay_confirm_discard.set("")
+          overlay_discard_at.set(None)
+          signals::end_batch()
         },
         later=true,
       )
@@ -348,7 +368,7 @@ fn overlay_window(root : view::View) -> Unit {
       }
     })
     .on_drag(fn(d) { stage_drag(d) })
-    .on_menu(fn(_) { step_back() })
+    .on_menu(fn(m) { step_back(at=Some((m.x, m.y))) })
     let _ = stage.box(fn(p) {
       let _ = p
       .over(view::Live::Is(true))
@@ -501,15 +521,27 @@ fn size_label(stage : view::View) -> Unit {
     let _ = dw.box(fn(dc) {
       overlay_discard_pill.v = Some(dc)
       let _ = dc.owns(fn() { overlay_discard_pill.v = None })
+      let pill_h = 34.0
+      let discard_in = motion::NodeWay::new(if signals::untracked(fn() { overlay_confirm_discard.get() != "" }) { 1.0 } else { 0.0 })
+      dc.reacts(fn() { overlay_confirm_discard.get() != "" }, at_start=false, fn(on) {
+        if on {
+          discard_in.go_from(dc, 0.0, 1.0, motion::tween(120.0, ease=ui::Ease::Out))
+        } else {
+          discard_in.put(0.0)
+        }
+      })
       let _ = dc
       .presses(view::Live::Is(false))
       .row(view::Live::Is(true))
-      .height(view::Live::Is(Some(28.0)))
-      .padding(view::Live::Is((11.0, 0.0, 11.0, 0.0)))
-      .radius(view::Live::Is(8.0))
-      .ground(view::Live::Is(0x3B1518F5L))
-      .edge(view::Live::Is((1.0, 0xF87171AAL)))
-      .shadow(view::Live::Is((10.0, 3.0, 0x00000070L)))
+      .gap(view::Live::Is(7.0))
+      .height(view::Live::Is(Some(pill_h)))
+      .padding(view::Live::Is((11.0, 0.0, 14.0, 0.0)))
+      .radius(view::Live::Is(10.0))
+      .ground(view::Live::Is(0x991B1BF5L))
+      .edge(view::Live::Is((1.0, 0xFECACA8CL)))
+      .shadow(view::Live::Is((22.0, 8.0, 0x00000088L)))
+      .alpha(view::Live::By(fn() { discard_in.shown(dc) }))
+      .drawn_off(view::Live::By(fn() { (0.0, 4.0 * (1.0 - discard_in.shown(dc))) }))
       .lines_up(view::Live::Is(Some(view::Along::Middle)))
       .laid_nowhere(view::Live::By(fn() { overlay_confirm_discard.get() == "" }))
       .offset(view::Live::By(fn() {
@@ -517,23 +549,56 @@ fn size_label(stage : view::View) -> Unit {
         let (wx0, wy0, wx1, wy1) = work_pt()
         let w = match dc.laid_size_told() {
           Some((pw, _)) if pw > 0.0 => pw
-          _ => 180.0
+          _ => 200.0
         }
-        match shown_whole(dc) {
-          Some(r) => {
-            let cx = (r.x.to_double() + r.w.to_double() * 0.5) / k
-            let x = clamp(cx - w * 0.5, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - w - 8.0))
-            let ry = r.y.to_double() / k
-            let y = if ry >= wy0 + 40.0 {
-              ry - 36.0
-            } else {
-              clamp(ry + 12.0, wy0 + 12.0, dmax(wy0 + 12.0, wy1 - 40.0))
+        let why = overlay_confirm_discard.get()
+        if why == "right" {
+          let (ax, ay) = match overlay_discard_at.get() {
+            Some(p) => p
+            None => {
+              let (px, py) = pointer_px.untracked()
+              (px / k, py / k)
             }
-            (x, y)
           }
-          None => (clamp((wx0 + wx1 - w) * 0.5, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - w - 8.0)), wy0 + 24.0)
+          let x = clamp(ax - w * 0.5, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - w - 8.0))
+          let above = ay - pill_h - 14.0
+          let y = if above >= wy0 + 8.0 {
+            above
+          } else {
+            clamp(ay + 18.0, wy0 + 8.0, dmax(wy0 + 8.0, wy1 - pill_h - 8.0))
+          }
+          (x, y)
+        } else {
+          match shown_whole(dc) {
+            Some(r) => {
+              let cx = (r.x.to_double() + r.w.to_double() * 0.5) / k
+              let cy = (r.y.to_double() + r.h.to_double() * 0.5) / k
+              let x = clamp(cx - w * 0.5, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - w - 8.0))
+              let y = clamp(cy - pill_h * 0.5, wy0 + 8.0, dmax(wy0 + 8.0, wy1 - pill_h - 8.0))
+              (x, y)
+            }
+            None =>
+              (
+                clamp((wx0 + wx1 - w) * 0.5, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - w - 8.0)),
+                clamp((wy0 + wy1 - pill_h) * 0.5, wy0 + 8.0, dmax(wy0 + 8.0, wy1 - pill_h - 8.0)),
+              )
+          }
         }
       }))
+      let _ = dc.box(fn(ic) {
+        let _ = ic
+        .width(view::Live::Is(Some(16.0)))
+        .height(view::Live::Is(Some(16.0)))
+        .picture(view::Live::Is(Some(pixels::Vector::{
+          w: 16.0,
+          h: 16.0,
+          layers: [
+            stroke_layer("M8 2.2 14.2 13H1.8L8 2.2Z", 0xFECACAFFL, 1.5),
+            stroke_layer("M8 6.1v3.2", 0xFFF5F5FFL, 1.6),
+            fill_layer(circle_path(8.0, 11.2, 0.9), 0xFFF5F5FFL),
+          ],
+        })))
+      })
       let _ = dc.box(fn(t) {
         let _ = t
         .words(view::Live::By(fn() {
@@ -542,8 +607,8 @@ fn size_label(stage : view::View) -> Unit {
           } else {
             tr("再按一次 Esc 放弃标注")
           }
-        }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-        .ink(view::Live::Is(0xFECACAFFL))
+        }), look=view::WordsLook::{ ..view::words_plain, size: 13.0, weight: 600, line: 18.0, wrap: false })
+        .ink(view::Live::Is(0xFFF5F5FFL))
       })
     })
   })
@@ -891,7 +956,7 @@ fn press_up(x : Double, y : Double) -> Unit {
   hand.set(Free)
 }
 
-fn step_back() -> Unit {
+fn step_back(at~ : Option[(Double, Double)] = None) -> Unit {
   if words_open.untracked().is_some() {
     overlay_disarm_discard()
     words_open.set(None)
@@ -903,7 +968,7 @@ fn step_back() -> Unit {
     selected.set(None)
   } else if sel.untracked().is_some() {
     if marks.untracked().length() > 0 && overlay_confirm_discard.untracked() != "right" {
-      overlay_arm_discard("right")
+      overlay_arm_discard("right", at=at)
       return
     }
     overlay_disarm_discard()
