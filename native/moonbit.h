@@ -1,5 +1,3 @@
-// Drop-in MoonBit C ABI compatibility shim for Pion native hosts.
-// Lets upstream libs/mbui/src/host/{apple_*.m,mac_app.m,*.h} compile and link with zero modifications.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -25,7 +23,6 @@ double *pion_mb_make_double_array(int32_t len);
 void moonbit_incref(void *p);
 void moonbit_decref(void *p);
 
-// UTF-8 <-> moonbit_string_t (UTF-16) and raw bytes <-> moonbit_bytes_t helpers
 moonbit_string_t pion_mb_str_from_utf8(const char *utf8, int64_t byte_len);
 moonbit_bytes_t pion_mb_bytes_from_raw(const uint8_t *data, int64_t len);
 

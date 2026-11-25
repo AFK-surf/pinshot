@@ -1,8 +1,3 @@
-// Pictures made over by Windows' own codecs (WIC) rather than in MoonBit: a JPEG written of a PNG, a pin's picture
-// turned and flipped. WIC's decoders, its flip-rotator and encoders are native and run in a few tens of milliseconds
-// where the same in MoonBit's pixel loops took seconds and hundreds of MB for a 4K picture (2026-11-21's audit).
-// Only PNGs and JPEGs are taken here (what captures and pins are); anything else, or anything that fails, answers
-// empty and the app does it its own way (pin.mbt, export.mbt), as a Mac's run does (platform_mac.m answers empty).
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
 #include <windows.h>
@@ -59,8 +54,6 @@ static int decoded(const uint8_t *b, size_t n, Decoded *d) {
          SUCCEEDED(IWICBitmapDecoder_GetFrame(d->dec, 0, &d->frame));
 }
 
-// `src` (of `f`) encoded as `container` (PNG, or JPEG of quality q: 4:4:4, as the app's own encoder writes it) into
-// bytes; empty where it failed.
 static moonbit_bytes_t encoded(IWICImagingFactory *f, IWICBitmapSource *src, const GUID *container, int q) {
   moonbit_bytes_t out = pic_none();
   IStream *st = NULL;
@@ -111,7 +104,6 @@ static moonbit_bytes_t encoded(IWICImagingFactory *f, IWICBitmapSource *src, con
   return out;
 }
 
-// `src` converted to `fmt` (a converter of WIC's; NULL where it could not be).
 static IWICBitmapSource *converted(IWICImagingFactory *f, IWICBitmapSource *src, REFWICPixelFormatGUID fmt) {
   IWICFormatConverter *c = NULL;
   if (FAILED(IWICImagingFactory_CreateFormatConverter(f, &c))) return NULL;
@@ -122,8 +114,6 @@ static IWICBitmapSource *converted(IWICImagingFactory *f, IWICBitmapSource *src,
   return (IWICBitmapSource *)c;
 }
 
-// A picture (PNG or JPEG) as a JPEG of quality `quality` (its alpha not kept, as the app's own encoder does); empty
-// where it is neither, or it failed.
 moonbit_bytes_t ps_picture_jpeg(moonbit_bytes_t pic, int32_t quality) {
   Decoded d;
   moonbit_bytes_t out = pic_none();
@@ -138,9 +128,6 @@ moonbit_bytes_t ps_picture_jpeg(moonbit_bytes_t pic, int32_t quality) {
   return out;
 }
 
-// A picture (PNG or JPEG) mirrored left to right first (`flipped`), then turned `turns` quarters clockwise, as the pin
-// shows it: `shown` 1, a top-down 32-bit BMP where it is opaque (mbui's host makes its texture as it is), else a PNG;
-// `shown` 0, a PNG (what is copied and saved). Empty where it is neither PNG nor JPEG, or it failed.
 moonbit_bytes_t ps_picture_oriented(moonbit_bytes_t pic, int32_t turns, int32_t flipped, int32_t shown) {
   Decoded d;
   moonbit_bytes_t out = pic_none();
@@ -148,8 +135,6 @@ moonbit_bytes_t ps_picture_oriented(moonbit_bytes_t pic, int32_t turns, int32_t 
   IWICBitmapSource *bgra = NULL;
   uint8_t *px = NULL;
   if (!decoded((const uint8_t *)pic, (size_t)Moonbit_array_length(pic), &d)) goto done;
-  // (WIC's flip-rotator mirrors first, then turns: as the pin does; checked pixel for pixel against mirror-then-turn,
-  // each of the four turns)
   turns = ((turns % 4) + 4) % 4;
   int wic_turns = turns;
   static const WICBitmapTransformOptions rots[4] = {WICBitmapTransformRotate0, WICBitmapTransformRotate90,

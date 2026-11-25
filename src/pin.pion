@@ -1,11 +1,3 @@
-// Pins: a picture kept over the other windows (a part just captured, where it was; or the clipboard's picture), each a
-// window of this run beside the overlay (mbui's window_open_here: the same program, no start of its own), with no
-// frame, at its picture's own pixels. Dragged anywhere to move it; dragged by an edge (8 points of it) to stretch it
-// that way alone, by a corner to make it bigger or smaller as it is (Shift: freely), the opposite side staying where it
-// was; the wheel zooms it about the pointer; Ctrl and the wheel make it fainter or clearer; Esc closes
-// it; its right click is its menu (copy, save, over the others or not, turned a quarter either way, flipped either way,
-// at its own pixels' size, put back as it was pinned, how clear, close).
-
 import "hostapi"
 import "pixels"
 import "signals"
@@ -14,37 +6,25 @@ import "view"
 
 struct Pin {
   wid : signals::Ref[Int]
-  /// the picture as it was pinned, the one kept (its pixels made turned only to be shown, copied or saved: the
-  /// review, #1), and its size
   png : Bytes
   first_w : Int
   first_h : Int
-  /// how it is turned from that: mirrored left to right first (`flipped`), then `turns` quarters clockwise; both
-  /// folded together as they are done, so a flip done twice or four turns are as it was pinned
   mut turns : Int
   mut flipped : Bool
-  /// what is shown: the key of the picture as pinned, or of one made turned (the only other one kept, let go as it is
-  /// as pinned again), and its size as turned
   key : signals::Signal[String]
   key_first : String
   mut w : Int
   mut h : Int
-  /// how big it is drawn across and down, to its picture's pixels (each 0.1 to 8; apart, it is stretched)
   zx : signals::Signal[Double]
   zy : signals::Signal[Double]
   alpha : signals::Signal[Int]
   top : signals::Signal[Bool]
-  /// when its zoom last changed (its label shown a moment)
   zoomed_at : signals::Signal[Double]
-  /// whether it is the window in front (its frame the accent's), and since when, while it flashes as it is taken
   active : signals::Signal[Bool]
   active_at : signals::Signal[Double]
   flash : signals::Signal[Double]
-  /// which of its edges the pointer is by (pin_edge: 1 left, 2 right, 4 top, 8 bottom; 0 inside): the cursor's
   edge : signals::Signal[Int]
-  /// a drag by an edge under way: none, or where it went down
   sizing : signals::Ref[Option[PinSizing]]
-  /// Live Text (in-place OCR selection on the pin image; zero idle cost while ocr_on is false)
   ocr_on : signals::Signal[Bool]
   ocr : signals::Signal[PinOcr]
   ocr_sel : signals::Signal[Option[(Int, Int)]]
@@ -63,8 +43,6 @@ struct Pin {
   ocr_clicks : signals::Ref[Int]
 }
 
-/// A pin being sized by an edge or a corner: which (pin_edge's bits), its window as the press went down (x, y, w, h,
-/// the screen's pixels), its zoom across and down then, and the pointer then.
 struct PinSizing {
   edge : Int
   x : Double
@@ -77,15 +55,12 @@ struct PinSizing {
   py : Double
 }
 
-/// The pins by what each window was opened for ("pin:N").
 let pins : Map[String, Pin] = Map::new()
 
 let pin_n : signals::Ref[Int] = signals::ref_new(0)
 
-/// Whether the pins are out of sight (the shortcut that hides and shows them all).
 let pins_hidden : signals::Ref[Bool] = signals::ref_new(false)
 
-/// A pin of `png` (w by h pixels) opened at x, y on the screen, at `zoom` (a long screenshot's: brought down to fit).
 fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.0, start_ocr~ : Bool = false) -> Unit {
   pin_n.v += 1
   let what = "pin:\{pin_n.v}"
@@ -167,9 +142,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.
   log("pin \{w}x\{h} opened (\{pins.length()} open)")
 }
 
-/// The clipboard's picture pinned by the pointer (none there: nothing).
 fn pin_clipboard() -> Unit {
-  // (a test run: the clipboard as if it held none, the person's left alone)
   let b = if ui::env("PINSHOT_TEST_NO_CLIP") != "" {
     bytes_from_arr([])
   } else if ui::env("PINSHOT_TEST_PIN_FILE") != "" {
@@ -202,7 +175,6 @@ fn close_pin(wid : Int) -> Unit {
   close_window(wid)
 }
 
-/// A pin's window gone (closed here or by the system): what it held let go.
 fn pin_gone(wid : Int) -> Unit {
   guard pin_of_wid(wid) is Some((what, p)) else { return }
   pin_ocr_clear_pending(p)
@@ -215,7 +187,6 @@ fn pin_gone(wid : Int) -> Unit {
   trim_soon()
 }
 
-/// Every pin over the others and in front now; or, where they are out of sight, shown again; the shortcut's.
 fn pins_to_front() -> Unit {
   for what in pins.keys() {
     match pins.get(what) {
@@ -229,7 +200,6 @@ fn pins_to_front() -> Unit {
   pins_hidden.v = false
 }
 
-/// The shortcut that hides the pins and shows them again.
 fn pins_toggle() -> Unit {
   if pins.length() == 0 {
     return
@@ -254,8 +224,6 @@ fn ps_place_show(wid : Int) -> Unit {
   }
 }
 
-/// The pin at `zx` by `zy` of its picture's pixels (each 0.1 to 8), about the pointer where it is over it, else its
-/// middle.
 fn zoom_pin(p : Pin, zx : Double, zy : Double) -> Unit {
   let zx = clamp(zx, 0.1, 8.0)
   let zy = clamp(zy, 0.1, 8.0)
@@ -274,18 +242,15 @@ fn zoom_pin(p : Pin, zx : Double, zy : Double) -> Unit {
   }
   let nx = ax - (ax - x) * nw / w
   let ny = ay - (ay - y) * nh / h
-  // (one change, not three: what reads them worked out once)
   signals::start_batch()
   p.zx.set(zx)
   p.zy.set(zy)
   p.zoomed_at.set(now_of(p))
   signals::end_batch()
   ps_place(p.wid.v, nx.round().to_int(), ny.round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
-  // (the pointer's shape as what is under it now is: it moved nothing itself)
   p.edge.set(pin_edge(p))
 }
 
-/// The pin zoomed by `k` as it is (a wheel's notch), neither side past 0.1 or 8.
 fn scale_pin(p : Pin, k : Double) -> Unit {
   let (zx, zy) = (p.zx.untracked(), p.zy.untracked())
   let k = clamp(k, dmax(0.1 / zx, 0.1 / zy), dmin(8.0 / zx, 8.0 / zy))
@@ -293,10 +258,6 @@ fn scale_pin(p : Pin, k : Double) -> Unit {
   zoom_pin(p, r(zx), r(zy))
 }
 
-/// The pin turned to `turns` quarters clockwise, mirrored first where `flipped`, at `zx` by `zy`, kept about its
-/// middle: what turning, flipping and putting it back do. As pinned, it shows the picture as pinned and lets go of the
-/// one made turned; turned, a picture made so from the one pinned (its pixels as a top-down 32-bit BMP where it is
-/// opaque, which mbui's Windows host makes a texture of as it is, patches/mbui-pinshot.patch; else a PNG).
 fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) -> Unit {
   let r = numbers_of(text_of(ps_window_rect(p.wid.v)))
   if r.length() < 4 {
@@ -305,13 +266,11 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   let turns = turns % 4
   let old = p.key.untracked()
   let key = if turns == 0 && !flipped {
-    // (the picture as pinned handed over again: let go of while the pin showed another)
     if old != p.key_first {
       ui::add_image(p.key_first, p.png)
     }
     p.key_first
   } else {
-    // (turned by the system's codecs where it can, platform_win's ps_picture_oriented; else here)
     let native = ps_picture_oriented(p.png, turns, if flipped { 1 } else { 0 }, 1)
     let shown = if native.length() > 0 {
       native
@@ -334,7 +293,6 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   p.w = if odd { p.first_h } else { p.first_w }
   p.h = if odd { p.first_w } else { p.first_h }
   p.key.set(key)
-  // (only the picture shown kept: the one as pinned too, while turned, was a second texture and its bytes for nothing)
   if old != key {
     ui::forget_image(old)
   }
@@ -343,14 +301,12 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   let zy = clamp(zy, 0.1, 8.0)
   let nw = dmax(16.0, (p.w.to_double() * zx).round())
   let nh = dmax(16.0, (p.h.to_double() * zy).round())
-  // (one change, not three: what reads them worked out once)
   signals::start_batch()
   p.zx.set(zx)
   p.zy.set(zy)
   p.zoomed_at.set(now_of(p))
   signals::end_batch()
   ps_place(p.wid.v, (cx - nw / 2.0).round().to_int(), (cy - nh / 2.0).round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
-  // (rotated or flipped: previous Live Text boxes no longer match the shown pixels; re-read if Live Text is active)
   pin_ocr_clear_pending(p)
   p.ocr_selecting.v = false
   signals::start_batch()
@@ -364,22 +320,17 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   p.edge.set(pin_edge(p))
 }
 
-/// For the keys of turned pictures.
 let pin_key_n : signals::Ref[Int] = signals::ref_new(0)
 
-/// The pin turned a quarter clockwise (`cw`) or the other way: its sides and zooms swapped.
 fn turn_pin(p : Pin, cw : Bool) -> Unit {
   orient_pin(p, p.turns + (if cw { 1 } else { 3 }), p.flipped, p.zy.untracked(), p.zx.untracked())
 }
 
-/// The pin flipped left to right (`across`) or top to bottom, as it shows now, its size kept. (A mirror after `t`
-/// turns is the mirror first and `-t` turns; top to bottom, a mirror and two turns more.)
 fn flip_pin(p : Pin, across : Bool) -> Unit {
   let t = (if across { 4 } else { 6 }) - p.turns
   orient_pin(p, t, !p.flipped, p.zx.untracked(), p.zy.untracked())
 }
 
-/// The pin put back as it was pinned: neither turned nor flipped, its own pixels' size, not stretched.
 fn reset_pin(p : Pin) -> Unit {
   if p.turns == 0 && !p.flipped {
     zoom_pin(p, 1.0, 1.0)
@@ -388,13 +339,10 @@ fn reset_pin(p : Pin) -> Unit {
   }
 }
 
-/// Whether the pin is as it was pinned.
 fn pin_as_pinned(p : Pin) -> Bool {
   p.turns == 0 && !p.flipped && p.zx.untracked() == 1.0 && p.zy.untracked() == 1.0
 }
 
-/// The picture as it shows (turned or flipped), as a file's bytes: what is copied and saved. As pinned, the picture
-/// pinned itself.
 fn shown_picture(p : Pin) -> Bytes {
   if p.turns == 0 && !p.flipped {
     return p.png
@@ -408,8 +356,6 @@ fn shown_picture(p : Pin) -> Bytes {
   pixels::png(tw, th, pixels::bytes_to_fixed(out))
 }
 
-/// RGBA pixels `w` by `h` mirrored left to right first (`flipped`), then turned `turns` quarters clockwise: their size
-/// then, and they.
 fn oriented(
   w : Int,
   h : Int,
@@ -439,8 +385,6 @@ fn oriented(
   (tw, th, bytes_from_arr(out))
 }
 
-/// RGBA pixels as the bytes a pin shows them by: on Windows a top-down 32-bit BMP where every pixel is opaque (mbui's
-/// host there makes a texture of its pixels as they are: no encoding, no WIC), else a PNG (its alpha kept).
 fn shown_bytes(w : Int, h : Int, px : Bytes) -> Bytes {
   let n = w * h
   let mut solid = true
@@ -450,7 +394,6 @@ fn shown_bytes(w : Int, h : Int, px : Bytes) -> Bytes {
       break
     }
   }
-  // (the BMP's way only on Windows, whose host the patch is to: elsewhere a PNG)
   if !solid || hostapi::platform() != 3 {
     return pixels::png(w, h, pixels::bytes_to_fixed(px))
   }
@@ -483,7 +426,6 @@ fn shown_bytes(w : Int, h : Int, px : Bytes) -> Bytes {
   bytes_from_arr(b)
 }
 
-/// A picture's pixels (RGBA, a row after another), as a pin has it: a PNG, a JPEG or a BMP (the clipboard's bitmap).
 fn picture_rgba(b : Bytes) -> Option[(Int, Int, Bytes)] {
   match pixels::decode_png(b) {
     Some((w, h, px)) => Some((w, h, bytes_from_fixed(px)))
@@ -495,9 +437,6 @@ fn picture_rgba(b : Bytes) -> Option[(Int, Int, Bytes)] {
   }
 }
 
-/// A BMP's pixels (32 or 24 bits a pixel, uncompressed, or 32 of BGRA's own bit fields as Windows' clipboard writes
-/// it; its rows from the foot up, or from the top where its height is below 0): RGBA. (mbui's `@pixels` reads no BMP;
-/// it belongs there once it does.)
 fn bmp_rgba(b : Bytes) -> Option[(Int, Int, Bytes)] {
   let n = b.length()
   let u8 = fn(i : Int) -> Int { if i >= 0 && i < n { b[i].to_int() } else { 0 } }
@@ -514,8 +453,6 @@ fn bmp_rgba(b : Bytes) -> Option[(Int, Int, Bytes)] {
   if w <= 0 || h <= 0 || (bpp != 32 && bpp != 24) || (comp != 0 && comp != 3) || (comp == 3 && bpp != 32) {
     return None
   }
-  // (bit fields: read only where they are BGRA's own, red, green and blue a byte each from the third down, as Windows'
-  // clipboard writes them; any other masks are not read: None, the review, #6)
   if comp == 3 && (le32(54) != 0x00FF0000 || le32(58) != 0x0000FF00 || le32(62) != 0x000000FF) {
     return None
   }
@@ -524,7 +461,6 @@ fn bmp_rgba(b : Bytes) -> Option[(Int, Int, Bytes)] {
   if off + stride * h > n {
     return None
   }
-  // (32 bits whose alpha is all 0: an old bitmap's, opaque)
   let mut any_alpha = false
   if bpp == 32 {
     for y in 0..<h {
@@ -556,8 +492,6 @@ fn bmp_rgba(b : Bytes) -> Option[(Int, Int, Bytes)] {
   Some((w, h, bytes_from_arr(out)))
 }
 
-/// Pointer relative to pin `p` in one native round-trip: `(edge, u, v, w_px, h_px)` where `edge` is the resize band
-/// (1 left, 2 right, 4 top, 8 bottom, 0 inside) and `(u, v)` are normalized `[0, 1]` coordinates in the pin image.
 fn pin_pointer_uv(p : Pin) -> (Int, Double, Double, Double, Double) {
   let r = numbers_of(text_of(ps_window_rect(p.wid.v)))
   let q = numbers_of(text_of(ps_pointer()))
@@ -577,14 +511,11 @@ fn pin_pointer_uv(p : Pin) -> (Int, Double, Double, Double, Double) {
   (ex | ey, px / w, py / h, w, h)
 }
 
-/// Which of pin `p`'s edges the pointer is by now (within 8 points of it, at most a quarter of the pin in from it):
-/// 1 left, 2 right, 4 top, 8 bottom, a corner two of them; 0 inside it, or not over it.
 fn pin_edge(p : Pin) -> Int {
   let (e, _, _, _, _) = pin_pointer_uv(p)
   e
 }
 
-/// The pointer's shape by edge `e` (pin_edge's).
 fn edge_cursor(e : Int) -> view::Cursor {
   match e {
     5 | 10 => view::Cursor::ResizeNWSE
@@ -595,9 +526,6 @@ fn edge_cursor(e : Int) -> view::Cursor {
   }
 }
 
-/// Pin `p` sized by the drag `s` begun, the pointer where it is now: every edge and corner preserves the picture's
-/// aspect ratio by default (corner along its diagonal, side edge scaling proportionally with the perpendicular axis
-/// centered; Shift held: stretch freely), each zoom 0.1 to 8 as the wheel's, the opposite side or corner staying put.
 fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let q = numbers_of(text_of(ps_pointer()))
   if q.length() < 2 || s.w <= 0.0 || s.h <= 0.0 {
@@ -612,7 +540,6 @@ fn size_pin(p : Pin, s : PinSizing) -> Unit {
   let keep_aspect = ps_shift_down() == 0
   let (kx, ky) = if keep_aspect {
     let raw = if across && down {
-      // (the pointer's way taken along the pin's diagonal: smooth whichever side it moves more along)
       (sx * s.w * s.w + sy * s.h * s.h) / (s.w * s.w + s.h * s.h)
     } else if across {
       sx
@@ -648,7 +575,6 @@ fn size_pin(p : Pin, s : PinSizing) -> Unit {
   } else {
     s.y
   }
-  // (one change, not three: what reads them worked out once)
   signals::start_batch()
   p.zx.set(zx)
   p.zy.set(zy)
@@ -674,7 +600,6 @@ fn set_alpha(p : Pin, a : Int) -> Unit {
 }
 
 fn copy_pin(p : Pin) -> Unit {
-  // (a test run copies into a file, never onto the person's clipboard)
   let test_to = ui::env("PINSHOT_TEST_COPY")
   if test_to != "" {
     let _ = ps_write_file(cstr(test_to), shown_picture(p))
@@ -691,7 +616,6 @@ fn save_pin(p : Pin) -> Unit {
   }
 }
 
-/// The pin's menu at the pointer.
 fn pin_menu(p : Pin) -> Unit {
   let top = p.top.untracked()
   let a = p.alpha.untracked()
@@ -778,8 +702,6 @@ fn pin_menu(p : Pin) -> Unit {
   }
 }
 
-/// A shortcut as a menu shows it: Windows' words, or the Mac's marks where its keys are the Mac's (⌘ for Ctrl, ⇧ for
-/// Shift, as `tr` writes them in words).
 fn key_hint(k : String) -> String {
   if ui::keys_system() == 0 {
     str_replace_all(str_replace_all(k, "Ctrl+Shift+", "⇧⌘"), "Ctrl+", "⌘")
@@ -788,8 +710,6 @@ fn key_hint(k : String) -> String {
   }
 }
 
-/// The menu's lines as the native side reads them: "key\twords\tflags", a key's hint after the words (a tab between:
-/// Windows' menus put it at their right).
 fn menu_lines(lines : Array[String]) -> String {
   let sb = StringBuilder::new()
   for l in lines {
@@ -815,7 +735,6 @@ fn menu_lines(lines : Array[String]) -> String {
   sb.to_string()
 }
 
-/// A pin's window, made as it opens.
 fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
   fn(root) {
     let p = match pins.get(what) {
@@ -861,7 +780,6 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
       }
     })
     .on_drag(fn(d) {
-      // (by an edge or a corner: sized as the pointer goes, till it is let go)
       match p.sizing.v {
         Some(s) if d.kind != view::DragIs::Down => {
           if d.kind == view::DragIs::Moved {
@@ -874,7 +792,6 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
         }
         _ => ()
       }
-      // (Live Text drag selection in progress)
       if p.ocr_selecting.v && d.kind != view::DragIs::Down {
         match p.ocr.untracked() {
           Ready(ws, _) if ws.length() > 0 => {
@@ -985,9 +902,7 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
     }, whole=true)
     .on_menu(fn(_) { pin_menu(p) })
     .on_wheel(fn(w) {
-      // (Ctrl: how clear; else the zoom, a notch 10% of it)
       let notch = if w.dy > 0.0 { 1.0 } else if w.dy < 0.0 { -1.0 } else { 0.0 }
-      // (none while it is being sized: the drag's next move would put back the zoom it began at)
       if notch == 0.0 || p.sizing.v.is_some() {
         return
       }
@@ -997,16 +912,11 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
         scale_pin(p, if notch < 0.0 { 1.1 } else { 1.0 / 1.1 })
       }
     })
-    // (a long screenshot's taller than a texture may be: decoded brought down to fit one)
     let px = clampi(if p.w > p.h { p.w } else { p.h }, 1, 16384)
     let _ = root.box(fn(i) { let _ = i.over(view::Live::Is(true)).image(view::Live::By(fn() { Some((p.key.get(), "", px)) })).presses(view::Live::Is(false)) })
-    // (Live Text highlight layer: one vector node, drawn only while Live Text is on)
     let _ = root.box(fn(lt) {
       let _ = lt.over(view::Live::Is(true)).presses(view::Live::Is(false)).picture(view::Live::By(fn() { ocr_overlay_picture(p, root.pointed()) }))
     })
-    // (its edge: a hairline; the accent's while the pointer is on it; the window in front, a frame of the accent, and
-    // as it is taken a flash: the frame comes in thick and narrows as a tint of the accent over it fades, 360 ms; the
-    // user, 2026-11-17: 「选中pin的图片时应该有更强的动画提示」)
     let _ = root.box(fn(e) {
       let _ = e
       .over(view::Live::Is(true))
@@ -1021,7 +931,6 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
       }))
       .edge(view::Live::By(fn() {
         let f = pin_flash(e, p)
-        // (its own pixels a point here; DWM's frame over its outermost pixel)
         if f > 0.001 {
           (3.0 + 7.0 * f, accent)
         } else if p.active.get() {
@@ -1033,7 +942,6 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
         }
       }))
     })
-    // (its zoom and how clear it is, a moment after either changes; shifted up when the Live Text pill is visible)
     let _ = root.box(fn(o) {
       let _ = o
       .over(view::Live::Is(true))
@@ -1167,13 +1075,10 @@ fn pin_actions(root : view::View, p : Pin) -> Unit {
   }
 }
 
-/// How much of its flash is left (1 as it is taken, 0 once it is over).
 fn pin_flash(_n : view::View, p : Pin) -> Double {
   p.flash.get()
 }
 
-/// A frame of pin window `wid` asked for as it is taken (platform_win.c, every 16 ms for a while): its flash as of
-/// now, eased out (quick at first) over 360 ms.
 fn pin_tick(wid : Int) -> Unit {
   guard pin_of_wid(wid) is Some((_, p)) else { return }
   let x = clamp((ps_now_ms() - p.active_at.untracked()) / 360.0, 0.0, 1.0)
@@ -1181,7 +1086,6 @@ fn pin_tick(wid : Int) -> Unit {
   p.flash.set(1.0 - e)
 }
 
-/// Pin window `wid` taken as the window in front (`on`) or let go: its frame, and a flash as it is taken.
 fn pin_active(wid : Int, on : Bool) -> Unit {
   guard pin_of_wid(wid) is Some((_, p)) else { return }
   p.active.set(on)

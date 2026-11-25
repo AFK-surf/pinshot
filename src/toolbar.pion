@@ -1,10 +1,3 @@
-// The tool bar of a part picked: under it at its right edge (over it where the screen has no room under it, inside it
-// where it has none over it either), dark whatever the theme, as it lies on a picture of anything. Concentric mbui
-// superellipse corners (main bar 40pt high, corner 15pt, 4pt padding, 32pt buttons corner 11pt; style row 36pt high,
-// corner 13pt, 28pt buttons corner 9pt, every corner at smoothness 1.0) with 13 buttons on the main row: select,
-// shapes (box / oval / focus), lines (arrow / line), pen, mosaic, number, words | undo | extract text (OCR), pin,
-// save, close, copy. Choosing shapes or lines shows their variants on the left of the second row beside thickness and colour.
-
 import "hostapi"
 import "motion"
 import "pixels"
@@ -26,11 +19,8 @@ let style_btn_corner : Double = 9.0
 
 let bar_rule : Double = 7.0
 
-/// Between the bar's buttons (their grounds as they are pointed at or lit apart, the user, 2026-11-17).
 let bar_gap : Double = 3.0
 
-/// The current variant remembered for the folded shape button (Box, Oval, Focus), line button (Arrow, Line) and
-/// mosaic button (Mosaic, MosaicBrush, Blur).
 let shape_tool : signals::Signal[Tool] = signals::signal_by(Box, fn(a, b) { a == b })
 
 let line_tool : signals::Signal[Tool] = signals::signal_by(Arrow, fn(a, b) { a == b })
@@ -101,7 +91,6 @@ fn tool_label(t : Tool) -> String {
   }
 }
 
-/// The standalone drawing tools after the folded shape, line and mosaic buttons.
 let bar_rest_tools : Array[Tool] = [Number, Words]
 
 let shape_variants : Array[Tool] = [Box, Oval, Focus]
@@ -112,7 +101,6 @@ let pen_variants : Array[Tool] = [Pen, Eraser]
 
 let mosaic_variants : Array[Tool] = [Mosaic, MosaicBrush, Blur]
 
-/// 14 buttons on the main bar (+1 scrolling screenshot, +1 screen record on Windows).
 fn bar_width() -> Double {
   let n = 14.0 + (if long_shot_here() { 1.0 } else { 0.0 }) + (if rec_here() { 1.0 } else { 0.0 })
   bar_pad * 2.0 + bar_button * n + bar_rule * 2.0 + bar_gap * (n + 1.0)
@@ -122,15 +110,11 @@ let bar_height : Double = 40.0
 
 let style_height : Double = 36.0
 
-/// Max combined height of the two expandable sub-rows (style + beauty) plus gaps.
 let bar_sub_max_h : Double = (style_height + 4.0) * 2.0
 
-/// Main toolbar anchor `(x, main_y, expand_up)` in monitor points: keeps the main bar stationary when sub-rows open
-/// and flips sub-rows upward whenever there is not enough room below (or when the bar sits above the selection).
 fn bar_anchor(n : view::View) -> (Double, Double, Bool) {
   let k = mon_scale.get()
   let (wx0, wy0, wx1, wy1) = work_pt()
-  // (under the picture as it will be copied, where it shows on its way: the part, or the background it is laid on)
   if !(sel.get().is_some()) { return (0.0, 0.0, false) }
   match shown_whole(n) {
     Some(r) => {
@@ -158,7 +142,6 @@ fn bar_anchor(n : view::View) -> (Double, Double, Bool) {
   }
 }
 
-/// Where the bar column stands (points), anchored so the main row never jumps when sub-rows unfold upward.
 fn bar_place(n : view::View) -> (Double, Double) {
   let (x, my, up) = bar_anchor(n)
   (x, if up { my - bar_sub_max_h } else { my })
@@ -171,7 +154,6 @@ fn pick_tool(which : Tool) -> Unit {
   tool.set(if tool.untracked() == which { Move } else { which })
 }
 
-/// Active tool slot index on the main bar's left tool strip (0..6).
 fn main_tool_slot() -> Int {
   let t = tool.get()
   if t == Move {
@@ -193,10 +175,8 @@ fn main_tool_slot() -> Int {
   }
 }
 
-/// The main screenshot toolbar row view, used to hand its exact screen rect to the recording bar on transition.
 let toolbar_main_view : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
-/// Exact screen rect (x, y, w, h in monitor-local points) of the main screenshot toolbar row, if mounted and laid out.
 fn toolbar_main_rect() -> Option[(Double, Double, Double, Double)] {
   match toolbar_main_view.v {
     Some(v) if v.alive() => {
@@ -234,16 +214,13 @@ fn toolbar(stage : view::View) -> Unit {
       let is_up = fn() { bar_anchor(col).2 }
       let _ = col
       .gap(view::Live::Is(4.0))
-      // (each row as wide as what it holds, from the bar's left: the style row is not stretched to the bar's width)
       .lines_up(view::Live::Is(Some(view::Along::Start)))
       .height(view::Live::By(fn() { if is_up() { Some(bar_height + bar_sub_max_h) } else { None } }))
       .lies_along(view::Live::By(fn() { if is_up() { view::Lies::End } else { view::Lies::Start } }))
       .offset(view::Live::By(fn() { bar_place(col) }))
       .alpha(view::Live::By(fn() { bar_in.shown(col) }))
       .drawn_off(view::Live::By(fn() { (0.0, 4.0 * (1.0 - bar_in.shown(col))) }))
-      // (out of the way while the part is dragged or resized)
       .laid_nowhere(view::Live::By(fn() { !bar_shown() }))
-      // Upward-unfolding sub-rows (above the main bar when near the bottom of the screen or above the selection)
       col.show(fn() { is_up() && beauty_on.get() }, leave=115.0, fn(slot) {
         dropdown_unfold(slot, style_height, beauty_row, upward=true)
       })
@@ -255,7 +232,6 @@ fn toolbar(stage : view::View) -> Unit {
         let _ = bar.owns(fn() { toolbar_main_view.v = None })
         bar_panel(bar, bar_corner)
         let _ = bar.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).width(view::Live::Is(Some(bar_width())))
-        // Left tool group (0..6) with a gliding active-tool pill underneath the icons
         let _ = bar.box(fn(tg) {
           let _ = tg.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).lines_up(view::Live::Is(Some(view::Along::Middle)))
           let tool_views : Map[Int, view::View] = Map::new()
@@ -267,7 +243,6 @@ fn toolbar(stage : view::View) -> Unit {
             fn() { 0xFFFFFF3DL },
             snap_watch=fn() { if bar_shown() { 1 } else { 0 } },
           )
-          // 1. Select (Move)
           tool_button(
             tg,
             "select",
@@ -277,7 +252,6 @@ fn toolbar(stage : view::View) -> Unit {
             keys=fn() { "V" },
             slot_views=Some((0, tool_views)),
           )
-          // 2. Folded Shape group (Box / Oval / Focus)
           tool_group_button(
             tg,
             fn() {
@@ -301,7 +275,6 @@ fn toolbar(stage : view::View) -> Unit {
             },
             slot_views=Some((1, tool_views)),
           )
-          // 3. Folded Line/Arrow group (Arrow / Line)
           tool_group_button(
             tg,
             fn() {
@@ -325,7 +298,6 @@ fn toolbar(stage : view::View) -> Unit {
             },
             slot_views=Some((2, tool_views)),
           )
-          // 4. Pen / Eraser group (always opens as Pen; second row offers Pen & Eraser)
           tool_button(
             tg,
             "pen",
@@ -344,7 +316,6 @@ fn toolbar(stage : view::View) -> Unit {
             },
             slot_views=Some((3, tool_views)),
           )
-          // 5. Folded Mosaic group (Mosaic / MosaicBrush / Blur)
           tool_group_button(
             tg,
             fn() {
@@ -368,7 +339,6 @@ fn toolbar(stage : view::View) -> Unit {
             },
             slot_views=Some((4, tool_views)),
           )
-          // 6..7. Number, Words
           for idx, which in bar_rest_tools {
             tool_button(
               tg,
@@ -380,16 +350,13 @@ fn toolbar(stage : view::View) -> Unit {
             )
           }
         })
-        // 8. The background the part is laid on (beautify.mbt)
         tool_button(bar, "beautify", "美化背景", fn() { beauty_on.get() }, beauty_toggle, keys=fn() { "B" })
         bar_rule_node(bar)
-        // 9. Undo (Redo stays on Ctrl+Y / Ctrl+Shift+Z)
         tool_button(bar, "undo", "撤销", fn() { false }, fn() { let _ = undo() }, dim=fn() {
           let _ = marks.get()
           done_before.v.length() == 0
         }, keys=fn() { "Ctrl+Z" })
         bar_rule_node(bar)
-        // 9..15. OCR, scrolling screenshot & screen record (Windows'), Pin, Save, Close, Copy
         tool_button(bar, "ocr", "提取文字", fn() { false }, ocr_out, keys=fn() { "Ctrl+O" })
         if long_shot_here() {
           tool_button(bar, "long", "长截图", fn() { false }, long_out, keys=fn() { "Ctrl+L" })
@@ -437,7 +404,6 @@ fn bar_rule_node(bar : view::View, shown~ : () -> Bool  = fn() { true }) -> Unit
   })
 }
 
-/// A button of the bar: its glyph, lit while `on`; faint where `dim` (nothing to undo).
 fn tool_button(
   bar : view::View,
   glyph_name : String,
@@ -454,7 +420,6 @@ fn tool_button(
   tool_group_button(bar, fn() { glyph_name }, fn() { label }, on, press, dim=dim, strong=strong, tip=tip, tips=tips, keys=keys, slot_views=slot_views)
 }
 
-/// A button of the bar whose glyph and label may follow the active sub-tool in a folded group.
 fn tool_group_button(
   bar : view::View,
   glyph_fn : () -> String,
@@ -528,12 +493,10 @@ fn tool_group_button(
   })
 }
 
-/// Whether the second row is shown: a tool held, or a mark picked (its colour and thickness then).
 fn styling() -> Bool {
   tool.get() != Move || selected.get().is_some()
 }
 
-/// Variant tool at slot `idx` (0..2) for sub-tool group `grp` (1=shape, 2=line, 3=pen, 4=mosaic).
 fn sub_tool_of(grp : Int, idx : Int) -> Option[Tool] {
   let arr = match grp {
     1 => shape_variants
@@ -565,8 +528,6 @@ fn pick_sub_tool(grp : Int, which : Tool) -> Unit {
   }
 }
 
-/// Single persistent 3-slot sub-tool strip: switching tool groups only swaps icons (no fade/scale transition on the
-/// active/hover shade); clicking within the same group still glides the active highlight smoothly.
 fn sub_tool_strip(left_slot : view::View, shown_grp : signals::Signal[Int]) -> Unit {
   let _ = left_slot.box(fn(btns) {
     let _ = btns.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).height(view::Live::Is(Some(28.0))).lines_up(view::Live::Is(Some(view::Along::Middle)))
@@ -663,7 +624,6 @@ fn sub_tool_strip(left_slot : view::View, shown_grp : signals::Signal[Int]) -> U
       })
     }
   })
-  // Persistent divider tucked cleanly against the right edge of `left_slot` so it rides lockstep with `left_w`.
   let _ = left_slot.box(fn(d) {
     let _ = d
     .over_at(view::Live::Is((None, Some(4.0), Some(bar_gap), None)))
@@ -694,8 +654,6 @@ fn style_pill_width(grp : Int, has_col : Bool) -> Double {
   bar_pad * 2.0 + style_left_width(grp) + sz_w + col_w
 }
 
-/// The second row: smoothly animates its superellipse capsule length, clips unveiled/collapsing controls cleanly,
-/// crossfades sub-tool groups, and glides thickness & color controls in lockstep across every tool switch.
 fn style_row(row : view::View) -> Unit {
   let active_grp = fn() -> Int {
     let t = tool.get()
@@ -754,7 +712,6 @@ fn style_row(row : view::View) -> Unit {
     .presses(view::Live::Is(true))
     .cursor(view::Live::Is(Some(view::Cursor::Arrow)))
 
-    // Clipped inner viewport filling the exact animated superellipse shell so unveiling/collapsing sections never spill
     let _ = shell.box(fn(clip) {
       let _ = clip
       .width(view::Live::By(fn() { Some(pill_w.shown(clip)) }))
@@ -765,7 +722,6 @@ fn style_row(row : view::View) -> Unit {
       .row(view::Live::Is(true))
       .lines_up(view::Live::Is(Some(view::Along::Middle)))
 
-      // 1. Left sub-tool variant slot (smoothly expands/shrinks 0 ↔ 72 ↔ 103pt; persistent buttons swap icons cleanly without fading the highlight box)
       let _ = clip.box(fn(left_slot) {
         left_ref.v = Some(left_slot)
         let _ = left_slot
@@ -776,7 +732,6 @@ fn style_row(row : view::View) -> Unit {
         sub_tool_strip(left_slot, shown_grp)
       })
 
-      // 2. Thickness group (fixed 90pt; glides smoothly in lockstep with left_slot width)
       let sz_w = 3.0 * 28.0 + 2.0 * bar_gap
       let _ = clip.box(fn(sz_grp) {
         let _ = sz_grp
@@ -824,7 +779,6 @@ fn style_row(row : view::View) -> Unit {
         }
       })
 
-      // 3. Color swatches section (kept mounted inside clipped viewport so right edge smoothly unveils/sweeps over swatches)
       let col_w = bar_gap + bar_rule + bar_gap + colors.length().to_double() * 28.0 + (colors.length() - 1).to_double() * bar_gap
       let _ = clip.box(fn(csec) {
         csec_ref.v = Some(csec)
@@ -880,7 +834,6 @@ fn style_row(row : view::View) -> Unit {
     })
   })
 
-  // Drive synchronized width & crossfade transitions on tool / selection changes (frozen while closing so fade-out stays clean)
   row.reacts(fn() { (styling(), active_grp(), has_color()) }, at_start=false, fn(st) {
     let (is_on, grp, col_on) = st
     if !is_on {
@@ -905,7 +858,6 @@ fn style_row(row : view::View) -> Unit {
   })
 }
 
-/// The bar's glyphs, on an 18 grid, 1.6 wide lines (drawn in their node's tint).
 fn glyph(name : String) -> pixels::Vector {
   let lines = fn(paths : Array[String]) -> pixels::Vector {
     let layers : Array[pixels::VectorPath] = []
@@ -996,7 +948,6 @@ fn glyph(name : String) -> pixels::Vector {
     "check" => pixels::Vector::{ w: 18.0, h: 18.0, layers: [stroke_layer("M3.5 9.5 7.3 13.2 14.5 5", 0x000000FFL, 2.0)] }
     "chevron-down" => pixels::Vector::{ w: 18.0, h: 18.0, layers: [stroke_layer("M4.5 6.8 9 11.3 13.5 6.8", 0x000000FFL, 2.0)] }
     "copy" => lines(["M6.5 6.5h8v8h-8z", "M11.5 6.5V3.5h-8v8h3"])
-    // (a page taller than its frame, an arrow down it: a long screenshot)
     "long" => lines(["M4 2.5h10v13h-10z", "M9 5.5v7", "M6.5 10 9 12.5 11.5 10"])
     "top" => lines(["M9 15V5", "M5 9l4-4 4 4", "M4 2.8h10"])
     "pause" => lines(["M6.5 4.2v9.6", "M11.5 4.2v9.6"])
@@ -1026,12 +977,6 @@ fn glyph(name : String) -> pixels::Vector {
   }
 }
 
-// Monoid-style fluid tooltips (aligned with still.fail libs/sf-ui/src/tip_node.mbt + motion/handoff.mbt):
-// - 10pt superellipse, lifted charcoal ground, 9% hairline, soft small shadow, concentric 6pt shortcut keycap badges.
-// - Ground-first 120ms fade-in (Ease::Out) and words-first 120ms fade-out with 0.97 scale toward anchor (FromBeside).
-// - Critically-damped spring handoff (0.09s) gliding position, width, height & carried content smoothly across buttons
-//   on the same side when sweeping along the toolbar.
-
 let tip_wait : Double = 400.0
 
 let tip_linger : Double = 300.0
@@ -1042,7 +987,6 @@ let tip_out_ms : Double = 120.0
 
 let tip_out_scale : Double = 0.97
 
-/// Per-window coordinator for Monoid-style fluid tooltips (shared across screenshot, recording, and longshot toolbars).
 struct TipScope {
   layer : signals::Ref[Option[view::View]]
   owner : signals::Signal[Int]
@@ -1083,7 +1027,6 @@ fn TipScope::mount(self : TipScope, parent : view::View) -> Unit {
 
 let bar_tips : TipScope = TipScope::new()
 
-/// Monoid TipFade: smooth continuous progress (0..1) with mid-flight reversal.
 struct TipFade {
   mut from : Double
   mut to : Double
@@ -1155,7 +1098,6 @@ fn tip_off() -> Unit {
   bar_tips.off()
 }
 
-/// Split a shortcut string ("Ctrl+R", "⌘⇧Z", "Enter") into individual Monoid-style keycap labels.
 fn tip_key_caps(keys : String) -> Array[String] {
   let caps : Array[String] = []
   let trimmed = trim_ws(keys)
@@ -1194,9 +1136,6 @@ fn tip_key_caps(keys : String) -> Array[String] {
   caps
 }
 
-/// Button `b` tells what it does (`label`, said through `tr`) and optional shortcut (`keys`) via a Monoid-style
-/// fluid-transition tooltip on `side` (260ms initial hover delay, 300ms sibling glide, ground-first fade-in,
-/// 0.97 scale-out, separated rounded keycaps).
 fn TipScope::follow(
   self : TipScope,
   b : view::View,
@@ -1254,7 +1193,6 @@ fn TipScope::follow(
       .ground(view::Live::Is(0x26282FF7L))
       .edge(view::Live::Is((1.0, 0xFFFFFF18L)))
       .shadow(view::Live::Is((8.0, 2.0, 0x00000048L)))
-      // Ground fades in first half (0..60ms), words in second half (60..120ms); reversed on exit
       .alpha(view::Live::By(fn() {
         let a = if self.owner.get() == id { fade.shown(t) } else { 0.0 }
         if a * 2.0 < 1.0 {
@@ -1263,7 +1201,6 @@ fn TipScope::follow(
           1.0
         }
       }))
-      // Gentle 0.97 shrink toward the button while exiting
       .scale(
         view::Live::By(fn() {
           let a = fade.shown(t)
@@ -1393,7 +1330,6 @@ fn tip_follows(b : view::View, label : () -> String, side : view::Side, keys~ : 
   bar_tips.follow(b, label, side, keys=keys)
 }
 
-/// Mount the overlay layer that hosts all fluid Monoid-style tooltips above the toolbar.
 fn bar_tip_node(o : view::View) -> Unit {
   bar_tips.mount(o)
 }

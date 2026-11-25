@@ -1,17 +1,10 @@
-// The words PinShot says, in Chinese or in English (the user, 2026-11-17: 「加上语言选择（中/英）」): written in
-// Chinese where they are used, said through `tr`, which gives the English of them where English is in force (as the
-// settings say: the system's language, else the one chosen). Read in a binding, a change of language redraws them.
-
 import "signals"
 import "ui"
 
-/// Whether English is in force (else Chinese).
 let english : signals::Signal[Bool] = signals::signal(false)
 
-/// The languages offered: the system's (Chinese where Windows' own is Chinese, else English), Chinese, English.
 let language_names : Array[String] = ["跟随系统", "中文", "English"]
 
-/// The language in force by the settings' choice (0 the system's, 1 Chinese, 2 English).
 fn apply_language(choice : Int) -> Unit {
   english.set(
     match choice {
@@ -22,7 +15,6 @@ fn apply_language(choice : Int) -> Unit {
   )
 }
 
-/// `zh` in the language in force: its English where English is (itself where none is written).
 fn tr(zh : String) -> String {
   let words = if english.get() { en_words.get(zh).unwrap_or(zh) } else { zh }
   if ui::keys_system() == 0 {
@@ -34,7 +26,6 @@ fn tr(zh : String) -> String {
 
 fn make_en_words() -> Map[String, String] {
   let m : Map[String, String] = Map::new()
-  // the bar
   m["选择（V）"] = "Select (V)"
   m["矩形"] = "Rectangle"
   m["椭圆"] = "Ellipse"
@@ -59,7 +50,6 @@ fn make_en_words() -> Map[String, String] {
   m["提取文字 Ctrl+O"] = "Extract text Ctrl+O"
   m["长截图 Ctrl+L"] = "Scrolling screenshot Ctrl+L"
   m["录屏 Ctrl+R"] = "Record area Ctrl+R"
-  // screen recording
   m["选区太小，不能录屏"] = "Selection too small to record"
   m["系统声音：开"] = "System audio: On"
   m["系统声音：关"] = "System audio: Off"
@@ -121,7 +111,6 @@ fn make_en_words() -> Map[String, String] {
   m["无法启动压缩编码"] = "Couldn't start compression encoder"
   m["压缩编码失败"] = "Compression failed"
   m["生成 GIF 失败"] = "Couldn't generate GIF"
-  // a long screenshot's panel
   m["长截图"] = "Scrolling screenshot"
   m["选区太小，不能长截图"] = "Too small for a scrolling screenshot"
   m["已停止截取"] = "Stopped"
@@ -157,7 +146,6 @@ fn make_en_words() -> Map[String, String] {
   m["中"] = "Medium"
   m["粗"] = "Thick"
   m["输入文字"] = "Type here"
-  // pins
   m["剪贴板里没有图片"] = "No image on the clipboard"
   m["复制"] = "Copy"
   m["另存为…"] = "Save as…"
@@ -171,7 +159,6 @@ fn make_en_words() -> Map[String, String] {
   m["不透明度"] = "Opacity"
   m["关闭"] = "Close"
   m["关闭全部贴图"] = "Close all pins"
-  // the words read (OCR / Live Text)
   m["提取的文字"] = "Extracted text"
   m["正在识别…"] = "Reading text…"
   m["识别中…"] = "Reading…"
@@ -191,7 +178,6 @@ fn make_en_words() -> Map[String, String] {
   m["复制图片"] = "Copy image"
   m["退出选字"] = "Exit Live Text"
   m["已复制"] = "Copied"
-  // the icon's menu and its note
   m["截图"] = "Screenshot"
   m["贴图剪贴板中的图片"] = "Pin clipboard image"
   m["显示/隐藏全部贴图"] = "Show/hide all pins"
@@ -200,7 +186,6 @@ fn make_en_words() -> Map[String, String] {
   m["退出 PinShot"] = "Quit PinShot"
   m["截图快捷键被其他程序占用："] = "Screenshot shortcut taken by another program: "
   m["点这里打开 PinShot 设置换一个；或者退出占用它的程序（比如 PixPin）后重新打开 PinShot。"] = "Click here to choose another in PinShot's settings, or quit the program holding it (PixPin, say) and open PinShot again."
-  // the settings
   m["PinShot 设置"] = "PinShot Settings"
   m["快捷键"] = "Shortcuts"
   m["已被其他程序占用，换一个"] = "Taken by another program: choose another"
@@ -237,7 +222,6 @@ fn make_en_words() -> Map[String, String] {
   m["请喝咖啡"] = "Buy a coffee"
   m["免费、无广告，不联网、不收集任何数据。"] = "Free, no ads. Works offline and collects no data."
   m["免费、无广告，不收集任何数据；只在检查更新时联网。"] = "Free, no ads, collects no data. Goes online only to check for updates."
-  // updates
   m["检查更新…"] = "Check for updates…"
   m["检查更新"] = "Check for updates"
   m["正在检查…"] = "Checking…"
@@ -278,7 +262,6 @@ fn make_en_words() -> Map[String, String] {
   m["点这里打开设置更新。"] = "Click here to update in the settings."
   m["PinShot "] = "PinShot "
   m["关闭全部贴图后会自动更新；也可以点这里在设置里立即更新。"] = "It installs once all pins are closed, or click here to update now in the settings."
-  // the settings' pages and shortcuts set by pressing them
   m["常规"] = "General"
   m["截图与贴图"] = "Capture & pins"
   m["开机时启动"] = "Start with Windows"
@@ -295,7 +278,6 @@ fn make_en_words() -> Map[String, String] {
   m["点一下快捷键框，再按下想用的组合键；Esc 取消。"] = "Click a shortcut, then press the keys you want. Esc cancels."
   m["点 × 清空；清空后仍可从托盘图标截图。"] = "× clears it; the tray icon still takes a screenshot."
   m["清空快捷键"] = "Clear shortcut"
-  // a capture laid on a background (beautify.mbt)
   m["美化背景 B"] = "Background B"
   m["晚霞"] = "Sunset"
   m["海洋"] = "Ocean"
@@ -307,7 +289,6 @@ fn make_en_words() -> Map[String, String] {
   m["小"] = "Small"
   m["大"] = "Large"
   m["阴影"] = "Shadow"
-  // Monoid-style tooltip labels (separated from keycap badges) & confirm shortcut
   m["选择"] = "Select"
   m["美化背景"] = "Background"
   m["撤销"] = "Undo"

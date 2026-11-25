@@ -1,24 +1,14 @@
-// Shared GPU-composited motion primitives for PinShot (all fast 100-160ms curves, zero Flex relayout):
-// - mix_rgba: smooth per-channel RGBA interpolation for hovers, switches, and state transitions
-// - smooth_hover / tactile_press: 110ms ease-out hover alpha + subtle micro-sink press spring
-// - dropdown_unfold / enter_reveal: crisp downward drawer unfold + fade/micro-rise entrance
-// - sliding_thumb: zero-relayout underlay pill gliding cleanly beneath sibling labels in both directions
-// - rolling_label: odometer-style per-character rolling tabular readout (@motion.rolling_slots_node)
-
 import "motion"
 import "signals"
 import "ui"
 import "view"
 
-/// Crisp ease-out glide for segmented thumbs & sidebar indicators (fast 150ms, zero mushy tail).
 let pill_glide : motion::Spec = motion::tween(150.0, ease=ui::Ease::Out)
 
-/// Whether the OS user prefers reduced motion (Windows SPI_GETCLIENTAREAANIMATION=FALSE / macOS Reduce Motion).
 fn reduce_motion() -> Bool {
   ps_reduce_motion() != 0
 }
 
-/// Tween helper that collapses to instant when system Reduce Motion is active.
 fn motion_tween(ms : Double, ease~ : ui::Ease = ui::Ease::Out) -> motion::Spec {
   if reduce_motion() {
     motion::tween(0.0, ease=ease)
@@ -27,12 +17,10 @@ fn motion_tween(ms : Double, ease~ : ui::Ease = ui::Ease::Out) -> motion::Spec {
   }
 }
 
-/// Standard Apple HIG keyboard focus ring (shown only on keyboard focus navigation, never on pointer click).
 fn hig_focus(v : view::View) -> Unit {
   let _ = v.focusable(view::Live::Is(true)).focus_ring(view::Live::Is(Some((2.0, 2.0, 0x3B9EFFFFL))))
 }
 
-/// Smooth per-channel RGBA interpolation between 0xRRGGBBAA colors (`t` clamped to 0..1).
 fn mix_rgba(a : Int64, b : Int64, t : Double) -> Int64 {
   let k = clamp(t, 0.0, 1.0)
   if k <= 0.001 {
@@ -49,12 +37,10 @@ fn mix_rgba(a : Int64, b : Int64, t : Double) -> Int64 {
   ch(24) | ch(16) | ch(8) | ch(0)
 }
 
-/// Smooth 0..1 hover progress on `v` (110ms ease-out by default; instant under Reduce Motion).
 fn smooth_hover(v : view::View, live~ : () -> Bool  = fn() { true }, ms~ : Double = 110.0) -> () -> Double {
   motion::hover_fade(v, fn() { live() && v.pointed() }, duration_ms=if reduce_motion() { 0.0 } else { ms })
 }
 
-/// Subtle tactile press micro-sink + spring-back on `v` (zero relayout via View::scale; suppressed under Reduce Motion).
 fn tactile_press(v : view::View, live~ : () -> Bool  = fn() { true }, sink_px~ : Double = 1.2) -> Unit {
   if reduce_motion() {
     return
@@ -62,8 +48,6 @@ fn tactile_press(v : view::View, live~ : () -> Bool  = fn() { true }, sink_px~ :
   let _ = motion::press_feel(v, live=live, sink_px=sink_px, sink_most=0.032, hovers=false)
 }
 
-/// Crisp downward drawer unfold for 2nd/3rd toolbar rows: smoothly expands height `0 -> full_h` (pushing lower rows
-/// down naturally), clips only while animating so settled shadows stay intact, and slides the bar down from beneath its parent.
 fn dropdown_unfold(
   slot : view::View,
   full_h : Double,
@@ -100,7 +84,6 @@ fn dropdown_unfold(
   })
 }
 
-/// Enter-only fade + micro-rise + subtle scale (safe with `at_once=true` and auto-fitted windows).
 fn enter_reveal(
   v : view::View,
   ms~ : Double = 145.0,
@@ -121,9 +104,6 @@ fn enter_reveal(
   }
 }
 
-/// Dedicated zero-relayout sliding pill underlay placed BEFORE sibling items inside `container`.
-/// Call this first in `container`, then register each sibling's `@view.View` in `item_views[key] = b`.
-/// The pill glides cleanly beneath every label in both directions and smoothly adapts to width changes.
 fn sliding_thumb(
   container : view::View,
   active_key : () -> Int,
@@ -224,8 +204,6 @@ struct RollTextState {
   dir : Double
 }
 
-/// Odometer-style rolling numeric readout using `words_plain` (zero Flex relayout via `View::moved_by`,
-/// without pulling in `@ui.TextStyle` token tables).
 fn rolling_label(
   parent : view::View,
   value : () -> Double,

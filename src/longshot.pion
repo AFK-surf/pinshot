@@ -1,53 +1,20 @@
-// A long screenshot (the user, 2026-11-19: 「加一个长截图功能」, 2026-11-20: bidirectional scrolling + interactive
-// scrollable preview UI): the part picked in a capture is taken repeatedly from the live screen while the person
-// scrolls up or down under it, stitched into one tall picture (longshot_win.c). A coloured frame around the part
-// reflects live state (blue active, amber lost/max, muted paused), and a movable dark panel beside it shows a
-// virtualized scrollable preview (wheel, drag-to-pan, interactive scrollbar with live capture window marker, smart
-// auto-follow with one-click jump back), Pause/Resume, Reset, and Copy/Save/Pin actions.
-
 import "hostapi"
 import "signals"
 import "ui"
 import "view"
 
-/// A long screenshot begun of the part x, y, w by h (the screen's pixels): 1 begun.
-
-/// The taking stopped, the picture kept (its frame gone).
-
-/// Pause (1) or resume (0) capturing while keeping the stitched picture and frame.
-
-/// Discard stitched content and restart fresh on the exact same capture frame.
-
-/// The long screenshot let go, all it held.
-
-/// The picture as it stands: "w,h,pictures,lost,full"; "" none.
-
-/// A viewport slice of the picture starting at source row `from_row`, scaled to fit `w` by `h` pixels, as mbui takes
-/// pixels kept elsewhere ("MBRAWPTR"...).
-
-/// The picture as a PNG; empty: none.
-
-/// The previews' pixels kept on the native side let go (each forgotten by mbui first).
-
-/// Whether a scrolling screenshot can be taken here: Windows' alone (its taking is longshot_win.c's).
 fn long_shot_here() -> Bool {
   hostapi::platform() == 3 || hostapi::platform() == 0
 }
 
-/// Window `wid` kept out of what is taken (it may stand over the part).
-
-/// The panel's window (0: none, no long screenshot under way).
 let long_wid : signals::Ref[Int] = signals::ref_new(0)
 
-/// The part taken (the screen's pixels) and its monitor's scale.
 let long_part : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
 
 let long_scale : signals::Ref[Double] = signals::ref_new(1.0)
 
-/// The monitor the part is on (the screen's pixels).
 let long_mon : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h: 0 })
 
-/// Stitched picture state told from the native side.
 let long_h : signals::Signal[Int] = signals::signal(0)
 
 let long_lost : signals::Signal[Bool] = signals::signal(false)
@@ -58,16 +25,12 @@ let long_paused : signals::Signal[Bool] = signals::signal(false)
 
 let long_pics : signals::Signal[Int] = signals::signal(0)
 
-/// Last stitch direction: 1 down (bottom growing), -1 up (top growing), 0 initial.
 let long_dir : signals::Signal[Int] = signals::signal(0)
 
-/// Source row where the live capture frame sits inside the stitched image.
 let long_live_at : signals::Signal[Int] = signals::signal(0)
 
-/// Whether the taking has stopped permanently (e.g. a save dialog was cancelled: what is taken is kept as it was).
 let long_stopped : signals::Signal[Bool] = signals::signal(false)
 
-/// Virtualized preview scroll state: top source row shown, whether auto-following live growth, drag/scrub flags.
 let long_scroll : signals::Signal[Int] = signals::signal(0)
 
 let long_follow : signals::Signal[Bool] = signals::signal(true)
@@ -80,35 +43,28 @@ let long_pan_start : signals::Ref[(Double, Int)] = signals::ref_new((0.0, 0))
 
 let long_scrub_grab : signals::Ref[Double] = signals::ref_new(0.0)
 
-/// The preview shown: its key ("" none) and its size (pixels); and the next, shown once it is decoded.
 let long_preview : signals::Signal[(String, Int, Int)] = signals::signal_by(("", 0, 0), fn(a, b) { a.0 == b.0 && a.1 == b.1 && a.2 == b.2 })
 
 let long_pending : signals::Signal[(String, Int, Int)] = signals::signal_by(("", 0, 0), fn(a, b) { a.0 == b.0 && a.1 == b.1 && a.2 == b.2 })
 
-/// The panel's tree (None: none open).
 let long_root : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
-/// Inline 2-step confirmation for destructive Reset once multiple frames have been stitched.
 let long_confirm_reset : signals::Signal[Bool] = signals::signal(false)
 
 let long_reset_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
-/// Unified Monoid-style fluid tooltip coordinator for the scrolling screenshot panel (same rules as toolbar.mbt).
 let long_tips : TipScope = TipScope::new()
 
 let long_preview_n : signals::Ref[Int] = signals::ref_new(0)
 
-/// When the preview was last made (ps_now_ms), and whether one is due.
 let long_preview_at : signals::Ref[Double] = signals::ref_new(-10000.0)
 
 let long_preview_due : signals::Ref[Bool] = signals::ref_new(false)
 
-/// Panel layout constants (points).
 let long_panel_w : Double = 316.0
 
 let long_pad : Double = 14.0
 
-/// Transparent shadow halo around the floating superellipse panel, derived from `ui::shadow_halo` (click-through via ps_hit_inset).
 let long_shadow_blur : Double = 11.0
 
 let long_shadow_dy : Double = 4.0
@@ -141,7 +97,6 @@ fn long_panel_h() -> Double {
   long_chrome_h() + long_box_h.v
 }
 
-/// Scale from source image pixels to preview physical pixels (fit width, never upscale).
 fn long_preview_k() -> Double {
   let w = long_part.v.w
   if w <= 0 {
@@ -150,25 +105,21 @@ fn long_preview_k() -> Double {
   dmin(1.0, long_box_w() * long_scale.v / w.to_double())
 }
 
-/// How many source image rows fit in the preview viewport at once.
 fn long_vis_rows() -> Int {
   let k = long_preview_k()
   let rows = (long_box_h.v * long_scale.v / k).round().to_int()
   if rows < 1 { 1 } else { rows }
 }
 
-/// Maximum valid scroll offset (top source row) for a stitched image of height `h`.
 fn long_max_scroll(h : Int) -> Int {
   let m = h - long_vis_rows()
   if m > 0 { m } else { 0 }
 }
 
-/// Source image rows per 1 logical point in the preview viewport.
 fn long_src_per_pt() -> Double {
   long_scale.v / long_preview_k()
 }
 
-/// The part picked in the capture taken long: the capture closed, the taking begun, the panel put beside the part.
 fn long_out() -> Unit {
   if !long_shot_here() || exporting.v != "" || long_wid.v != 0 {
     return
@@ -191,7 +142,6 @@ fn long_out() -> Unit {
     toast(tr("选区太小，不能长截图"))
     return
   }
-  // (no capture taken meanwhile: its overlay would be taken into the picture)
   ps_capture_open(1)
   long_part.v = part
   long_scale.v = k
@@ -213,7 +163,6 @@ fn long_out() -> Unit {
   long_pending.set(("", 0, 0))
   signals::end_batch()
   long_preview_due.v = false
-  // (the preview as tall as the monitor's usable work area leaves room for, accounting for the transparent shadow halo)
   let mh = work.h.to_double() / k
   long_box_h.v = clamp(mh - 56.0 - long_halo_t - long_halo_b - long_chrome_h(), 220.0, 560.0)
   ps_next_win_clear()
@@ -238,8 +187,6 @@ fn long_out() -> Unit {
   log("long: begun \{part.w}x\{part.h} at \{part.x},\{part.y}")
 }
 
-/// The panel put beside the part: at its right, else its left, else inside it at its right (out of what is taken
-/// whatever it stands over), its top by the part's, kept on the monitor (accounting for the transparent shadow halo).
 fn long_place(m : Rect) -> Unit {
   let k = long_scale.v
   let p = long_part.v
@@ -263,7 +210,6 @@ fn long_place(m : Rect) -> Unit {
   ps_place(long_wid.v, x, y, win_w, win_h, 1, 0)
 }
 
-/// What the native side told of the picture ({"do":"long"}): height, flags, direction, live frame position, top growth.
 fn long_told(
   h : Int,
   lost : Bool,
@@ -325,7 +271,6 @@ fn long_clear_preview_images() -> Unit {
   }
 }
 
-/// Scroll the preview to source row `row`, updating auto-follow state and refreshing the viewport slice.
 fn long_scroll_to(row : Int, reengage~ : Bool = true) -> Unit {
   let h = long_h.untracked()
   let max_s = long_max_scroll(h)
@@ -345,12 +290,10 @@ fn long_scroll_to(row : Int, reengage~ : Bool = true) -> Unit {
   }
 }
 
-/// Scroll by a relative number of source rows.
 fn long_scroll_by(delta_rows : Int) -> Unit {
   long_scroll_to(long_scroll.untracked() + delta_rows)
 }
 
-/// Snap back to the active growth edge (bottom when scrolling down, top when scrolling up) and re-enable auto-follow.
 fn long_jump_live() -> Unit {
   let max_s = long_max_scroll(long_h.untracked())
   let target = if long_dir.untracked() < 0 { 0 } else { max_s }
@@ -423,7 +366,6 @@ fn long_reset() -> Unit {
   ps_long_reset()
 }
 
-/// The preview made again, throttled to `min_ms`: at once if enough time has elapsed, else scheduled when due.
 fn long_preview_soon(min_ms : Double) -> Unit {
   let since = ps_now_ms() - long_preview_at.v
   if since >= min_ms {
@@ -464,7 +406,6 @@ fn long_preview_make() -> Unit {
   long_preview_n.v += 1
   let key = "mem:long/\{long_preview_n.v}"
   ui::add_image(key, b)
-  // (shown only once it is decoded, the one shown kept till then so the preview never blinks out between slices)
   let (waiting, _, _) = long_pending.untracked()
   if waiting != "" {
     ui::forget_image(waiting)
@@ -476,7 +417,6 @@ fn long_preview_make() -> Unit {
   }
 }
 
-/// The preview decoded: shown in the place of the one before, which is let go.
 fn long_preview_shown(key : String) -> Unit {
   let (waiting, pw, ph) = long_pending.untracked()
   if key == "" || key != waiting {
@@ -492,12 +432,10 @@ fn long_preview_shown(key : String) -> Unit {
   }
 }
 
-/// The little-endian 32-bit number at `at` of `b`.
 fn le32(b : Bytes, at : Int) -> Int {
   b[at].to_int() | (b[at + 1].to_int() << 8) | (b[at + 2].to_int() << 16) | (b[at + 3].to_int() << 24)
 }
 
-/// The picture as it stands, its taking stopped: its PNG (None: there is none).
 fn long_png() -> Option[Bytes] {
   ps_long_stop()
   long_stopped.set(true)
@@ -509,7 +447,6 @@ fn long_png() -> Option[Bytes] {
   }
 }
 
-/// The picture's size: (w, h) pixels.
 fn long_size() -> (Int, Int) {
   let n = numbers_of(text_of(ps_long_info()))
   if n.length() >= 2 {
@@ -519,9 +456,7 @@ fn long_size() -> (Int, Int) {
   }
 }
 
-/// The picture copied (and kept in the pictures' folder where the settings say so), the long screenshot over.
 fn long_copy() -> Unit {
-  // (nothing taken yet, its first moment: a key pressed then does nothing, rather than close it with nothing)
   if long_h.untracked() == 0 {
     return
   }
@@ -544,14 +479,10 @@ fn long_copy() -> Unit {
   long_close()
 }
 
-/// The picture saved (where the settings say to ask, where the system's dialog says), the long screenshot over; the
-/// dialog called off, the panel stays, the taking stopped.
 fn long_save() -> Unit {
   if long_h.untracked() == 0 {
     return
   }
-  // (the taking stopped and where it goes asked first, the picture encoded only once there is somewhere to put it:
-  // the dialog comes at once, and called off, nothing was encoded for nothing)
   ps_long_stop()
   long_stopped.set(true)
   let s = settings.untracked()
@@ -573,8 +504,6 @@ fn long_save() -> Unit {
   long_close()
 }
 
-/// The picture pinned where the part was, as tall as the monitor leaves room for (its zoom brought down to fit), the
-/// long screenshot over.
 fn long_pin() -> Unit {
   if long_h.untracked() == 0 {
     return
@@ -586,7 +515,6 @@ fn long_pin() -> Unit {
   }
   let p = long_part.v
   let m = long_mon.v
-  // (its top where the part's was, kept on the monitor: its zoom brought down to what is left under it, 1/4 at least)
   let y = clampi(p.y, m.y, m.y + m.h * 3 / 4)
   let room = (m.bottom() - y).to_double()
   let z = if h.to_double() > room { room / h.to_double() } else { 1.0 }
@@ -595,7 +523,6 @@ fn long_pin() -> Unit {
   open_pin(png, p.x, y, w, h, zoom=z)
 }
 
-/// The long screenshot over: the taking stopped, what it held let go, the panel closed.
 fn long_close() -> Unit {
   if long_wid.v == 0 {
     return
@@ -608,7 +535,6 @@ fn long_close() -> Unit {
   long_gone()
 }
 
-/// The panel's window gone (closed here or by the system): what the long screenshot held let go.
 fn long_gone() -> Unit {
   if long_wid.v != 0 {
     long_wid.v = 0
@@ -619,12 +545,10 @@ fn long_gone() -> Unit {
   long_tips.off()
   long_clear_preview_images()
   long_root.v = None
-  // (the previews let go now: one still being made a texture is freed as that is through, the native side counts)
   ps_long_preview_free()
   trim_soon()
 }
 
-/// Status copy, dot colour, and warning flag for the panel's status strip.
 fn long_state() -> (String, Int64, Bool) {
   if long_stopped.get() {
     (tr("已停止截取"), 0xAEB3BCFFL, false)
@@ -645,7 +569,6 @@ fn long_state() -> (String, Int64, Bool) {
   }
 }
 
-/// Scroll percentage (0..100) for the current preview viewport.
 fn long_scroll_pct() -> Int {
   let max_s = long_max_scroll(long_h.get())
   if max_s <= 0 {
@@ -654,7 +577,6 @@ fn long_scroll_pct() -> Int {
   clampi((long_scroll.get().to_double() * 100.0 / max_s.to_double()).round().to_int(), 0, 100)
 }
 
-/// Compact screen-height multiplier / scroll readout for the control bar.
 fn long_meta_label() -> String {
   let h = long_h.get()
   let fh = long_part.v.h
@@ -676,9 +598,6 @@ let long_ink : Int64 = 0xF5F6F8FFL
 
 let long_muted : Int64 = 0xB2B7C2FFL
 
-/// The panel's window: movable header with live status dot & dimensions, contextual status strip, true scrollable
-/// virtualized preview (wheel, drag-to-pan, scrollbar with live frame marker, floating jump-to-live pill), pause/reset
-/// controls, and Copy/Save/Pin/Cancel actions.
 fn long_window(root : view::View) -> Unit {
   long_root.v = Some(root)
   root.tree.hand_over_presses(false)
@@ -691,7 +610,6 @@ fn long_window(root : view::View) -> Unit {
     }
   }, long_preview_shown)
   let _ = root.keymap(view::Live::Is(long_keys()))
-  // Transparent DirectComposition window carrying an mbui superellipse card + soft shadow (zero DWM grey border).
   let _ = root.box(fn(outer) {
     let _ = outer
     .over(view::Live::Is(true))
@@ -708,7 +626,6 @@ fn long_window(root : view::View) -> Unit {
       .padding(view::Live::Is((long_pad, long_pad, long_pad, long_pad)))
       .lines_up(view::Live::Is(Some(view::Along::Start)))
 
-    // 1. Draggable Header: live status dot + title + tabular dimension badge
     let _ = page.box(fn(head) {
       let _ = head
       .row(view::Live::Is(true))
@@ -756,7 +673,6 @@ fn long_window(root : view::View) -> Unit {
 
     let _ = page.box(fn(g) { let _ = g.height(view::Live::Is(Some(8.0))) })
 
-    // 2. Contextual Status Banner
     let _ = page.box(fn(st) {
       let _ = st
       .row(view::Live::Is(true))
@@ -777,12 +693,10 @@ fn long_window(root : view::View) -> Unit {
 
     let _ = page.box(fn(g) { let _ = g.height(view::Live::Is(Some(10.0))) })
 
-    // 3. Scrollable Virtualized Preview Viewport
     long_preview_viewport(page)
 
     let _ = page.box(fn(g) { let _ = g.height(view::Live::Is(Some(10.0))) })
 
-    // 4. Capture Controls Strip: Pause/Resume, Reset, and Screen/Progress Readout
     let _ = page.box(fn(ctrl) {
       let _ = ctrl
       .row(view::Live::Is(true))
@@ -819,7 +733,6 @@ fn long_window(root : view::View) -> Unit {
 
     let _ = page.box(fn(g) { let _ = g.height(view::Live::Is(Some(10.0))) })
 
-    // 5. Primary Action Bar: Cancel, Pin, Save | Copy (accent)
     let _ = page.box(fn(bar) {
       let _ = bar.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).width(view::Live::Is(Some(long_box_w()))).lines_up(view::Live::Is(Some(view::Along::Middle)))
       tool_button(bar, "close", "取消", fn() { false }, long_close, tips=long_tips, keys=fn() { "Esc" })
@@ -852,8 +765,6 @@ fn long_window(root : view::View) -> Unit {
   on("end", fn() { long_scroll_to(long_max_scroll(long_h.untracked())) })
 }
 
-/// The virtualized scrollable preview well: wheel scrolls, drag pans the image, right-edge scrollbar scrubs directly
-/// and displays the live capture window position, and a floating pill jumps back to live stitching when detached.
 fn long_preview_viewport(page : view::View) -> Unit {
   let box_w = long_box_w()
   let box_h = long_box_h.v
@@ -878,7 +789,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
       }
     })
 
-    // Pan surface + preview image (sibling of scrollbar & floating pill so drag never eats their clicks)
     let _ = vp.box(fn(canvas) {
       let _ = canvas
       .over(view::Live::Is(true))
@@ -918,7 +828,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
       })
     })
 
-    // Right-edge interactive scrollbar + live capture frame marker (shown only when taller than viewport)
     let _ = vp.box(fn(rail) {
       let _ = rail
       .over(view::Live::Is(true))
@@ -960,7 +869,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
         }
       })
 
-      // Track backdrop
       let _ = rail.box(fn(tr_bg) {
         let _ = tr_bg
         .over(view::Live::Is(true))
@@ -973,7 +881,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
         .edge(view::Live::Is((1.0, 0xFFFFFF18L)))
       })
 
-      // Live capture region indicator inside the track (shows where the active frame sits in the full image)
       let _ = rail.box(fn(live) {
         let _ = live
         .over(view::Live::Is(true))
@@ -1001,7 +908,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
         }))
       })
 
-      // Draggable viewport thumb
       let _ = rail.box(fn(thumb) {
         let _ = thumb
         .over(view::Live::Is(true))
@@ -1039,7 +945,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
       })
     })
 
-    // Floating position / jump-to-live pill overlaid near the bottom of the viewport when scrollable
     let _ = vp.box(fn(overlay_bar) {
       let _ = overlay_bar
       .over(view::Live::Is(true))
@@ -1050,7 +955,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
       .lines_up(view::Live::Is(Some(view::Along::Middle)))
       .lies_along(view::Live::Is(view::Lies::Middle))
 
-      // Auto-follow passive hint pill
       let _ = overlay_bar.box(fn(hint) {
         let _ = hint
         .laid_nowhere(view::Live::By(fn() { !long_follow.get() }))
@@ -1072,7 +976,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
         })
       })
 
-      // Detached manual-inspect interactive jump pill
       let _ = overlay_bar.box(fn(jump) {
         hig_focus(jump)
         let _ = jump
@@ -1111,7 +1014,6 @@ fn long_preview_viewport(page : view::View) -> Unit {
   })
 }
 
-/// Secondary pill button for the control strip (Pause/Resume, Reset).
 fn long_pill_button(
   row : view::View,
   icon : () -> String,
@@ -1195,7 +1097,6 @@ fn long_pill_button(
   })
 }
 
-/// The panel's copy: the accent's, its glyph and its name.
 fn long_copy_button(bar : view::View) -> Unit {
   let _ = bar.box(fn(b) {
     let live = fn() { long_h.get() > 0 }

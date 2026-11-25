@@ -1,17 +1,3 @@
-// PinShot's single-file self-installer & uninstaller on Windows (replaces Inno Setup):
-//
-// - Double-clicking a downloaded pinshot.exe (in Downloads / %TEMP%, or named PinShot-Setup*.exe) installs itself into
-//   %LOCALAPPDATA%\Programs\PinShot\pinshot.exe, creates a Start menu shortcut (IShellLinkW), registers a proper
-//   Settings > Apps uninstall entry, and launches the installed copy with --installed.
-// - Running pinshot.exe from any other folder (e.g. D:\Tools\, out\build\, or with --portable) runs in place without
-//   copying itself or writing uninstall entries.
-// - Legacy Inno Setup auto-updates pass `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /UPDATE`: detected here so old
-//   installs seamlessly upgrade to the single-file copy, cleaning up unins000.* and the old `{6B0F3C2E-...}_is1` key.
-// - `--uninstall` (and Settings > Apps uninstall) prompts for confirmation (unless `--silent`), quits the running
-//   instance, removes shortcuts, autostart Run value, uninstall registry entries, and schedules self-deletion of the
-//   installed exe and empty folder.
-// - Test isolation: when both PINSHOT_TEST and PINSHOT_TEST_ROOT are set, all file paths and registry keys are scoped
-//   under PINSHOT_TEST_ROOT and `PinShot-Test`, never touching the user's real installation.
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
 #include <windows.h>
@@ -32,9 +18,7 @@
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "user32.lib")
 
-// (startup_task.cpp)
 int ps_packaged(void);
-// (platform_win.c)
 int32_t ps_ui_chinese(void);
 
 #define INST_PATH_CAP 1024
@@ -270,7 +254,6 @@ static void set_run_autostart(const wchar_t *target_exe, int on) {
   RegCloseKey(k);
 }
 
-// Probe whether `exe` is unlocked for replacement (no running process holds an image section on it).
 static int exe_unlocked(const wchar_t *exe) {
   if (GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES) return 1;
   HANDLE h = CreateFileW(exe, DELETE | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
@@ -281,7 +264,6 @@ static int exe_unlocked(const wchar_t *exe) {
   return 0;
 }
 
-// Ask the running copy at `target_exe` to quit (`--quit`) and wait up to 5 seconds for it to unlock.
 static int quit_running_exe(const wchar_t *target_exe) {
   if (GetFileAttributesW(target_exe) == INVALID_FILE_ATTRIBUTES) return 1;
   if (exe_unlocked(target_exe)) return 1;
@@ -364,7 +346,6 @@ static int do_install(
   if (!same_path(self_exe, target)) {
     if (!quit_running_exe(target)) {
       if (is_update) {
-        // Legacy update safeguard: ensure the existing copy stays alive if it refused to quit.
         if (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES) launch_exe(target, L"--start");
         ExitProcess(7);
       }
@@ -414,7 +395,6 @@ static void schedule_self_delete(const wchar_t *target_exe, const wchar_t *insta
   wchar_t tmp[INST_PATH_CAP] = {0};
   if (GetTempPathW(INST_PATH_CAP, tmp) > 0) SetCurrentDirectoryW(tmp);
   wchar_t cmd[INST_PATH_CAP * 3 + 128];
-  // Retry deletion briefly so this process has time to exit and release its image lock, then remove empty install_dir.
   _snwprintf(
       cmd,
       INST_PATH_CAP * 3 + 127,
@@ -446,11 +426,9 @@ static int do_uninstall(const wchar_t *self_exe, int silent) {
   _snwprintf(target, INST_PATH_CAP + 31, L"%ls\\pinshot.exe", dir);
   target[INST_PATH_CAP + 31] = 0;
 
-  // Ask any running copy to quit first (skip waiting on self when invoked from the installed exe itself).
   if (!same_path(self_exe, target)) {
     quit_running_exe(target);
   } else {
-    // Still ask any other running instance (normal PinShot window) to quit cleanly.
     wchar_t cmd[INST_PATH_CAP + 24];
     _snwprintf(cmd, INST_PATH_CAP + 23, L"\"%ls\" --quit", target);
     cmd[INST_PATH_CAP + 23] = 0;
@@ -473,7 +451,6 @@ static int do_uninstall(const wchar_t *self_exe, int silent) {
   RegDeleteTreeW(HKEY_CURRENT_USER, uninstall_subkey());
   remove_legacy_inno(dir);
 
-  // Clean leftover transient files beside the installed exe.
   static const wchar_t *extras[] = {L".old", L".download", L".download.part", L".staging", L".probe"};
   for (size_t i = 0; i < sizeof(extras) / sizeof(extras[0]); i++) {
     wchar_t p[INST_PATH_CAP + 48];
@@ -492,11 +469,8 @@ static int do_uninstall(const wchar_t *self_exe, int silent) {
   return 1;
 }
 
-// (capture_wgc.cpp)
 int ps_wgc_shot_cli(void);
 
-// Handle self-install, legacy `/UPDATE`, `--uninstall`, or automatic first-run install from Downloads/%TEMP%.
-// Returns 1 if handled (caller should exit), 0 to continue starting PinShot normally.
 int32_t ps_install_cli(moonbit_bytes_t version_bytes) {
   if (ps_wgc_shot_cli()) return 1;
   if (ps_packaged()) return 0;
@@ -550,8 +524,6 @@ int32_t ps_install_cli(moonbit_bytes_t version_bytes) {
   return 0;
 }
 
-// Keep Settings > Apps metadata (DisplayVersion, EstimatedSize) and Start menu shortcut in sync after in-place
-// self-updates, and clean up any leftover legacy Inno Setup entry when running from the installed folder.
 void ps_install_sync_meta(moonbit_bytes_t version_bytes) {
   if (ps_packaged()) return;
   wchar_t self_exe[INST_PATH_CAP] = {0}, dir[INST_PATH_CAP] = {0}, target[INST_PATH_CAP + 32] = {0};
@@ -561,7 +533,6 @@ void ps_install_sync_meta(moonbit_bytes_t version_bytes) {
   target[INST_PATH_CAP + 31] = 0;
   if (!same_path(self_exe, target)) return;
 
-  // Only refresh if an uninstall entry already exists (either new PinShot key or legacy Inno key).
   HKEY k = NULL;
   int has_new = RegOpenKeyExW(HKEY_CURRENT_USER, uninstall_subkey(), 0, KEY_READ, &k) == ERROR_SUCCESS;
   if (k) RegCloseKey(k);

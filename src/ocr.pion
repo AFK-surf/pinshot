@@ -1,8 +1,3 @@
-// Live Text (PixPin / Apple Live Text style) on pins: Windows' own offline OCR (ocr_win.cpp, on a background thread)
-// returns per-word normalized boxes [0, 1] directly onto the pin image — no separate modal text window, zero idle
-// memory or threads. Drag over text to select, double-click a token, triple-click a line, Ctrl+C to copy, Esc to
-// clear or dismiss.
-
 import "hostapi"
 import "json"
 import "pixels"
@@ -10,7 +5,6 @@ import "signals"
 import "ui"
 import "view"
 
-/// One recognized word on a pin, in normalized [0.0, 1.0] coordinates of the pin's shown image.
 struct OcrWord {
   line : Int
   space : Bool
@@ -21,7 +15,6 @@ struct OcrWord {
   text : String
 }
 
-/// Live Text state kept per pin (Idle until asked; cached while the pin stays in the same orientation).
 enum PinOcr {
   Idle
   Reading
@@ -29,12 +22,10 @@ enum PinOcr {
   Failed(String)
 }
 
-/// Monotonic request counter and in-flight map (cleared as soon as the reading returns or its pin closes).
 let ocr_id : signals::Ref[Int] = signals::ref_new(0)
 
 let ocr_pending : Map[Int, Pin] = Map::new()
 
-/// Parse normalized word boxes from native OCR TSV: `line\tspace\tx\ty\tw\th\ttext\n`.
 fn ocr_parse_boxes(raw : String) -> Array[OcrWord] {
   let out : Array[OcrWord] = []
   for row in raw.split("\n") {
@@ -72,7 +63,6 @@ fn ocr_parse_boxes(raw : String) -> Array[OcrWord] {
   out
 }
 
-/// Join recognized words in inclusive range `[a, b]` (order-independent), preserving line breaks and CJK/Latin spacing.
 fn ocr_text_range(words : Array[OcrWord], a : Int, b : Int) -> String {
   if words.length() == 0 {
     return ""
@@ -102,8 +92,6 @@ fn ocr_full_text(words : Array[OcrWord]) -> String {
   }
 }
 
-/// Hit-test normalized `(u, v)` against recognized words (with slight pixel padding and same-line inter-word gap
-/// bridging so the I-beam cursor stays steady across spaces). Returns -1 when over empty image area.
 fn ocr_hit_word(words : Array[OcrWord], u : Double, v : Double, px_w : Double, px_h : Double) -> Int {
   if words.length() == 0 || u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0 {
     return -1
@@ -126,7 +114,6 @@ fn ocr_hit_word(words : Array[OcrWord], u : Double, v : Double, px_w : Double, p
   if best >= 0 {
     return best
   }
-  // Bridge narrow horizontal spaces between adjacent words on the same line (without grabbing wide multi-column gaps).
   for i in 0..<(words.length() - 1) {
     let a = words[i]
     let b = words[i + 1]
@@ -148,8 +135,6 @@ fn ocr_hit_word(words : Array[OcrWord], u : Double, v : Double, px_w : Double, p
   -1
 }
 
-/// Nearest word in reading order to normalized `(u, v)` during an active drag selection: prioritizes the vertical
-/// line band first so sweeping across multi-line paragraphs feels smooth and never jumps erratically.
 fn ocr_nearest_word(words : Array[OcrWord], u : Double, v : Double) -> Int {
   if words.length() == 0 {
     return -1
@@ -200,8 +185,6 @@ fn ocr_is_punct(s : String) -> Bool {
   (cp >= 0xFF5B && cp <= 0xFF65)
 }
 
-/// Double-click range: Latin words are already one `OcrWord`; for single-character CJK words, expand across contiguous
-/// unspaced non-punctuation characters on the same line.
 fn ocr_token_range(words : Array[OcrWord], idx : Int) -> (Int, Int) {
   if idx < 0 || idx >= words.length() {
     return (0, 0)
@@ -229,7 +212,6 @@ fn ocr_token_range(words : Array[OcrWord], idx : Int) -> (Int, Int) {
   (lo, hi)
 }
 
-/// Triple-click range: every word on the same line as `idx`.
 fn ocr_line_range(words : Array[OcrWord], idx : Int) -> (Int, Int) {
   if idx < 0 || idx >= words.length() {
     return (0, 0)
@@ -254,7 +236,6 @@ fn ocr_failed_short(why : String) -> String {
   }
 }
 
-/// Clear any in-flight OCR entry belonging to pin `p`.
 fn pin_ocr_clear_pending(p : Pin) -> Unit {
   if p.ocr_req.v != 0 {
     ocr_pending.remove(p.ocr_req.v)
@@ -262,7 +243,6 @@ fn pin_ocr_clear_pending(p : Pin) -> Unit {
   }
 }
 
-/// Start (or re-show cached) Live Text right on pin `p`.
 fn pin_start_ocr(p : Pin, from_capture~ : Bool = false) -> Unit {
   if from_capture {
     p.ocr_from_capture.v = true
@@ -290,14 +270,12 @@ fn pin_start_ocr(p : Pin, from_capture~ : Bool = false) -> Unit {
   }
 }
 
-/// Force a fresh OCR pass on pin `p` (e.g. after Retry).
 fn pin_retry_ocr(p : Pin) -> Unit {
   pin_ocr_clear_pending(p)
   p.ocr.set(Idle)
   pin_start_ocr(p)
 }
 
-/// Exit Live Text mode on pin `p` (keeps recognized boxes cached while orientation stays unchanged).
 fn pin_exit_ocr(p : Pin) -> Unit {
   p.ocr_selecting.v = false
   signals::start_batch()
@@ -307,7 +285,6 @@ fn pin_exit_ocr(p : Pin) -> Unit {
   signals::end_batch()
 }
 
-/// Toggle Live Text on pin `p` (Ctrl+O).
 fn pin_toggle_ocr(p : Pin) -> Unit {
   if p.ocr_on.untracked() {
     pin_exit_ocr(p)
@@ -345,7 +322,6 @@ fn pin_copy_ocr_all(p : Pin) -> Bool {
   }
 }
 
-/// A reading told back ({"do":"ocr","id":N,"why":"","lang":"zh-Hans-CN","lines":3,"ms":120,"fmt":"boxes"}).
 fn ocr_told(o : json::JsonObject, words : Option[Bytes]) -> Unit {
   let id = jnum(o, "id", -1.0).to_int()
   let str = fn(k : String) { jstr(o, k, "") }
@@ -379,7 +355,6 @@ fn ocr_told(o : json::JsonObject, words : Option[Bytes]) -> Unit {
       p.ocr.set(PinOcr::Ready(ws, full))
     }
   } else {
-    // Plain-text fallback (e.g. a platform engine that has not added box coordinates yet).
     if trim_ws(raw) == "" {
       p.ocr.set(PinOcr::Failed("none"))
     } else {
@@ -388,7 +363,6 @@ fn ocr_told(o : json::JsonObject, words : Option[Bytes]) -> Unit {
   }
 }
 
-/// The part picked (with its marks) pinned right in place with Live Text active.
 fn ocr_out() -> Unit {
   if exporting.v != "" {
     return
@@ -410,7 +384,6 @@ fn ocr_out() -> Unit {
   })
 }
 
-/// Single lightweight vector layer for Live Text highlights on pin `p` (zero nodes per word, None when inactive).
 fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
   if !p.ocr_on.get() {
     return None
@@ -432,7 +405,6 @@ fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
     }
     None => None
   }
-  // Subtle Apple Live Text hover wash on hovered line + gentle highlight on hovered word (only if not already selected).
   if hover >= 0 && hover < words.length() {
     let in_sel = match sel_bounds {
       Some((lo, hi)) => hover >= lo && hover <= hi
@@ -473,7 +445,6 @@ fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
       }
     }
   }
-  // Smooth per-line merged selection ribbons (Apple Live Text blue).
   match sel_bounds {
     Some((lo, hi)) => {
       let sb = StringBuilder::new()
@@ -518,7 +489,6 @@ fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
   }
 }
 
-/// Compact, whisper-quiet floating Live Text capsule anchored at bottom-right of pin `p`.
 fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
   let close_vec : pixels::Vector = {
     w: 12.0,
@@ -544,7 +514,6 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
       .lines_up(view::Live::Is(Some(view::Along::Middle)))
       .presses(view::Live::Is(true))
       .cursor(view::Live::Is(Some(view::Cursor::Arrow)))
-      // Status text (Reading / Failed)
       let _ = bar.box(fn(st) {
         let _ = st
         .padding(view::Live::Is((6.0, 0.0, 4.0, 0.0)))
@@ -566,7 +535,6 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
           }))
         })
       })
-      // Retry button (Failed only)
       let _ = bar.box(fn(rb) {
         hig_focus(rb)
         let _ = rb
@@ -595,7 +563,6 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
           .ink(view::Live::Is(0xEDEEF0FFL))
         })
       })
-      // Primary Copy chip (Ready only): copies selected text when selected, else copies all recognized text.
       let _ = bar.box(fn(cb) {
         hig_focus(cb)
         let _ = cb
@@ -643,7 +610,6 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
           .ink(view::Live::Is(0xFFFFFFFFL))
         })
       })
-      // Select-all ghost chip (Ready with boxes and wide enough pin)
       let _ = bar.box(fn(ab) {
         hig_focus(ab)
         let _ = ab
@@ -683,7 +649,6 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
           .ink(view::Live::By(fn() { if ab.pointed() { 0xFFFFFFFFL } else { 0xC8CDD8FFL } }))
         })
       })
-      // Exit Live Text × button
       let _ = bar.box(fn(xb) {
         hig_focus(xb)
         let _ = xb

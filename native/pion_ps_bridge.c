@@ -1,11 +1,3 @@
-// Thin Pion <-> MoonBit-bytes C bridge for PinShot's unmodified native layer
-// (platform_win.c, capture_wgc.cpp, ocr_win.cpp, longshot_win.c, record_win.cpp, picture_win.c,
-// update_win.c, install_win.c, and macOS *.m equivalents).
-//
-// Functions that take only Int/Double/Unit or return moonbit_bytes_t with no Bytes inputs are called
-// directly from Pion (`take_mb_bytes` uses `pion_mb_bytes_len` + `moonbit_decref` from invar's
-// `pion_mb_compat.c`). Only functions that ACCEPT `moonbit_bytes_t` arguments need a wrapper here.
-
 #include "moonbit.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -19,7 +11,6 @@ void pion_ps_stdout(const uint8_t *s, int64_t sl) {
 
 extern moonbit_bytes_t pion_mb_bytes_from_raw(const uint8_t *ptr, int64_t len);
 
-// Original native PinShot symbols
 extern void ps_tray_note(moonbit_bytes_t title, moonbit_bytes_t text);
 extern void ps_set_menu(moonbit_bytes_t lines);
 extern void ps_log(moonbit_bytes_t line);

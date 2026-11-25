@@ -2,8 +2,6 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <stdatomic.h>
 
-// ---- Refcounted raw BGRA pixel buffer (MBRAWPTR, matching platform_win.c's Held) ----
-
 struct PSHeld {
   uint8_t *pixels;
   atomic_int refs;
@@ -48,8 +46,6 @@ void ps_held_drop(PSHeld *h) {
   }
 }
 
-// ---- Screen capture (zero-PNG-encode: draws once to BGRA and hands MBRAWPTR straight to mbui) ----
-
 static BOOL pending, captureOpen;
 static PSHeld *capHeld;
 static uint8_t *capBits;
@@ -73,8 +69,6 @@ NSScreen *ps_mouse_screen(void) {
   return NSScreen.mainScreen;
 }
 
-// Each operation uses its display's origin in desktop points, with pixel offsets within it.
-// The inverse takes the same display, including when its origin is negative.
 NSRect ps_screen_pixels(NSScreen *s, NSRect f) {
   CGRect origin = CGDisplayBounds(ps_display_id(s));
   CGFloat k = s.backingScaleFactor;
@@ -119,7 +113,6 @@ static NSString *windowList(CGDirectDisplayID displayID, CGFloat k) {
     if (!layerNum)
       continue;
     int layer = layerNum.intValue;
-    // Normal app windows (0) and floating/modal panels (< 20); skip desktop (< 0), Dock (20), menu bar (24+).
     if (layer < 0 || layer >= 20)
       continue;
     NSNumber *pidNum = info[(id)kCGWindowOwnerPID];
@@ -283,7 +276,6 @@ int ps_capture_now(void) {
     success = ok;
     finished = YES;
   });
-  // The command-line benchmark runs before NSApplication owns the event loop.
   while (!finished) {
     @autoreleasepool {
       [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
@@ -306,8 +298,6 @@ moonbit_bytes_t ps_capture_take(void) {
   return b;
 }
 moonbit_bytes_t ps_windows(void) { return ps_string(windows); }
-// (whether a window's part shows where the pointer is: Windows' question; the Mac lists windows alone, no parts, so a
-// window listed after another and inside it is behind it: never)
 int ps_window_shows(int of, int i, int x, int y) {
   (void)of;
   (void)i;

@@ -159,7 +159,6 @@ moonbit_bytes_t ps_args(void) {
 void ps_quit(void) { [NSApp terminate:nil]; }
 int ps_ui_chinese(void) { return [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"]; }
 
-// Full Windows-VK <-> macOS virtual keycode table for global hotkeys and custom shortcut recording.
 typedef struct {
   int vk;
   UInt32 mac;
@@ -256,7 +255,6 @@ int ps_hotkey(int which, int mods, int vk) {
   return RegisterEventHotKey(code, flags, id, GetApplicationEventTarget(), 0, &keys[which]) == noErr;
 }
 
-// Local key monitor while settings asks for a custom shortcut (matches Windows' ps_key_record, zero Accessibility needed).
 static id keyRecMonitor;
 static id keyRecResignObs;
 
@@ -451,7 +449,7 @@ void ps_toast_place(int wid, int width, int height) {
   [w orderFrontRegardless];
 }
 void ps_opacity(int wid, int alpha) { mb_app_window_of(wid).alphaValue = alpha / 255.0; }
-void ps_let_close(int wid) {} // mbui delivers NSWindowWillClose once, for either close path.
+void ps_let_close(int wid) {}
 moonbit_bytes_t ps_window_rect(int wid) {
   NSWindow *w = mb_app_window_of(wid);
   NSScreen *s = w.screen ?: ps_mouse_screen();
@@ -473,7 +471,7 @@ moonbit_bytes_t ps_pointer(void) {
   NSRect r = ps_screen_pixels(ps_capture_screen() ?: ps_mouse_screen(), NSMakeRect(p.x, p.y, 0, 0));
   return ps_string([NSString stringWithFormat:@"%.0f,%.0f", NSMinX(r), NSMinY(r)]);
 }
-void ps_gpu_flush(void) {} // Windows' D3D deferred-release hook.
+void ps_gpu_flush(void) {}
 moonbit_bytes_t ps_memory(void) {
   task_vm_info_data_t info = {};
   mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
@@ -519,7 +517,6 @@ moonbit_bytes_t ps_pick_folder(int wid, moonbit_bytes_t dir) {
   [NSApp activateIgnoringOtherApps:YES];
   return ps_string([panel runModal] == NSModalResponseOK ? panel.URL.path : nil);
 }
-// A web page opened in the person's browser (https only).
 void ps_open_url(moonbit_bytes_t url) {
   NSString *s = str(url);
   if (![s hasPrefix:@"https://"]) return;
@@ -602,8 +599,3 @@ int32_t ps_release_signed(moonbit_bytes_t version, moonbit_bytes_t setup_sha, mo
 int32_t ps_install_cli(moonbit_bytes_t version) { (void)version; return 0; }
 void ps_install_sync_meta(moonbit_bytes_t version) { (void)version; }
 int32_t ps_swap_exe(moonbit_bytes_t path, moonbit_bytes_t sha256) { (void)path; (void)sha256; return 0; }
-// (ps_ocr / ps_ocr_now: ocr_mac.m)
-
-// (ps_long_*: longshot_mac.m)
-// (ps_rec_*: record_mac.m)
-// (ps_picture_jpeg / ps_picture_oriented: picture_mac.m)

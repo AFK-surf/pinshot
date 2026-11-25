@@ -1,6 +1,3 @@
-// Automated shadow-clipping regression tests for all 4 transparent floating popup windows in PinShot
-// using upstream `ui::shadow_halo` + `ui::Tester::assert_shadow_clip` (AFK-surf/invar#66).
-
 test "floating popups: toast window passes 3-sigma shadow_clip audit" {
   toast_wid.v = 0
   toast_text.set("Copied to clipboard")
@@ -25,20 +22,17 @@ test "floating popups: rec_window (ready, recording + discard pill, export card)
   rec_morph_in.set(false)
   rec_tip.set("")
 
-  // 1. Ready bar (phase 0)
   rec_phase.set(0)
   rec_confirm_discard.set(false)
   let t = ui::Tester::tree(rec_window, width=480.0, height=bar_height + rec_pad_t + rec_pad_b)
   t.assert_shadow_clip(sigma=3.0, label="rec_window-ready")
 
-  // 2. Recording bar (phase 1) with "Press again to discard" pill visible below bar
   rec_phase.set(1)
   rec_ms.set(1500)
   rec_confirm_discard.set(true)
   t.frame(ms=16.0)
   t.assert_shadow_clip(sigma=3.0, label="rec_window-discard-pill")
 
-  // 3. Export Card (phase 4) at its laid-out window size
   rec_confirm_discard.set(false)
   rec_phase.set(4)
   rec_part.v = Rect::{ x: 0, y: 0, w: 1920, h: 1080 }

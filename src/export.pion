@@ -1,19 +1,11 @@
-// The part picked, with its marks, as a picture of its own pixels (the monitor's: a 4K screen's part is copied at 4K):
-// drawn by the GPU as the overlay draws it (mbui's take_picture: the same nodes, the picture and each mark, at the
-// monitor's scale), read back as a PNG. Then copied, saved or pinned; the overlay is out of sight at once, closed once
-// the picture is taken.
-
 import "hostapi"
 import "pixels"
 import "signals"
 import "ui"
 import "view"
 
-/// What is being done with the picture, while it is taken ("" nothing): no second copy meanwhile.
 let exporting : signals::Ref[String] = signals::ref_new("")
 
-/// The part picked drawn as a picture of its own pixels, `done` told its PNG: laid on its background where that is on
-/// (beautify.mbt), unless `framed` is false (the words read out of it).
 fn picture_of_part(done : (Option[Bytes]) -> Unit, framed~ : Bool = true) -> Unit {
   let r = match sel.untracked() {
     Some(_v) => _v
@@ -63,8 +55,6 @@ fn picture_of_part(done : (Option[Bytes]) -> Unit, framed~ : Bool = true) -> Uni
   }, done, scale=k)
 }
 
-/// The part copied (as a picture other programs paste: PNG and a bitmap), and kept in the pictures' folder where the
-/// settings say so.
 fn copy_out() -> Unit {
   if exporting.v != "" || sel.untracked().is_none() {
     return
@@ -84,7 +74,6 @@ fn copy_out() -> Unit {
     exporting.v = ""
     match png {
       Some(png) => {
-        // (a test run copies into a file, never onto the person's clipboard)
         let test_to = ui::env("PINSHOT_TEST_COPY")
         if test_to != "" {
           let _ = ps_write_file(cstr(test_to), png)
@@ -108,13 +97,10 @@ fn file_name() -> String {
   "PinShot_" + text_of(ps_stamp()) + ext
 }
 
-/// A picture (`png`) written to `path`: as JPEG (quality 92 or 80 per settings) when `path` ends in `.jpg`/`.jpeg`,
-/// else lossless PNG.
 fn write_picture_file(path : String, png : Bytes) -> Unit {
   let lower = str_to_ascii_lower(path)
   if str_has_suffix(lower, ".jpg") || str_has_suffix(lower, ".jpeg") {
     let q = if settings.untracked().save_format == 2 { 80 } else { 92 }
-    // (the system's encoder where it can, platform_win's ps_picture_jpeg: tens of milliseconds, not seconds)
     let native = ps_picture_jpeg(png, q)
     if native.length() > 0 {
       let _ = ps_write_file(cstr(path), native)
@@ -132,7 +118,6 @@ fn write_picture_file(path : String, png : Bytes) -> Unit {
   let _ = ps_write_file(cstr(path), png)
 }
 
-/// The part saved: where the settings say to ask, the system's dialog in the pictures' folder; else there at once.
 fn save_out() -> Unit {
   if exporting.v != "" || sel.untracked().is_none() {
     return
@@ -157,7 +142,6 @@ fn save_out() -> Unit {
           log("saved \{path}")
           close_capture()
         } else {
-          // (the dialog called off: back to the capture as it was)
           let m = mon.v
           ps_place(0, m.x, m.y, m.w, m.h, 1, 1)
           ps_cloak(0, 0)
@@ -168,7 +152,6 @@ fn save_out() -> Unit {
   })
 }
 
-/// The part pinned where it is on the screen.
 fn pin_out() -> Unit {
   if exporting.v != "" {
     return
@@ -195,7 +178,6 @@ let r_w : signals::Ref[Int] = signals::ref_new(0)
 
 let r_h : signals::Ref[Int] = signals::ref_new(0)
 
-/// The shutter's sound, where the settings have it.
 fn shutter() -> Unit {
   if settings.untracked().sound {
     ps_shutter()

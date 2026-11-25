@@ -1,7 +1,3 @@
-// Pictures made over by the Mac's own codecs (ImageIO and Core Graphics) rather than in MoonBit, as picture_win.c does
-// with WIC: a JPEG written of a PNG, a pin's picture turned and flipped. Only PNGs and JPEGs are taken (what captures
-// and pins are); anything else, or anything that fails, answers empty and the app does it its own way (pin.mbt,
-// export.mbt).
 #import "mac_platform.h"
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -12,7 +8,6 @@ static int isPngOrJpeg(const uint8_t *b, size_t n) {
   return n >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF;
 }
 
-// The picture `pic` decoded (NULL: not a PNG or JPEG, or unreadable).
 static CGImageRef decodedImage(moonbit_bytes_t pic) {
   size_t n = (size_t)Moonbit_array_length(pic);
   if (!isPngOrJpeg(pic, n))
@@ -21,7 +16,6 @@ static CGImageRef decodedImage(moonbit_bytes_t pic) {
   CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
   if (!src)
     return NULL;
-  // (decoded now, while `pic` is still there to read)
   CGImageRef img = CGImageSourceCreateImageAtIndex(
       src, 0, (__bridge CFDictionaryRef) @{(id)kCGImageSourceShouldCacheImmediately : @YES});
   CFRelease(src);
@@ -40,7 +34,6 @@ static moonbit_bytes_t encodedAs(CGImageRef img, NSString *type, NSDictionary *o
   return ok ? ps_data(out) : moonbit_make_bytes(0, 0);
 }
 
-// A picture (PNG or JPEG) as a JPEG of quality `quality` (its alpha not kept); empty where it is neither, or it failed.
 moonbit_bytes_t ps_picture_jpeg(moonbit_bytes_t pic, int32_t quality) {
   @autoreleasepool {
     CGImageRef img = decodedImage(pic);
@@ -54,9 +47,6 @@ moonbit_bytes_t ps_picture_jpeg(moonbit_bytes_t pic, int32_t quality) {
   }
 }
 
-// A picture (PNG or JPEG) mirrored left to right first (`flipped`), then turned `turns` quarters clockwise, as the pin
-// shows it: `shown` 1, a top-down 32-bit BMP where it is opaque (mbui's host makes its texture as it is), else a PNG;
-// `shown` 0, a PNG (what is copied and saved). Empty where it is neither PNG nor JPEG, or it failed.
 moonbit_bytes_t ps_picture_oriented(moonbit_bytes_t pic, int32_t turns, int32_t flipped, int32_t shown) {
   @autoreleasepool {
     CGImageRef img = decodedImage(pic);
@@ -67,9 +57,7 @@ moonbit_bytes_t ps_picture_oriented(moonbit_bytes_t pic, int32_t turns, int32_t 
       CGImageRelease(img);
       return moonbit_make_bytes(0, 0);
     }
-    // (BGRA in memory, its first row the picture's top, premultiplied: what an opaque picture's BMP is as it is)
     CGBitmapInfo info = kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaPremultipliedFirst;
-    // (in the picture's own colours, none made over: as the app's own decoder reads them, the PNG made tagged so)
     CGColorSpaceRef own = CGImageGetColorSpace(img);
     CGColorSpaceRef space = own && CGColorSpaceGetModel(own) == kCGColorSpaceModelRGB
                                 ? CGColorSpaceRetain(own)
@@ -95,7 +83,6 @@ moonbit_bytes_t ps_picture_oriented(moonbit_bytes_t pic, int32_t turns, int32_t 
       for (size_t i = 0; i < w * h && opaque; i++)
         opaque = (src[i] >> 24) == 0xFF;
     }
-    // mirrored first, then turned: out's pixel (x, y) is the mirrored picture's
     turns = ((turns % 4) + 4) % 4;
     size_t ow = turns % 2 ? h : w, oh = turns % 2 ? w : h;
     size_t head = shown && opaque ? 54 : 0;

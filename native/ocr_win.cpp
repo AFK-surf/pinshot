@@ -1,13 +1,3 @@
-// The words in a picture read by Windows' own OCR (Windows.Media.Ocr: on the machine, offline, in a language whose OCR
-// is installed, Chinese where Windows is in Chinese). The picture (a PNG: a part taken, a pin) is read on a thread of
-// its own, the UI going on meanwhile; what it says comes back on the channel "ps" as {"do":"ocr","id":N,...}, its
-// words as UTF-8 bytes beside the JSON (main.mbt). `pinshot.exe --ocr <file>` reads one at once and prints it.
-//
-// What the engine is given: the picture in BGRA, brought up to twice its size where that keeps it under 4 million
-// pixels (small screen text is read better so: 12-14 px UI text, its digits and Latin letters split and misread at
-// its own size by the older engine some Windows still have), down to the engine's largest where it is over it. What it
-// gives: lines of words; a line is put back together with a space between words but between two of Chinese or
-// Japanese (it gives each such character as a word), the lines one under the other.
 #include <windows.h>
 #include <wincodec.h>
 #include <roapi.h>
@@ -43,7 +33,6 @@ namespace OCR = ABI::Windows::Media::Ocr;
 
 extern "C" void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
 
-// `op` waited for (it ends on the system's threads: an agile handler sets an event), 20 s at most.
 template <typename T, typename R>
 static HRESULT ocr_wait(WF::IAsyncOperation<T> *op, R *out) {
   HANDLE raw = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -78,14 +67,11 @@ static std::string utf8_of(HSTRING s) {
   return out;
 }
 
-// A character written without spaces round it: Chinese, Japanese, their punctuation and full-width forms (not Korean,
-// which has spaces between its words).
 static int unspaced(wchar_t c) {
   return (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFE30 && c <= 0xFE4F) ||
          (c >= 0xFF00 && c <= 0xFFEF);
 }
 
-// The picture decoded and made the engine's: BGRA, `scale` times its size.
 static HRESULT bitmap_of(const uint8_t *png, int len, double scale_up, UINT32 most, ComPtr<WI::ISoftwareBitmap> &out,
                          int *ow, int *oh) {
   ComPtr<IWICImagingFactory> wic;
@@ -130,8 +116,6 @@ static HRESULT bitmap_of(const uint8_t *png, int len, double scale_up, UINT32 mo
                                            WI::BitmapAlphaMode_Premultiplied, &bmp)))
     return hr;
   {
-    // (whatever fails on the way, the buffer's reference, the buffer and the bitmap closed: their memory given back
-    // now, not whenever the last reference goes)
     ComPtr<WI::IBitmapBuffer> buf;
     ComPtr<WF::IMemoryBufferReference> ref;
     auto close_all = [&](bool bitmap_too) {
@@ -167,13 +151,8 @@ static HRESULT bitmap_of(const uint8_t *png, int len, double scale_up, UINT32 mo
   return S_OK;
 }
 
-// The engine: the first of the person's profile languages whose OCR is installed, except when that language is English
-// and a CJK recognizer is also installed (the CJK one reads Latin letters and digits among Chinese as well, while the
-// English one reads Chinese as nonsense: a Windows in English with Chinese added still reads Chinese). S_FALSE: none.
-// Which language that is is found once a run (finding it may make two engines: the profile's, then the CJK one); each
-// reading after makes the one engine of the language found.
 static SRWLOCK chosen_lock = SRWLOCK_INIT;
-static std::wstring chosen;  // the language tag found ("" not yet)
+static std::wstring chosen;
 static HRESULT engine_found(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcrEngine> &engine);
 static HRESULT engine_of(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcrEngine> &engine) {
   AcquireSRWLockShared(&chosen_lock);
@@ -225,7 +204,6 @@ static HRESULT engine_found(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcr
       engine = prof;
       return S_OK;
     }
-    // (English: the CJK one looked for below; the profile's kept only should there be none)
   }
   static const wchar_t *firsts[] = {L"zh-Hans", L"zh-Hant", L"zh", L"ja", L"ko"};
   for (const wchar_t *want : firsts) {
@@ -251,8 +229,6 @@ static HRESULT engine_found(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcr
   return SUCCEEDED(hr) && engine ? S_OK : S_FALSE;
 }
 
-// What came of a reading: its words (UTF-8), per-word normalized boxes (TSV: line\tspace\tx\ty\tw\th\ttext), the
-// language read in, why it failed ("" it did not).
 struct OcrOut {
   std::string text;
   std::string boxes;
@@ -380,11 +356,9 @@ struct OcrJob {
   uint8_t png[1];
 };
 
-// One reading at a time: asked for while one goes, the new one waits (one at most: a newer one takes its place, the
-// app wants only the last it asked for), and the thread reading takes it as it is through. No readings pile up.
 static SRWLOCK jobs_lock = SRWLOCK_INIT;
-static OcrJob *job_next;   // waiting
-static bool job_running;   // a thread reads
+static OcrJob *job_next;
+static bool job_running;
 
 static DWORD WINAPI ocr_thread(LPVOID p) {
   OcrJob *job = (OcrJob *)p;
@@ -406,13 +380,11 @@ static DWORD WINAPI ocr_thread(LPVOID p) {
     if (!job) job_running = false;
     ReleaseSRWLockExclusive(&jobs_lock);
   }
-  // (the engine's DLLs given back once nothing reads: the OCR is not kept loaded between readings)
   CoFreeUnusedLibraries();
   if (SUCCEEDED(ro)) RoUninitialize();
   return 0;
 }
 
-// The words in `png` read on a thread of their own, told back as {"do":"ocr","id":id,...} with them: 1 it is begun.
 extern "C" int ps_ocr(int id, moonbit_bytes_t png) {
   int len = (int)Moonbit_array_length(png);
   if (len <= 0) return 0;
@@ -423,7 +395,7 @@ extern "C" int ps_ocr(int id, moonbit_bytes_t png) {
   memcpy(job->png, png, len);
   AcquireSRWLockExclusive(&jobs_lock);
   if (job_running) {
-    free(job_next);  // (asked for before and not begun: the app no longer waits for it)
+    free(job_next);
     job_next = job;
     ReleaseSRWLockExclusive(&jobs_lock);
     return 1;
@@ -442,7 +414,6 @@ extern "C" int ps_ocr(int id, moonbit_bytes_t png) {
   return 1;
 }
 
-// The words in `png` read now (the command line's --ocr): "why\tlang\tms\n" then them.
 extern "C" moonbit_bytes_t ps_ocr_now(moonbit_bytes_t png) {
   int len = (int)Moonbit_array_length(png);
   OcrOut o;

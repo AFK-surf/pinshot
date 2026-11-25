@@ -1,6 +1,3 @@
-// The settings (settings.json in %APPDATA%\PinShot) and their window: the shortcuts, how a pin opens, where pictures
-// are saved, and whether PinShot starts with Windows. A change is written and in force at once.
-
 import "hostapi"
 import "json"
 import "motion"
@@ -10,36 +7,21 @@ import "view"
 
 #derive(Eq)
 struct Settings {
-  /// the shortcuts: capture, and pin the clipboard's picture (set by pressing them on Windows; picked from
-  /// `key_choices` and `pin_choices` on the Mac)
   capture_key : Hotkey
   pin_key : Hotkey
-  /// capture-overlay-local shortcut that confirms & copies the screenshot (default Enter; vk=0 none)
   confirm_key : Hotkey
-  /// a pin over the other windows as it opens, and how clear (255 not seen through)
   pin_top : Bool
   pin_alpha : Int
-  /// saving: format (0 PNG lossless, 1 JPEG 92%, 2 JPEG 80%), the system's dialog each time (else straight into the
-  /// folder), the folder, and a copy kept there too
   save_format : Int
   ask_where : Bool
   save_dir : String
   keep_copies : Bool
-  /// whether WGC capture sessions stay open in the background (true: instant capture; false: opened on demand to save
-  /// ~245 MB of idle video memory)
   capture_keep : Bool
-  /// the language: 0 the system's, 1 Chinese, 2 English (i18n.mbt)
   language : Int
-  /// a shutter's sound as a capture is copied, saved or pinned
   sound : Bool
-  /// updates asked for once a day and put in place once nobody uses PinShot (update.mbt); off (as it starts: the user,
-  /// 2026-11-19: 「自动更新默认关掉」), PinShot goes online only when 检查更新 is pressed
   auto_update : Bool
 }
 
-/// The shortcuts offered: their words, and Windows' modifiers (Alt 1, Ctrl 2, Shift 4) and key. The first of each is
-/// what PixPin is set to on the person's machine (the user, 2026-11-17: 「快捷键对齐一下」): Ctrl+Alt+A takes the
-/// screen, Ctrl+2 pins the clipboard's picture; the others are PixPin's and Snipaste's defaults.
 let key_choices : Array[(String, Int, Int)] = if hostapi::platform() == 0 {
   [("⌃⌥A", 3, 0x41), ("⌃1", 2, 0x31), ("F1", 0, 0x70), ("⌃⇧A", 6, 0x41)]
 } else {
@@ -60,7 +42,6 @@ let confirm_choices : Array[(String, Int, Int)] = if hostapi::platform() == 0 {
   [("不用快捷键", 0, 0), ("Space", 0, 0x20), ("Tab", 0, 0x09), ("Ctrl+Enter", 2, 0x0D)]
 }
 
-/// Shortcut label for the capture "confirm & copy" button tooltip (Enter is always supported; shows extra key if set).
 fn confirm_key_label() -> String {
   let h = settings.get().confirm_key
   if h.vk == 0 {
@@ -70,8 +51,6 @@ fn confirm_key_label() -> String {
   }
 }
 
-/// A shortcut: Windows' modifiers (Alt 1, Ctrl 2, Shift 4, Win 8, as RegisterHotKey takes them) and virtual key; none
-/// where `vk` is 0. The Mac's ps_hotkey takes the same, for the keys `key_choices` and `pin_choices` offer.
 #derive(Eq)
 struct Hotkey {
   mods : Int
@@ -82,12 +61,10 @@ fn hotkey_of(c : (String, Int, Int)) -> Hotkey {
   Hotkey::{ mods: c.1, vk: c.2 }
 }
 
-/// Whether shortcuts are set by pressing them (Windows and macOS).
 fn keys_pressed_in() -> Bool {
   hostapi::platform() == 3 || hostapi::platform() == 0
 }
 
-/// A shortcut as it is shown: one of `choices` by its name, else its modifiers and key ("Ctrl+Alt+A" or "⌃⌥A").
 fn key_words(h : Hotkey, choices : Array[(String, Int, Int)]) -> String {
   if h.vk == 0 {
     return tr("未设置")
@@ -131,7 +108,6 @@ fn key_words(h : Hotkey, choices : Array[(String, Int, Int)]) -> String {
   parts.join("+")
 }
 
-/// Which of `choices` is named `name` (kept by its name: the list's order may change), else the first.
 fn choice_named(choices : Array[(String, Int, Int)], name : String) -> Int {
   for i, c in choices {
     if c.0 == name {
@@ -175,7 +151,6 @@ let settings : signals::Signal[Settings] = signals::signal_by(Settings::{
   auto_update: false,
 }, fn(a, b) { a == b })
 
-/// Whether each shortcut is PinShot's (another program may hold it).
 let capture_key_ok : signals::Signal[Bool] = signals::signal(true)
 
 let pin_key_ok : signals::Signal[Bool] = signals::signal(true)
@@ -216,7 +191,6 @@ fn init_key_choices() -> Unit {
 fn load_settings() -> Unit {
   init_key_choices()
   let d = default_settings()
-  // (the file read and parsed once, for the settings and the recording's choices both)
   let read = json_of(text_of(ps_read_file(cstr(settings_path()))))
   let s = match read {
     Some(json::Json::Object(o)) => {
@@ -226,7 +200,6 @@ fn load_settings() -> Unit {
         let v = jstr(o, name, "")
         if v != "" { v } else { dflt }
       }
-      // (a shortcut as {"mods","vk"}; one kept by an older PinShot by its choice's name)
       let hotkey = fn(name : String, older : String, choices : Array[(String, Int, Int)]) -> Hotkey {
         match o.get(name) {
           Some(json::Json::Object(k)) => {
@@ -267,7 +240,6 @@ fn load_settings() -> Unit {
     }
     _ => d
   }
-  // Restore persisted screen-recording & export preferences
   match read {
     Some(json::Json::Object(o)) => {
       let rnum = fn(name : String, dflt : Int) { jnum(o, name, dflt.to_double()).to_int() }
@@ -328,7 +300,6 @@ fn save_settings() -> Unit {
   let _ = ps_write_file(cstr(settings_path()), utf8_encode(json_stringify(json_obj_map(o))))
 }
 
-/// The settings changed by `f`, written, and in force.
 fn change_settings(f : (Settings) -> Settings) -> Unit {
   let was = settings.untracked()
   let s = f(was)
@@ -348,7 +319,6 @@ fn change_settings(f : (Settings) -> Settings) -> Unit {
   }
 }
 
-/// The shortcuts set as the settings say, and the icon's menu naming them.
 fn apply_keys() -> Unit {
   let s = settings.untracked()
   let cw = key_words(s.capture_key, key_choices)
@@ -357,7 +327,6 @@ fn apply_keys() -> Unit {
   capture_key_ok.set(ps_hotkey(1, s.capture_key.mods, s.capture_key.vk) == 1)
   pin_key_ok.set(ps_hotkey(2, s.pin_key.mods, pv) == 1)
   log("keys: capture \{cw} \{if capture_key_ok.untracked() { "ok" } else { "taken by another program" }}, pin \{pw} \{if pin_key_ok.untracked() { "ok" } else { "taken by another program" }}")
-  // (a shortcut another program holds said once, as it is found: PixPin started with Windows holds Ctrl+Alt+A)
   if !capture_key_ok.untracked() {
     ps_tray_note(
       cstr(tr("截图快捷键被其他程序占用：") + cw),
@@ -383,8 +352,6 @@ fn apply_keys() -> Unit {
   ps_set_menu(utf8_encode(menu))
 }
 
-// ---- the window ----
-
 let settings_wid : signals::Ref[Int] = signals::ref_new(0)
 
 fn open_settings(tab~ : Int = -1) -> Unit {
@@ -394,7 +361,6 @@ fn open_settings(tab~ : Int = -1) -> Unit {
   if settings_wid.v > 0 && ui::window_front_here(settings_wid.v) {
     return
   }
-  // (a test run may open it on a page of its own choosing: PINSHOT_TEST_SETTINGS_TAB, 0 to 3)
   if ui::env("PINSHOT_TEST") != "" {
     match ui::env("PINSHOT_TEST_SETTINGS_TAB") {
       "0" => settings_tab.set(0)
@@ -412,17 +378,10 @@ fn open_settings(tab~ : Int = -1) -> Unit {
   ps_center(wid, 680, 450)
 }
 
-// ---- a shortcut set by pressing it (Windows) ----
-
-/// The shortcut being set by pressing it: 1 capture's, 2 pinning the clipboard's, 0 none.
 let recording : signals::Signal[Int] = signals::signal(0)
 
-/// Why the last shortcut pressed was not taken (shown under its row till another is asked for): its row (1, 2; 0
-/// none) and the words.
 let key_trouble : signals::Signal[(Int, String)] = signals::signal_by((0, ""), fn(a, b) { a.0 == b.0 && a.1 == b.1 })
 
-/// The shortcut `which` asked for (its box pressed): both let go meanwhile, so the one pressed is taken, not run; its box
-/// pressed again while it waits puts things back as they were.
 fn record_key(which : Int) -> Unit {
   let was = recording.untracked()
   stop_recording()
@@ -440,8 +399,6 @@ fn record_key(which : Int) -> Unit {
   }
 }
 
-/// The shortcut `which` cleared (its box's ×, or Backspace while it is asked for): none, the screen still taken from
-/// the icon (the user, 2026-11-20: 「应该可以给一个选项，清空快捷键」).
 fn clear_key(which : Int) -> Unit {
   stop_recording()
   key_trouble.set((0, ""))
@@ -456,8 +413,6 @@ fn clear_key(which : Int) -> Unit {
   keys_set_again(before)
 }
 
-/// The shortcuts set again after one was asked for (they were let go meanwhile), unless change_settings did that
-/// already as they changed: once, not twice (twice said a shortcut another program holds twice over).
 fn keys_set_again(before : Settings) -> Unit {
   let s = settings.untracked()
   if s.capture_key == before.capture_key && s.pin_key == before.pin_key && s.language == before.language {
@@ -465,7 +420,6 @@ fn keys_set_again(before : Settings) -> Unit {
   }
 }
 
-/// Waiting for a shortcut no more (the settings closed, or another asked for), nothing taken.
 fn stop_recording() -> Unit {
   if recording.untracked() != 0 {
     let _ = ps_key_record(0)
@@ -473,9 +427,6 @@ fn stop_recording() -> Unit {
   }
 }
 
-/// A key pressed while a shortcut was asked for (ps_key_record): taken as it, unless it is not one a person can use
-/// (a plain key with no Ctrl, Alt or Win, but F1-F24, PrtSc, Pause and Scroll Lock), the other shortcut already, or
-/// another program's. Escape gives up, Backspace or Delete leaves pinning the clipboard with none (capture keeps one).
 fn key_pressed(how : String, mods : Int, vk : Int) -> Unit {
   let which = recording.untracked()
   recording.set(0)
@@ -525,7 +476,6 @@ fn key_pressed(how : String, mods : Int, vk : Int) -> Unit {
     trouble(if which == 1 { tr("和「贴剪贴板图片」的快捷键相同") } else { tr("和「截图」的快捷键相同") })
     return
   }
-  // (tried as it is now, both let go: one another program holds is said, the old one kept)
   if ps_hotkey(which, mods, vk) != 1 {
     trouble(key_words(h, []) + tr(" 已被其他程序占用，换一个"))
     return
@@ -547,7 +497,6 @@ let set_ground : Int64 = 0x141518FFL
 
 let set_card : Int64 = 0x222429FFL
 
-/// The settings' pages (the user, 2026-11-20: the list of pages at the side, as PixPin's): which one shows.
 let settings_tab : signals::Signal[Int] = signals::signal(0)
 
 let settings_tabs : Array[String] = ["常规", "快捷键", "截图与贴图", "关于"]
@@ -781,7 +730,6 @@ fn keys_page(p : view::View) -> Unit {
   }
 }
 
-/// Which of `choices` the shortcut `h` is (the first where none is).
 fn choice_of(choices : Array[(String, Int, Int)], h : Hotkey) -> Int {
   for i, c in choices {
     if c.1 == h.mods && c.2 == h.vk {
@@ -791,7 +739,6 @@ fn choice_of(choices : Array[(String, Int, Int)], h : Hotkey) -> Int {
   0
 }
 
-/// What is said under a shortcut's row: why the one pressed was not taken, or that another program holds it.
 fn key_note(which : Int) -> String {
   let (row, why) = key_trouble.get()
   if row == which {
@@ -809,7 +756,6 @@ fn key_note(which : Int) -> String {
   }
 }
 
-/// A shortcut's box: what it is; pressed, it waits for the keys to be pressed ("按下快捷键…"), with an inline × inside the right edge when bound.
 fn key_box(parent : view::View, which : Int) -> Unit {
   let has = fn() {
     let s = settings.get()
@@ -959,7 +905,6 @@ fn about_page(p : view::View) -> Unit {
   set_group(p, "", fn(g) {
     update_settings(g)
   })
-  // (the sponsor's page: the user, 2026-11-19 「给 PinShot 也加一个赞助链接」; a card of its own, 2026-11-21 「B」)
   sponsor_card(p)
   let _ = p.box(fn(b) {
     let _ = b.padding(view::Live::Is((4.0, 0.0, 4.0, 0.0))).gap(view::Live::Is(2.0))
@@ -974,30 +919,22 @@ fn about_page(p : view::View) -> Unit {
   })
 }
 
-/// The sponsor's card on the About page (the user's choice B, 2026-11-21, its spec the ScreenReplay mock's
-/// `.sponsor-b`): a warm card, a coffee cup's badge whose steam rises, the words, a warm button; pressed anywhere, the
-/// support page. Its motions are ways of the node's own (no timer, no clock): as the page opens the steam rises for
-/// two and a half seconds, the card's edge glows once and a sheen crosses the button once, then all is still; hovered,
-/// the badge lifts, a small heart floats off once and the steam rises again while the pointer stays. Off the page, or
-/// the settings closed, the node is gone and so is all of it.
 fn sponsor_card(parent : view::View) -> Unit {
   let amber = 0xE5A545FFL
   let amber_hi = 0xF5C36BFFL
-  let steam = motion::NodeWay::new(0.0) // 0 -> 1: one rise of the three wisps, staggered
-  let glow = motion::NodeWay::new(1.0) // 0 -> 1: the edge's glow, once as it opens
-  let sheen = motion::NodeWay::new(1.0) // 0 -> 1: the sheen across the button
-  let heart = motion::NodeWay::new(1.0) // 0 -> 1: the heart floating off
+  let steam = motion::NodeWay::new(0.0)
+  let glow = motion::NodeWay::new(1.0)
+  let sheen = motion::NodeWay::new(1.0)
+  let heart = motion::NodeWay::new(1.0)
   let open_url = fn() {
     ps_open_url(cstr(site_url + "/support?lang=" + (if english.get() { "en" } else { "zh" })))
   }
   let _ = parent.box(fn(card) {
     let hov = smooth_hover(card, ms=180.0)
     tactile_press(card, sink_px=0.6)
-    // (as it opens: the steam, the glow, then the sheen 240 ms later)
     steam.go_from(card, 0.0, 1.0, motion::tween(2600.0, ease=ui::Ease::Linear))
     glow.go_from(card, 0.0, 1.0, motion::tween(900.0, ease=ui::Ease::Out))
     sheen.go_from(card, 0.0, 1.0, motion::tween(820.0, ease=ui::Ease::Out), at=card.cause_at() + 240.0)
-    // (hovered: the heart once, the sheen once, the steam again for as long as the pointer stays)
     let rise_again : signals::Ref[() -> Unit] = signals::ref_new(fn() { () })
     let keep_rising_fn : signals::Ref[() -> Unit] = signals::ref_new(fn() { () })
     keep_rising_fn.v = fn() {
@@ -1009,7 +946,6 @@ fn sponsor_card(parent : view::View) -> Unit {
       }, later=true)
     }
     let keep_rising = fn() { (keep_rising_fn.v)() }
-    // (the next rise called off as the card goes, whatever is pending then)
     let _ = card.owns(fn() { (rise_again.v)() })
     let _ = card.reacts(fn() { card.pointed() }, at_start=false, fn(on) {
       if on {
@@ -1031,16 +967,13 @@ fn sponsor_card(parent : view::View) -> Unit {
     .cursor(view::Live::Is(Some(view::Cursor::Hand)))
     .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("赞助作者"))) }))
     .on_press(open_url)
-    // (the card's own ground warmed a little by the amber, more as it is hovered)
     .ground(view::Live::By(fn() { mix_rgba(mix_rgba(set_card, amber, 0.07), mix_rgba(set_card, amber, 0.13), hov()) }))
     .edge(view::Live::By(fn() {
       let g = glow.shown(card)
-      // (the glow: up to 40% of its time, then away)
       let lit = if g < 0.4 { g / 0.4 } else { (1.0 - g) / 0.6 }
       let rest = mix_rgba(0xE5A54538L, 0xF5C36B75L, hov())
       (1.0 + lit, mix_rgba(rest, 0xE5A54580L, lit))
     }))
-    // the badge: a cup, its steam, and the heart that floats off it
     let _ = card.box(fn(b) {
       let _ = b
       .width(view::Live::Is(Some(36.0)))
@@ -1064,7 +997,6 @@ fn sponsor_card(parent : view::View) -> Unit {
             stroke_layer("M2.6 6.4h8.4v3.4a3.2 3.2 0 0 1-3.2 3.2H5.8a3.2 3.2 0 0 1-3.2-3.2Z", amber_hi, 1.45),
             stroke_layer("M11 7.3h0.8a1.6 1.6 0 0 1 0 3.2H11", amber_hi, 1.45),
           ]
-          // (each wisp's rise: 2.2 s, the second 0.4 s after the first, the third 0.8 s; at rest, faint, in place)
           for i, x in [(5.0, 2.4, 1.8), (7.4, 2.1, 2.1), (9.8, 2.4, 1.8)] {
             let (wx, wy, wl) = x
             let (op, dy) = if still {
@@ -1111,7 +1043,6 @@ fn sponsor_card(parent : view::View) -> Unit {
         .picture(view::Live::Is(Some(pixels::Vector::{ w: 16.0, h: 16.0, layers: [fill_layer("M8 13.7S2 9.8 2 5.6A3.2 3.2 0 0 1 8 3.8a3.2 3.2 0 0 1 6 1.8c0 4.2-6 8.1-6 8.1Z", 0xFF6B7AFFL)] })))
       })
     })
-    // the words
     let _ = card.box(fn(c) {
       let _ = c.grow(view::Live::Is(1.0)).shrink(view::Live::Is(1.0)).min_width(view::Live::Is(Some(0.0))).gap(view::Live::Is(2.0))
       set_words(c, fn() { tr("赞助作者") }, 13.0, set_ink, weight=600)
@@ -1121,7 +1052,6 @@ fn sponsor_card(parent : view::View) -> Unit {
         .ink(view::Live::Is(set_muted))
       })
     })
-    // the button: warm gold, its sheen
     let _ = card.box(fn(btn) {
       let _ = btn
       .row(view::Live::Is(true))
@@ -1212,7 +1142,6 @@ fn set_row(
   })
 }
 
-/// A row of choices, the one in force lit with a smooth gliding thumb.
 fn choice(parent : view::View, names : Array[String], at : () -> Int, pick : (Int) -> Unit) -> Unit {
   let _ = parent.box(fn(seg) {
     let _ = seg.row(view::Live::Is(true)).pad(view::Live::Is(2.0)).radius(view::Live::Is(8.0)).ground(view::Live::Is(0x131417FFL)).edge(view::Live::Is((1.0, 0xFFFFFF1AL))).gap(view::Live::Is(2.0)).shrink(view::Live::Is(0.0))
@@ -1307,7 +1236,6 @@ fn switch(parent : view::View, on : () -> Bool, set : (Bool) -> Unit) -> Unit {
   })
 }
 
-/// A small button saying `label` (it may change), laid out only while `shown`.
 fn small_button(
   parent : view::View,
   label : () -> String,

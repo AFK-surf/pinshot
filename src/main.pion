@@ -1,20 +1,3 @@
-// PinShot: a screenshot taken and pinned, as PixPin does it, on mbui (still.fail's way: the UI and what it does in
-// MoonBit, written once; what is the system's a thin native side, platform_win.c). One run per person, kept in the
-// notification area: its shortcut (Ctrl+Alt+A, as PixPin is set here) or its icon freezes the screen into the overlay (window 0, made as the run starts
-// and kept hidden between captures), and each pin is a window of the same run beside it.
-//
-//   pinshot.exe            the run (started again: the one running takes the screen, as its shortcut; from Downloads/TEMP: installs itself)
-//   pinshot.exe --install  installs to %LOCALAPPDATA%\Programs\PinShot, adds Start menu & Settings > Apps entry
-//   pinshot.exe --uninstall removes the installed copy, shortcuts, autostart and Settings > Apps entry
-//   pinshot.exe --portable runs in place without self-installing
-//   pinshot.exe --settings the settings opened (in the one running, or in this one as it starts)
-//   pinshot.exe --quit     the one running ended
-//   pinshot.exe --bench    the screen taken 10 times and the windows listed, timed; no window
-//   pinshot.exe --updated  the run, started by an update in place (update.mbt): it says so
-//   pinshot.exe --installed the run, started by a fresh self-install (install_win.c): it says so
-//   pinshot.exe --start    the run, started again by an update that did not go through; with --updated/--installed, nothing where one is running already
-//   pinshot.exe --ocr <f>  the words in picture file f read and printed; no window
-
 import "host"
 import "hostapi"
 import "json"
@@ -42,7 +25,6 @@ pub fn main(_world : World) -> Int {
   } else if args.length() > 0 && args[0] == "--quit" {
     2
   } else if args.length() > 0 && (args[0] == "--updated" || args[0] == "--installed" || args[0] == "--start") {
-    // (the one running, if it is still here, takes nothing from it: no capture)
     3
   } else {
     0
@@ -75,7 +57,6 @@ pub fn main(_world : World) -> Int {
       pin_window(wid, what)
     }
     fn(root) {
-      // Every child window has its own window-kept tree theme; apply app_theme (tabular digits) here too.
       ui::set_tree_theme(app_theme)
       build(root)
     }
@@ -83,7 +64,6 @@ pub fn main(_world : World) -> Int {
   ui::when_window_closed(fn(wid) {
     if wid == settings_wid.v {
       settings_wid.v = 0
-      // (a shortcut asked for and the settings closed: nothing taken, the shortcuts as they were)
       if recording.untracked() != 0 {
         stop_recording()
         apply_keys()
@@ -111,7 +91,6 @@ pub fn main(_world : World) -> Int {
   })
   apply_keys()
   start_updates(updated, installed=installed)
-  // (the overlay made out of sight: it shows only as a capture opens)
   hostapi::window_hold()
   hostapi::window_setup(100.0, 100.0, 320.0, 200.0, false)
   if again == 1 {
@@ -126,8 +105,6 @@ pub fn main(_world : World) -> Int {
   0
 }
 
-/// What the native side told (a shortcut, the icon, its menu, a window's close, an update's fetch, an OCR reading;
-/// `bytes` what a fetch or reading got).
 fn told(json : String, bytes : Option[Bytes]) -> Unit {
   let o = match json_of(json) {
     Some(json::Json::Object(o)) => o
@@ -154,7 +131,6 @@ fn told(json : String, bytes : Option[Bytes]) -> Unit {
       if capturing.untracked() {
         capture_taken()
       } else {
-        // (taken after the capture was called off, as GDI's may be: its pixels let go now, not kept till the next)
         ps_capture_release()
       }
     "capture-failed" => toast(tr("截图失败，请重试。"))
@@ -256,7 +232,6 @@ fn told(json : String, bytes : Option[Bytes]) -> Unit {
   }
 }
 
-/// The screen taken 10 times and the windows listed 10 times, timed; the run's memory.
 fn bench() -> Unit {
   let times : Array[Double] = []
   for _ in 0..<10 {
@@ -286,18 +261,12 @@ fn bench() -> Unit {
   println("bench: memory ws,private: \{text_of(ps_memory())}")
 }
 
-/// Whether the run was started to open its settings (they open once its window is there).
 let started_with_settings : signals::Ref[Bool] = signals::ref_new(false)
 
-/// Whether the run was just installed interactively (opens the minimal installed welcome card once its window is there).
 let started_with_welcome : signals::Ref[Bool] = signals::ref_new(false)
 
-/// The theme every window's words are in: dark, as PinShot is, and digits all one width (the user, 2026-11-17: 「有的数字需要用等宽模式」:
-/// a number that changes where it stands, the magnifier's place and colour, a size, a zoom, keeps its width).
 let app_theme : () -> ui::Theme = fn() { theme_kept }
 
 let theme_kept : ui::Theme = ui::Theme::{ ..ui::Theme::dark(), bg: 0x000000FFL, tabular: true }
 
-/// PinShot's version: the settings' About, what updates compare with latest.json (update.mbt), and what publish.ps1
-/// reads. Raised with each release.
 let app_version : String = "1.0.31"

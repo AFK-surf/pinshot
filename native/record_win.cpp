@@ -1,18 +1,3 @@
-// Lightweight area screen recorder & post-recording transcoder (Windows):
-// 1. Live recording into a temp master MP4 via dedicated WGC session (with optional cursor & HDR FP16 -> sRGB GPU
-//    conversion) + optional WASAPI Loopback system audio (48 kHz stereo AAC):
-//      - Tier 1: Hardware HEVC (H.265) + D3D11 VideoProcessor GPU NV12 (patches 'hev1' -> 'hvc1')
-//      - Tier 2: Hardware H.264 + D3D11 VideoProcessor GPU NV12
-//      - Tier 3: Software H.264 + CPU BT.709 NV12
-// 2. Optional click ripples and keys pressed (record_draw_win.cpp), a layered window captured natively by WGC.
-// 3. Post-recording export & compression (ps_rec_export):
-//      - Mode 0: MP4 Original (instant copy, preserves audio & original quality)
-//      - Mode 1: MP4 Compressed Standard (GPU D3D11VA decode + VideoProcessor resize <=1920 + HW HEVC/H.264 + AAC)
-//      - Mode 2: MP4 Compressed Compact  (GPU D3D11VA decode + VideoProcessor resize <=1280 + low bitrate + AAC)
-//      - Mode 3: Animated GIF 15fps (<=1080px, adaptive 15-bit Median-Cut palette + dirty-rect delta + LZW)
-//      - Mode 4: Animated GIF 10fps Compact (<=720px)
-//
-// Zero idle overhead: no worker thread, D3D11 device, WASAPI client, or Media Foundation state exists when idle.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -93,12 +78,9 @@ extern "C" void *mb_app_hwnd_of(int wid);
 extern "C" int ps_wgc_mon_hdr(HMONITOR mon, float *white);
 extern "C" int ps_wgc_borderless_ok(void);
 
-// From record_draw_win.cpp
 void rec_draw_open(int x, int y, int w, int h);
 void rec_draw_set_recording(int on);
 void rec_draw_close(void);
-
-// ---- helpers ----
 
 static moonbit_bytes_t rec_bytes_of(const void *p, size_t n) {
   moonbit_bytes_t b = moonbit_make_bytes((int32_t)n, 0);
@@ -233,19 +215,17 @@ static int copy_file_to_clipboard(const std::wstring &path) {
   return ok;
 }
 
-// ---- recording border frame (UI thread) ----
-
 extern "C" void ps_update_region_frame(HWND hwnd, int rx, int ry, int rw, int rh, COLORREF color, int dashed, int handles);
 
 static struct {
   int prepared;
-  int x, y, w, h;          // clamped even region in virtual screen pixels
+  int x, y, w, h;
   HMONITOR mon;
-  int mx, my, mw, mh;      // monitor bounds
+  int mx, my, mw, mh;
   HWND frame;
   COLORREF frame_color;
   int frame_dashed;
-  int frame_interactive;   // 1 in Ready phase (resizable border/corners), 0 once recording starts (100% click-through)
+  int frame_interactive;
   int drag_hx, drag_hy;
   int drag_sx, drag_sy;
   int drag_rx, drag_ry, drag_rw, drag_rh;
@@ -253,19 +233,18 @@ static struct {
   HANDLE rec_thread;
   HANDLE exp_thread;
   HANDLE wake_ev;          // made once, never closed: a worker of a session ended may still wait on it
-  SRWLOCK lock;            // the master_* and preview_bmp below, written by the recording's worker as it ends
-  LONG session;            // which recording panel this is: ps_rec_end begins another (a worker of the last keeps nothing)
-  volatile LONG stop_req;  // 0 running, 1 finish, 2 cancel
-  volatile LONG pause_req; // 0 running, 1 paused
+  SRWLOCK lock;
+  LONG session;
+  volatile LONG stop_req;
+  volatile LONG pause_req;
   volatile LONG running;
   volatile LONG exporting;
-  volatile LONG exp_gen;   // each export's number: one called off (or the panel ended) takes the next
+  volatile LONG exp_gen;
 
   int fps;
   int cursor;
   int want_audio;
 
-  // Master temp recording state (kept after Stop until panel closes so user can export MP4/Compressed/GIF).
   std::wstring master_path;
   uint64_t master_bytes;
   int64_t master_ms;
@@ -273,20 +252,16 @@ static struct {
   std::string master_codec;
   std::vector<uint8_t> preview_bmp;
 
-  // Export job params
   std::wstring exp_dest;
-  int exp_fmt;       // 0=MP4 H.265, 1=MP4 H.264, 2=GIF, 3=MP4 AV1
-  int exp_quality;   // 0=Original, 1=High, 2=Balanced, 3=Compact
-  int exp_max_side;  // 0=100% Original, 1..99=percent scale (75/50), >100=max long edge
-  int exp_gif_fps;   // 10 / 15 / 20
+  int exp_fmt;
+  int exp_quality;
+  int exp_max_side;
+  int exp_gif_fps;
 } R;
 
 static const GUID PS_MFVideoFormat_AV1 = {
     0x31305641, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
-// Build a 2x cover-cropped 32-bit BGRX BMP (352x368 for the 176x184pt Studio HUD preview card)
-// with a silky bottom dark vignette scrim composited directly into the pixels so white overlay metadata
-// stays razor-sharp over any bright light-mode desktop capture.
 static void build_preview_bmp(const uint8_t *px, int w, int h, int pitch, bool is_bgra, std::vector<uint8_t> &out) {
   out.clear();
   if (!px || w <= 0 || h <= 0 || pitch < w * 4) return;
@@ -552,8 +527,6 @@ static void rec_frame_hide(void) {
   }
 }
 
-// ---- MP4 HEVC 'hev1' -> 'hvc1' in-place box patcher ----
-
 static uint32_t read_be32(const uint8_t *p) {
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
@@ -573,7 +546,6 @@ struct Mp4Box {
   uint32_t type;
 };
 
-// The box at `off` of the file (its header read, nothing else), within `limit`.
 static bool read_mp4_box(HANDLE hf, uint64_t off, uint64_t limit, Mp4Box &out) {
   if (off + 8 > limit) return false;
   LARGE_INTEGER li;
@@ -671,22 +643,22 @@ static bool patch_av1_seq_hdr_obu(uint8_t *b, size_t n, int w, int h) {
     }
     return v;
   };
-  f(3);  // seq_profile
-  f(1);  // still_picture
-  if (f(1)) {  // reduced_still_picture_header
-    f(5);      // seq_level_idx[0]
+  f(3);
+  f(1);
+  if (f(1)) {
+    f(5);
   } else {
     bool model = false;
     int delay_bits = 0;
-    if (f(1)) {  // timing_info_present_flag
-      f(32);     // num_units_in_display_tick
-      f(32);     // time_scale
-      if (f(1)) {  // equal_picture_interval -> uvlc num_ticks_per_picture_minus_1
+    if (f(1)) {
+      f(32);
+      f(32);
+      if (f(1)) {
         int zeros = 0;
         while (!f(1) && zeros < 32) zeros++;
         f(zeros);
       }
-      model = f(1) != 0;  // decoder_model_info_present_flag
+      model = f(1) != 0;
       if (model) {
         delay_bits = (int)f(5) + 1;
         f(32);
@@ -694,11 +666,11 @@ static bool patch_av1_seq_hdr_obu(uint8_t *b, size_t n, int w, int h) {
         f(5);
       }
     }
-    bool display = f(1) != 0;  // initial_display_delay_present_flag
+    bool display = f(1) != 0;
     int points = (int)f(5) + 1;
     for (int i = 0; i < points; i++) {
-      f(12);               // operating_point_idc
-      if (f(5) > 7) f(1);  // seq_level_idx + optional seq_tier
+      f(12);
+      if (f(5) > 7) f(1);
       if (model && f(1)) {
         f(delay_bits);
         f(delay_bits);
@@ -866,8 +838,6 @@ static void patch_mp4_av1_size(const std::wstring &path, int w, int h) {
   CloseHandle(hf);
 }
 
-// ---- Streaming GIF89a encoder (15-bit Median-Cut + dirty-rect + static-frame merge + LZW) ----
-
 struct GifWriter {
   FILE *fp = NULL;
   int w = 0, h = 0;
@@ -886,12 +856,10 @@ struct GifWriter {
   int frames_written = 0;
 
   int global_ncols = 0;
-  std::vector<int32_t> ht_key;   // LZW's table, kept between frames
+  std::vector<int32_t> ht_key;
   std::vector<uint16_t> ht_val;
-  std::vector<uint8_t> crop, mask;  // a local palette's pixels, kept between frames
+  std::vector<uint8_t> crop, mask;
 
-  // The palette index of 15-bit colour `k`: the LUT's where the palette was built of it, else the nearest colour,
-  // found the first time it is asked and kept (only colours a frame has are ever looked for, not all 32768).
   static uint8_t lut_of(uint8_t lut[32768], const uint8_t pal[256 * 3], int ncols, uint32_t k) {
     uint8_t v = lut[k];
     if (v != 0xFF) return v;
@@ -913,8 +881,6 @@ struct GifWriter {
     return (uint8_t)best_i;
   }
 
-  // The palette of `rgb` (its masked pixels): its colours' LUT entries set, the rest 0xFF (lut_of finds them).
-  // The number of colours (at most 255: 255 is the transparent index).
   static int build_palette(const uint8_t *rgb, int n_pixels, const uint8_t *mask, uint8_t pal[256 * 3],
                            uint8_t lut[32768]) {
     static const int MAX_COLORS = 255;
@@ -1322,8 +1288,6 @@ struct GifWriter {
   }
 };
 
-// ---- CPU BT.709 BGRA/RGBA -> NV12 (studio range 16..235 / 16..240) ----
-
 static void rgb_to_nv12(const uint8_t *src, int pitch, bool is_bgra, int w, int h, uint8_t *dst_y, uint8_t *dst_uv) {
   int ro = is_bgra ? 2 : 0;
   int go = 1;
@@ -1353,12 +1317,6 @@ static void rgb_to_nv12(const uint8_t *src, int pitch, bool is_bgra, int w, int 
   }
 }
 
-// ---- Media Foundation, held only while a recording, an export or a probe runs ----
-//
-// Each worker thread starts it as it first needs it and shuts its own start down as it ends (MF counts them), so with
-// nothing running its work queues' threads and the encoders' state are gone (measured, 2026-11-21: 8 cycles of
-// start, a sink writer, shut down, no handle or thread kept past the first; kept started instead, 7 threads more).
-
 static thread_local bool t_mf_on = false;
 
 static bool mf_begin() {
@@ -1370,8 +1328,6 @@ static void mf_end() {
   if (t_mf_on) MFShutdown();
   t_mf_on = false;
 }
-
-// ---- MP4 Encoder (Optimal Cascade: HW HEVC -> HW H.264 -> SW H.264, optional AAC audio stream) ----
 
 struct Mp4Encoder {
   bool gpu_path = false;
@@ -1402,13 +1358,9 @@ struct Mp4Encoder {
   ComPtr<ID3D11Texture2D> in_view_tex;
   UINT in_view_sub = 0;
 
-  // Most recent rendered NV12 pool texture and its WGC sequence number: when the desktop is static (same seq),
-  // we skip VideoProcessorBlt and copy this NV12 surface directly, zero extra copy or allocation on moving frames.
   ComPtr<ID3D11Texture2D> last_vp_nv12;
   uint64_t last_vp_seq = 0;
 
-  // NV12 surfaces handed to the encoder: 8 at first, grown one at a time (to 24 at most) only where the encoder holds
-  // them all for a while, then reused
   static const int POOL_MAX = 24;
   ComPtr<ID3D11Texture2D> nv12_pool[POOL_MAX];
   ComPtr<ID3D11VideoProcessorOutputView> ov_pool[POOL_MAX];
@@ -1429,7 +1381,6 @@ struct Mp4Encoder {
     return (f > 30) ? (30.0 + (double)(f - 30) * 0.35) : (double)f;
   }
 
-  // codec_mode: 0=HEVC, 1=H.264, 3=AV1
   UINT32 pick_bitrate(int codec_mode) const {
     if (codec_mode == 3 && custom_bps_av1 > 0) return custom_bps_av1;
     if (codec_mode == 0 && custom_bps_hevc > 0) return custom_bps_hevc;
@@ -1460,7 +1411,7 @@ struct Mp4Encoder {
     a_out->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
     a_out->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000);
     a_out->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
-    a_out->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16000);  // 128 kbps
+    a_out->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16000);
     a_out->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
     if (FAILED(writer->AddStream(a_out.Get(), &audio_stream))) return false;
 
@@ -1543,8 +1494,6 @@ struct Mp4Encoder {
     MFSetAttributeRatio(in_mt.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
     set_sdr_color(in_mt.Get());
 
-    // High-efficiency PeakConstrainedVBR: 1s VBV buffer + tight peak cap lets quiet screen frames compress to
-    // near-zero bits while keeping scrolling/motion crisp at high hardware NVENC/QSV/AMF throughput.
     UINT32 bps = pick_bitrate(codec_mode);
     UINT32 max_bps = (UINT32)std::min<uint64_t>((uint64_t)bps * (export_mode ? 125ULL : 140ULL) / 100ULL, 40000000ULL);
     UINT32 gop = (UINT32)(fps * (gop_secs > 0 ? gop_secs : 2));
@@ -1575,8 +1524,6 @@ struct Mp4Encoder {
       }
     }
 
-    // Apply rate control & quality/speed parameters directly on the hardware MFT's ICodecAPI so NVENC/QSV/AMF
-    // enforce the target bitrate and GOP size reliably.
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(writer->GetServiceForStream(video_stream, GUID_NULL, IID_PPV_ARGS(&codec_api)))) {
       auto set_u32 = [&](const GUID &key, UINT32 val) {
@@ -1652,7 +1599,6 @@ struct Mp4Encoder {
     return true;
   }
 
-  // want_codec: 0=HEVC preferred, 1=H.264, 3=AV1 (HW)
   bool open(ID3D11Device *dev, IMFDXGIDeviceManager *shared_mgr, const std::wstring &path, int w, int h,
             int target_fps, bool want_audio, IMFMediaType *passthrough_audio = NULL, int want_codec = 0) {
     if (!mf_begin()) return false;
@@ -1689,7 +1635,6 @@ struct Mp4Encoder {
         try_open_tier(dev, shared_mgr, 1, true, want_audio, passthrough_audio))
       return true;
     DeleteFileW(out_path.c_str());
-    // Older hardware MFTs may reject 120fps on large regions; retry hardware tiers at 60fps before falling back to SW.
     if (fps > 60 && (dev || shared_mgr) && allow_hw) {
       fps = 60;
       if (allow_hevc && try_open_tier(dev, shared_mgr, 0, true, want_audio, passthrough_audio)) return true;
@@ -1719,11 +1664,6 @@ struct Mp4Encoder {
     nd.Usage = D3D11_USAGE_DEFAULT;
     nd.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
-    // A pooled surface the encoder holds no more (only the pool's reference left). All of them still in flight:
-    // waited for a moment (an export decodes far faster than it encodes, so it waits on the encoder: a texture made
-    // for each such frame was gigabytes of video memory, 2026-11-21's audit), the pool grown by one where that is not
-    // enough (an encoder that keeps more frames than 8 before it gives any back), up to POOL_MAX; past that a
-    // recording drops the frame after a frame's time (its slot is caught up by the next), an export waits 10 s.
     DWORD waited = 0, yields = 0, grow_after = export_mode ? 4 : 2;
     DWORD most = export_mode ? 10000 : (DWORD)std::max(1, 1000 / std::max(1, fps));
     for (;;) {
@@ -1800,8 +1740,6 @@ struct Mp4Encoder {
                        bool src_is_yuv, int sx, int sy, int sw, int sh, LONGLONG pts, LONGLONG dur,
                        bool keep_view = false, uint64_t cache_seq = 0) {
     if (cache_seq != 0 && cache_seq == last_vp_seq && last_vp_nv12) {
-      // Static frame fast path: reuse the previously converted NV12 surface via pure GPU DMA copy, skipping
-      // VideoProcessorBlt + BT.709 RGB->NV12 conversion while keeping 100% CFR compatibility.
       return write_gpu_nv12_direct(dev, ctx, last_vp_nv12.Get(), 0, pts, dur);
     }
     D3D11_TEXTURE2D_DESC sd = {};
@@ -1812,8 +1750,6 @@ struct Mp4Encoder {
     ComPtr<ID3D11VideoProcessorOutputView> out_view;
     if (!acquire_nv12(dev, true, nv12, out_view)) return false;
 
-    // (the input's view kept while it is the same texture of ours, as an export's or HDR's single surface is; a
-    // capture's own surfaces, the pool's, are never held past the frame)
     ComPtr<ID3D11VideoProcessorInputView> in_view;
     if (keep_view && in_view_kept && in_view_tex.Get() == src_tex && in_view_sub == src_sub) {
       in_view = in_view_kept;
@@ -1935,8 +1871,6 @@ struct Mp4Encoder {
   }
 };
 
-// ---- MMCSS real-time scheduling guard (loaded dynamically only while recording; zero idle DLL footprint) ----
-
 struct MmcssGuard {
   typedef HANDLE(WINAPI *SetFn)(LPCWSTR, LPDWORD);
   typedef BOOL(WINAPI *RevertFn)(HANDLE);
@@ -1959,8 +1893,6 @@ struct MmcssGuard {
     if (mod) FreeLibrary(mod);
   }
 };
-
-// ---- WASAPI System Audio Loopback Capture Thread ----
 
 struct SysAudioPump {
   Mp4Encoder *enc = NULL;
@@ -2050,7 +1982,6 @@ struct SysAudioPump {
     float prev_l = 0.0f, prev_r = 0.0f;
 
     while (WaitForSingleObject(self->stop_ev, 10) == WAIT_TIMEOUT) {
-      // Keep silent render buffer topped up so the audio engine never underflows/stops.
       if (sil_client && sil_render && sil_buf_frames > 0) {
         UINT32 pad = 0;
         if (SUCCEEDED(sil_client->GetCurrentPadding(&pad)) && pad < sil_buf_frames) {
@@ -2152,8 +2083,6 @@ struct SysAudioPump {
   void stop() {
     if (stop_ev) SetEvent(stop_ev);
     if (thread) {
-      // (waited for whole: it writes into the encoder, and the event, which are let go after; this is the
-      // recording's worker waiting, never the UI thread, and the loop sees the event within 10 ms)
       WaitForSingleObject(thread, INFINITE);
       CloseHandle(thread);
       thread = NULL;
@@ -2166,8 +2095,6 @@ struct SysAudioPump {
   }
 };
 
-// ---- Live Recording Worker Thread (always records temp high-quality MP4) ----
-
 // Ref-counted owner of a WGC capture frame: calls IClosable::Close() only when BOTH FrameArrived and rec_worker
 // have finished with the surface, preventing premature surface reclamation mid-encode on high-Hz monitors.
 struct WgcFrameHold {
@@ -2179,9 +2106,6 @@ struct WgcFrameHold {
   }
 };
 
-// What the free-threaded pool's FrameArrived shares with the worker: held by both (the handler's own reference keeps it
-// alive past the worker's return, as a frame may still be arriving on the pool's thread when the worker lets go), and
-// told when the worker is done with it, after which an arriving frame is closed at once and kept nowhere.
 struct RecWorkerState {
   SRWLOCK lock = SRWLOCK_INIT;
   std::shared_ptr<WgcFrameHold> last_frame;
@@ -2198,7 +2122,6 @@ struct RecWorkerState {
     if (first_frame_ev) CloseHandle(first_frame_ev);
     if (new_frame_ev) CloseHandle(new_frame_ev);
   }
-  // The last frame let go (closed once no worker holds it) and no other kept from now.
   void stop() {
     std::shared_ptr<WgcFrameHold> old;
     AcquireSRWLockExclusive(&lock);
@@ -2300,8 +2223,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
         "  uint dw, dh; dst.GetDimensions(dw, dh); if (id.x >= dw || id.y >= dh) return;"
         "  float3 c = src[uint2(id.x + ox, id.y + oy)].rgb * inv_white;"
         "  dst[id.xy] = float4(enc(c.r), enc(c.g), enc(c.b), 1.0); }";
-    // (the shader compiled only where the monitor is HDR: an SDR one's frames are BGRA8 as they are, and the compiler
-    // is never loaded for it)
     if (ps_wgc_mon_hdr(mon, &sdr_white) != 0) {
       ComPtr<ID3DBlob> code, errs;
       if (SUCCEEDED(D3DCompile(hlsl, sizeof hlsl - 1, "rec_srgb", NULL, NULL, "main", "cs_5_0",
@@ -2328,18 +2249,15 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
             HStringReference(RuntimeClass_Windows_Graphics_Capture_Direct3D11CaptureFramePool).Get(),
             IID_PPV_ARGS(&pool_statics))) &&
         SUCCEEDED(item_interop->CreateForMonitor(mon, IID_PPV_ARGS(&item)))) {
-      // Elevate GPU scheduling priority (best-effort) so 100%-GPU games do not starve HDR tonemap / VideoProcessorBlt.
       xdev->SetGPUThreadPriority(7);
       ABI::Windows::Graphics::SizeInt32 sz = {mw, mh};
       auto pix_fmt = is_hdr ? ABI::Windows::Graphics::DirectX::DirectXPixelFormat_R16G16B16A16Float
                             : ABI::Windows::Graphics::DirectX::DirectXPixelFormat_B8G8R8A8UIntNormalized;
-      // 4-buffer pool prevents DWM capture stalls on 120/240Hz monitors while rec_worker encodes the active surface.
       if (SUCCEEDED(pool_statics->CreateFreeThreaded(rt_dev.Get(), pix_fmt, 4, sz, &pool))) {
         auto arrived = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
                                                            ITypedEventHandler<WGC::Direct3D11CaptureFramePool *, IInspectable *>,
                                                            Microsoft::WRL::FtmBase>>(
             [ws](WGC::IDirect3D11CaptureFramePool *sender, IInspectable *) -> HRESULT {
-              // Drain all queued frames so we always publish the freshest surface and return older buffers immediately.
               ComPtr<WGC::IDirect3D11CaptureFrame> latest;
               for (;;) {
                 ComPtr<WGC::IDirect3D11CaptureFrame> next;
@@ -2494,7 +2412,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
     return true;
   };
 
-  // GDI's taking (no WGC session): one DC and DIB section for the whole recording, the pixels read from it in place
   HDC gdi_mem = NULL;
   HBITMAP gdi_bmp = NULL;
   HGDIOBJ gdi_old = NULL;
@@ -2548,7 +2465,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
     gdi_bits = NULL;
   };
 
-  // (the first frame's card built here, handed over with the recording as it is kept: R's own is the UI thread's)
   std::vector<uint8_t> preview;
   bool preview_captured = false;
   Mp4Encoder mp4;
@@ -2589,7 +2505,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
   uint64_t last_encoded_seq = 0;
   ID3D11Texture2D *cached_hdr_srgb = NULL;
 
-  // Sub-millisecond waitable timer keeps 60fps (16.67ms) and 120fps (8.33ms) pacing locked without Sleep jitter.
   HANDLE pace_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
   HANDLE wait_handles[2] = {R.wake_ev, pace_timer};
   HANDLE grace_handles[2] = {R.wake_ev, ws->new_frame_ev};
@@ -2649,8 +2564,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
       fr = ws->last_frame;
       fr_seq = ws->frame_seq;
       ReleaseSRWLockShared(&ws->lock);
-      // Phase-lock grace wait: if no fresh WGC frame has arrived since the last slot and we are still on time,
-      // wait briefly (2-3ms) for the imminent frame instead of duplicating the previous frame on CFR/VSync beat drift.
       if (fr_seq == last_encoded_seq && ws->new_frame_ev && elapsed_hns - next_slot_hns < 20000LL) {
         ResetEvent(ws->new_frame_ev);
         AcquireSRWLockShared(&ws->lock);
@@ -2697,7 +2610,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
             build_preview_bmp(pbuf.data(), rw, rh, pp, pbgra, preview);
             preview_captured = true;
           }
-          // (the GPU's path reads nothing back after the card: its staging copy let go now, not at the end)
           staging_tex.Reset();
         }
         wrote = mp4.write_gpu_frame(dev.Get(), ctx.Get(), rgb_tex, 0, false, sx, sy, rw, rh, next_slot_hns, dur_hns,
@@ -2756,8 +2668,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
   std::string codec_used = mp4.codec_name;
   uint64_t final_bytes = mp4.finish(cancel || frames == 0);
 
-  // Release all WGC and D3D11 objects and trim driver pools immediately. (a frame arriving after this, on the pool's
-  // thread, finds the state told it is over: closed there, kept nowhere)
   if (pool) pool->remove_FrameArrived(token);
   ComPtr<ABI::Windows::Foundation::IClosable> closable;
   if (session && SUCCEEDED(session.As(&closable))) closable->Close();
@@ -2791,7 +2701,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
   mf_end();
   if (SUCCEEDED(ro_hr)) RoUninitialize();
 
-  // (kept only for the session it was made in: one ended meanwhile (ps_rec_end) had its file let go here)
   bool kept = false;
   if (!cancel && final_bytes > 0) {
     AcquireSRWLockExclusive(&R.lock);
@@ -2826,10 +2735,6 @@ static DWORD WINAPI rec_worker(LPVOID arg) {
   return 0;
 }
 
-// ---- Post-Recording Export / Compression Worker Thread ----
-
-// What an export is of and what it is asked to make: taken as it is begun (ps_rec_export, the UI thread's), so the
-// worker reads nothing of R's that the UI thread may change meanwhile.
 struct ExportJob {
   std::wstring src, dst;
   std::string master_codec;
@@ -2838,7 +2743,7 @@ struct ExportJob {
   int64_t total_ms;
   int src_w, src_h, src_fps;
   bool src_audio;
-  LONG gen;  // R.exp_gen as it was begun: another since, it is called off
+  LONG gen;
 };
 
 static bool export_called_off(const ExportJob &job) { return InterlockedCompareExchange(&R.exp_gen, 0, 0) != job.gen; }
@@ -2860,9 +2765,9 @@ static DWORD export_work(const ExportJob &job) {
   HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
   const std::wstring &src = job.src;
   const std::wstring &dst = job.dst;
-  int fmt = job.fmt;             // 0=MP4 H.265, 1=MP4 H.264, 2=GIF, 3=AV1
-  int quality = job.quality;     // 0=Original, 1=High, 2=Balanced, 3=Compact
-  int max_side = job.max_side;   // 0=Original, else percent / long edge
+  int fmt = job.fmt;
+  int quality = job.quality;
+  int max_side = job.max_side;
   int gif_fps = job.gif_fps > 0 ? job.gif_fps : 15;
   uint64_t orig_bytes = job.orig_bytes;
   int64_t total_ms = job.total_ms > 0 ? job.total_ms : 1;
@@ -2880,7 +2785,6 @@ static DWORD export_work(const ExportJob &job) {
   bool want_hevc = (fmt == 0);
   bool direct_copy = (fmt == 0 || fmt == 1) && quality == 0 && !need_resize && (want_hevc == master_is_hevc);
 
-  // Zero re-encode instant copy when codec, quality=Original, and size all match master
   if (direct_copy) {
     if (CopyFileW(src.c_str(), dst.c_str(), FALSE)) {
       uint64_t sz = file_size_of(dst);
@@ -2903,7 +2807,6 @@ static DWORD export_work(const ExportJob &job) {
     return 0;
   }
 
-  // MP4 transcode / compress (fmt 0 = H.265 preferred, fmt 1 = H.264, fmt 3 = AV1)
   if (fmt == 0 || fmt == 1 || fmt == 3) {
 
     ComPtr<ID3D11Device> dev;
@@ -2987,9 +2890,8 @@ static DWORD export_work(const ExportJob &job) {
     }
 
     Mp4Encoder enc;
-    enc.gop_secs = 5;  // 5s GOP + 2 B-frames on offline export: cuts keyframe overhead & improves HEVC/H.264 efficiency
+    enc.gop_secs = 5;
     enc.export_mode = true;
-    // Quality tiers: 0=Original (high-bitrate transcode), 1=High, 2=Balanced, 3=Compact
     static const double kBppHevc[4] = {0.075, 0.048, 0.024, 0.011};
     static const double kBppH264[4] = {0.115, 0.072, 0.038, 0.018};
     static const double kBppAv1[4]  = {0.056, 0.036, 0.018, 0.0085};
@@ -3026,7 +2928,7 @@ static DWORD export_work(const ExportJob &job) {
 
     bool video_done = false;
     bool audio_done = !(has_src_audio && enc.has_audio);
-    uint8_t stream_kind[8] = {0};  // 1 video, 2 other, 0 not asked yet
+    uint8_t stream_kind[8] = {0};
 
     while (!(video_done && audio_done) && !export_called_off(job)) {
       DWORD sidx = 0, flags = 0;
@@ -3035,7 +2937,6 @@ static DWORD export_work(const ExportJob &job) {
       HRESULT hr = reader->ReadSample((DWORD)MF_SOURCE_READER_ANY_STREAM, 0, &sidx, &flags, &ts, &sample);
       if (FAILED(hr)) break;
 
-      // (each stream's kind asked once, not of every sample)
       if (sidx >= 8) continue;
       if (!stream_kind[sidx]) {
         ComPtr<IMFMediaType> cur_mt;
@@ -3069,10 +2970,8 @@ static DWORD export_work(const ExportJob &job) {
             D3D11_TEXTURE2D_DESC sd = {};
             dtex->GetDesc(&sd);
             if (out_w == src_w && out_h == src_h && (int)sd.Width >= out_w && (int)sd.Height >= out_h) {
-              // Zero-VideoProcessor fast path: direct GPU copy from decoder slice to pooled NV12 encoder surface.
               enc.write_gpu_nv12_direct(dev.Get(), ctx.Get(), dtex.Get(), sub, ts, dur);
             } else {
-              // Scaled export: copy decoder array slice into single-slice NV12 texture, then GPU VideoProcessor resize.
               if (!single_nv12 || single_w != sd.Width || single_h != sd.Height) {
                 single_nv12.Reset();
                 D3D11_TEXTURE2D_DESC td = {};
@@ -3097,8 +2996,6 @@ static DWORD export_work(const ExportJob &job) {
             }
           }
         } else {
-          // (its rows as the buffer has them: IMF2DBuffer's first row and signed pitch where it has one, a decoder's
-          // padded or bottom-up rows read right; else contiguous, top-down; unlocked however it went)
           ComPtr<IMFMediaBuffer> buf;
           ComPtr<IMF2DBuffer> buf2d;
           BYTE *scan0 = NULL;
@@ -3194,7 +3091,6 @@ static DWORD export_work(const ExportJob &job) {
     return 0;
   }
 
-  // GIF export (fmt == 2)
   int gif_w = out_w, gif_h = out_h;
 
   ComPtr<IMFAttributes> rattr;
@@ -3315,7 +3211,6 @@ static DWORD export_work(const ExportJob &job) {
           }
         }
       } else {
-        // Bilinear/area downsample respecting actual signed row pitch
         for (int y = 0; y < gif_h; y++) {
           int y0 = y * copy_h / gif_h, y1 = std::max(y0 + 1, (y + 1) * copy_h / gif_h);
           if (y1 > copy_h) y1 = copy_h;
@@ -3382,13 +3277,11 @@ static DWORD export_work(const ExportJob &job) {
     copy_file_to_clipboard(dst);
     rec_post("exported", total_ms, 0, out_bytes, orig_bytes, 100, 0, "GIF", dst, "");
   } else {
-    DeleteFileW(dst.c_str());  // (a GIF begun and not finished: no half file left)
+    DeleteFileW(dst.c_str());
     rec_post("export-error", total_ms, 0, 0, orig_bytes, 0, 0, "GIF", dst, "生成 GIF 失败");
   }
   return 0;
 }
-
-// ---- MoonBit FFI exports ----
 
 extern "C" {
 
@@ -3425,7 +3318,6 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
   R.my = mi.rcMonitor.top;
   R.mw = mi.rcMonitor.right - mi.rcMonitor.left;
   R.mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-  // (the clicks' and keys' overlay only told where: nothing of it is made until a recording asks for it)
   rec_draw_open(x, y, w, h);
   if (!getenv("PINSHOT_TEST_CLOAKED") || !getenv("PINSHOT_TEST_CLOAKED")[0]) rec_frame_show(RGB(0x2F, 0x9B, 0xFF), 0, 1);
   return 1;
@@ -3459,7 +3351,6 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
     InterlockedExchange(&R.running, 0);
     return 0;
   }
-  // (the red frame and the overlay's hooks only once the worker is there: none left behind where it is not)
   rec_frame_show(RGB(0xEF, 0x44, 0x44), 0, 0);
   rec_draw_set_recording(1);
   return 1;
@@ -3483,7 +3374,6 @@ void ps_rec_stop(int32_t cancel) {
 }
 
 int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, int32_t max_side, int32_t gif_fps) {
-  // (one called off a moment ago may still be letting go of its encoder: waited for, briefly)
   if (InterlockedCompareExchange(&R.exporting, 0, 0) != 0 && R.exp_thread &&
       WaitForSingleObject(R.exp_thread, 3000) != WAIT_OBJECT_0)
     return 0;
@@ -3524,8 +3414,6 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, i
   return 1;
 }
 
-// The export under way called off: its half file deleted by its worker, the recording kept ({"state":
-// "export-cancelled"} told once it has stopped).
 void ps_rec_export_cancel(void) { InterlockedIncrement(&R.exp_gen); }
 
 int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
@@ -3547,9 +3435,7 @@ int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
   return 1;
 }
 
-// Whether a hardware AV1 encoder is here: -1 not known yet (asked now, on a thread of its own: its answer told as
-// {"do":"rec-av1","on":0|1}), else 0 or 1. Never on the UI thread: Media Foundation's start and an MFT enumeration.
-static volatile LONG g_av1 = -1;    // -1 not asked, -2 being asked, 0 / 1 known
+static volatile LONG g_av1 = -1;
 static DWORD WINAPI av1_probe(LPVOID) {
   int here = 0;
   HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -3595,8 +3481,6 @@ moonbit_bytes_t ps_rec_preview(void) {
   return b;
 }
 
-// What a panel ended leaves to let go once its workers are through: their threads waited for here, on a thread of
-// its own (the UI thread never waits on an encoder's finishing), then the recording's file deleted.
 struct EndedRec {
   HANDLE rec_thread, exp_thread;
   std::wstring master_path;
@@ -3620,7 +3504,6 @@ static DWORD WINAPI rec_reaper(LPVOID arg) {
 void ps_rec_end(void) {
   rec_frame_hide();
   rec_draw_close();
-  // (another session from now: a recording still finishing keeps nothing of this one, an export is called off)
   AcquireSRWLockExclusive(&R.lock);
   InterlockedIncrement(&R.session);
   EndedRec *e = new EndedRec();
@@ -3652,9 +3535,6 @@ void ps_rec_end(void) {
   }
 }
 
-// The recordings' temporary files of runs no longer here (a run ended while it recorded, or killed): deleted as the
-// run starts, on a thread of its own, never on the UI thread. "PinShot_rec_<pid>_<tick>.mp4": a pid that is not a
-// running process is gone; one that is (this run's, or a test run's beside it) is left alone.
 static DWORD WINAPI rec_sweep_work(LPVOID) {
   wchar_t tmp[MAX_PATH] = {}, pat[MAX_PATH + 32] = {};
   DWORD n = GetTempPathW(MAX_PATH, tmp);
@@ -3672,7 +3552,7 @@ static DWORD WINAPI rec_sweep_work(LPVOID) {
         alive = WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
         CloseHandle(p);
       } else {
-        alive = GetLastError() == ERROR_ACCESS_DENIED;  // (there, another user's: not ours to judge)
+        alive = GetLastError() == ERROR_ACCESS_DENIED;
       }
     }
     if (!alive) {
@@ -3686,13 +3566,10 @@ static DWORD WINAPI rec_sweep_work(LPVOID) {
 }
 
 void ps_rec_sweep_temp(void) {
-  // (a thread of its own that ends with it: no pool's thread kept waiting after)
   HANDLE t = CreateThread(NULL, 64 * 1024, rec_sweep_work, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
   if (t) CloseHandle(t);
 }
 
-// The run ending (ps_quit): the recording kept for export deleted (a worker still writing one leaves it to the next
-// run's sweep).
 void ps_rec_quit(void) {
   AcquireSRWLockShared(&R.lock);
   std::wstring p = R.master_path;
@@ -3714,10 +3591,10 @@ void ps_rec_exclude(int32_t wid) {
   mb_render_set_clear(wid, 1);
   DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DONOTROUND;
   DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof corner);
-  COLORREF no_border = 0xFFFFFFFEu;  // DWMWA_COLOR_NONE
+  COLORREF no_border = 0xFFFFFFFEu;
   DwmSetWindowAttribute(h, 34 /* DWMWA_BORDER_COLOR */, &no_border, sizeof no_border);
   const char *cl = getenv("PINSHOT_TEST_CLOAKED");
   if (!cl || !cl[0]) rec_exclude_hwnd(h);
 }
 
-}  // extern "C"
+}

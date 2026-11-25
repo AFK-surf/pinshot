@@ -1,18 +1,3 @@
-// The screen kept by Windows.Graphics.Capture (the system's own capture: each monitor's picture as DWM composes it, on
-// the GPU), always on (the user, 2026-11-17: 「常驻截屏 + 不还内存」, its cost measured and taken: a few 4K frames of
-// video memory, DWM's copy of each frame that changes on the 3D engine). Each monitor has a session of its own, its
-// pool of two frames; the frame that came last is held (one reference, nothing copied as frames come), so as the
-// shortcut is pressed the picture of that moment is already there: copied off into a staging texture and mapped on
-// the UI thread (a few ms), its pixels read there and handed to mbui by their address as GDI's are. The system gives
-// no frame while nothing on a monitor changes: a session that has had none yet leaves it to GDI's BitBlt
-// (platform_win.c). Sessions made again as the monitors change (WM_DISPLAYCHANGE: ps_wgc_restart).
-//
-// A monitor in HDR: what DWM composes is scRGB (1.0 = 80 nits), each SDR window's colours brought up to the SDR white
-// the user set (276 nits here: 3.45 times). Its 8-bit frames are not brought back down for what an HDR-aware window
-// drew (WeChat's picture viewer: a dark grey came out 3.45 times as bright, 2026-11-17), so there the frames are
-// 16-bit floats, and the one taken is brought down by the monitor's SDR white and put back in sRGB on the GPU (a
-// compute shader) before it is read: SDR windows exactly as they were, HDR ones as they look, what is brighter than
-// SDR white clipped.
 #include <windows.h>
 #include <shellapi.h>
 #include <d3d11.h>
@@ -114,18 +99,16 @@ namespace WGC = ABI::Windows::Graphics::Capture;
 namespace WD3D = ABI::Windows::Graphics::DirectX::Direct3D11;
 using ABI::Windows::Foundation::ITypedEventHandler;
 
-// The device, the WinRT one over it, and the factories: made once (ps_wgc_ready).
 static ComPtr<ID3D11Device> dev;
 static ComPtr<ID3D11DeviceContext> ctx;
 static ComPtr<WD3D::IDirect3DDevice> rt_dev;
 static ComPtr<IGraphicsCaptureItemInterop> item_interop;
 static ComPtr<WGC::IDirect3D11CaptureFramePoolStatics2> pool_statics;
-static ComPtr<ID3D11ComputeShader> to_srgb;  // an HDR frame brought down to sRGB (made with the device)
+static ComPtr<ID3D11ComputeShader> to_srgb;
 static ComPtr<ID3D11Buffer> to_srgb_k;
-static int ready = 0;  // 1 made, -1 not to be had here
+static int ready = 0;
 static CRITICAL_SECTION frame_lock;
 
-// A monitor's session: its pool, the frame that came last (under frame_lock), its size.
 #define MONS_MOST 8
 struct Mon {
   HMONITOR mon;
@@ -134,31 +117,25 @@ struct Mon {
   ComPtr<WGC::IGraphicsCaptureSession> session;
   EventRegistrationToken token;
   ComPtr<WGC::IDirect3D11CaptureFrame> last;
-  int frames;  // how many came
-  int hdr;      // its frames 16-bit floats (the monitor in HDR as its session was made)
-  LONGLONG last_at;  // when the last one came (QueryPerformanceCounter, under frame_lock)
-  unsigned gen;      // its session's number (under frame_lock): a frame of a session stopped since is closed, not kept
-  int live;          // a session is on (under frame_lock)
+  int frames;
+  int hdr;
+  LONGLONG last_at;
+  unsigned gen;
+  int live;
 };
-// Set as any frame comes (a session made again waited on for its first: ps_wgc_take_now).
 static HANDLE frame_came;
 static Mon mons[MONS_MOST];
 static int nmons;
-static HRESULT last_hr;  // what the last step that failed said (ps_wgc_state)
+static HRESULT last_hr;
 static double take_ms;
-static int said_half;  // the last HDR frame taken was copied first (the shader could not read it where it was)
-static double take_white;  // the SDR white the last one taken was brought down by (0: not HDR)
+static int said_half;
+static double take_white;
 
-static double take_age;  // how old the frame taken was, in seconds
-static int take_fresh;  // its session was made again as it was taken (its last frame too old to trust)
-static int take_used_dd;  // 1 when the last frame came from DXGI Desktop Duplication (DuplicateOutput1)
-// 1: keep capture device warm (default); 0: tear down capture device after each shot.
-// When DXGI Desktop Duplication (IDXGIOutput5::DuplicateOutput1) is available, no persistent WGC frame pools are kept
-// in the background (~260 MB VRAM saved on 4K HDR) while still capturing 16-bit HDR frames on demand in ~5 ms.
+static double take_age;
+static int take_fresh;
+static int take_used_dd;
 static int keep_sessions = 1;
-static int long_holds;  // a long screenshot under way: a session made as needed kept till it ends (ps_wgc_long_hold)
-// While a long screenshot takes a part every tick: the textures it goes through kept for the next tick (the staging
-// copy given back by ps_wgc_release, the HDR conversion's target and view), let go as it ends.
+static int long_holds;
 static ComPtr<ID3D11Texture2D> kept_staging;
 static ComPtr<ID3D11Texture2D> kept_out;
 static ComPtr<ID3D11UnorderedAccessView> kept_uav;
@@ -168,13 +145,12 @@ static void kept_let_go(void) {
   kept_uav.Reset();
 }
 
-// Lightweight DXGI Desktop Duplication state (0 MB idle frame pool, ~8.5 MB D3D11 device when warm, 0 MB when torn down).
 static ComPtr<ID3D11Device> dd_dev;
 static ComPtr<ID3D11DeviceContext> dd_ctx;
 static ComPtr<ID3D11ComputeShader> dd_srgb;
 static ComPtr<ID3D11Buffer> dd_srgb_k;
 static LUID dd_luid = {0, 0};
-static int dd_ok = -1;  // -1 untried, 1 available, 0 unavailable (fallback to WGC/GDI)
+static int dd_ok = -1;
 
 static int dd_disabled(void) {
   const char *how = getenv("PINSHOT_CAPTURE");
@@ -308,8 +284,6 @@ extern "C" int ps_wgc_ready(void) {
     frame_came = CreateEventW(NULL, FALSE, FALSE, NULL);
     lock_made = 1;
   }
-  // (the window's thread has COM already, OLE's: then this says so and changes nothing; a bench's has none. Once for
-  // the run: a device made again after it was lost does not ask again)
   static int ro_asked;
   if (!ro_asked) {
     ro_asked = 1;
@@ -338,14 +312,12 @@ extern "C" int ps_wgc_ready(void) {
   return 1;
 }
 
-// What each monitor said of its SDR white last while awake (by its device name), and what is kept on disk of it.
 #define WHITES_MOST 8
 static struct {
   wchar_t name[CCHDEVICENAME];
   float white;
 } whites[WHITES_MOST];
-static float disk_white = -1;  // %APPDATA%\PinShot\sdr-white.txt: the last any monitor said (a run started while its
-                               // monitors sleep has it)
+static float disk_white = -1;
 
 static float *white_of(const wchar_t *name) {
   for (int i = 0; i < WHITES_MOST; i++)
@@ -359,8 +331,6 @@ static float *white_of(const wchar_t *name) {
   return NULL;
 }
 
-// What mon_hdr found of each monitor a moment ago: asked again only after HDR_ASKED_MS or once the monitors change
-// (a long screenshot takes a part every tick: QueryDisplayConfig is a few hundred microseconds each time).
 #define HDR_ASKED_MS 1000
 static struct {
   HMONITOR mon;
@@ -372,7 +342,6 @@ static void hdr_forget(void) { memset(hdr_asked, 0, sizeof hdr_asked); }
 
 static int mon_hdr_asked(HMONITOR mon, float *white);
 
-// Whether monitor `mon` is in HDR now, and its SDR white (1.0: 80 nits) in `white`.
 static int mon_hdr(HMONITOR mon, float *white) {
   ULONGLONG now = GetTickCount64();
   for (int i = 0; i < WHITES_MOST; i++)
@@ -400,7 +369,6 @@ static int mon_hdr_asked(HMONITOR mon, float *white) {
   if (!GetMonitorInfoW(mon, &mi)) return 0;
   UINT32 np = 0, nm = 0;
   if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS || !np) return 0;
-  // (as many as there are: a fixed few cut short makes QueryDisplayConfig fail, and HDR be missed)
   DISPLAYCONFIG_PATH_INFO *paths = (DISPLAYCONFIG_PATH_INFO *)calloc(np, sizeof *paths);
   DISPLAYCONFIG_MODE_INFO *modes = (DISPLAYCONFIG_MODE_INFO *)calloc(nm ? nm : 1, sizeof *modes);
   int hdr = 0;
@@ -469,7 +437,6 @@ static int mon_hdr_asked(HMONITOR mon, float *white) {
   return hdr == 1;
 }
 
-// (asked by a recording's worker: not from the UI thread's cache, asked anew)
 extern "C" int ps_wgc_mon_hdr(HMONITOR mon, float *white) {
   return mon_hdr_asked(mon, white);
 }
@@ -477,8 +444,6 @@ extern "C" int ps_wgc_mon_hdr(HMONITOR mon, float *white) {
 static void mon_stop(Mon *m) {
   if (m->pool) m->pool->remove_FrameArrived(m->token);
   ComPtr<ABI::Windows::Foundation::IClosable> c;
-  // (told it is over under the lock, so a frame arriving late on the pool's thread is closed there, not kept; the
-  // last one closed outside it)
   ComPtr<WGC::IDirect3D11CaptureFrame> last;
   EnterCriticalSection(&frame_lock);
   m->live = 0;
@@ -514,7 +479,6 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h, int hdr = -1) {
                             : ABI::Windows::Graphics::DirectX::DirectXPixelFormat_B8G8R8A8UIntNormalized,
                      nbufs, size, &m->pool)))
     return 0;
-  // (agile, as a free-threaded pool's handler must be: called on its threads, not the one that made it)
   auto arrived = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
                                                      ITypedEventHandler<WGC::Direct3D11CaptureFramePool *, IInspectable *>,
                                                      Microsoft::WRL::FtmBase>>(
@@ -524,7 +488,6 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h, int hdr = -1) {
           ComPtr<WGC::IDirect3D11CaptureFrame> old;
           EnterCriticalSection(&frame_lock);
           if (!m->live || m->gen != gen) {
-            // (its session was stopped (or another made) as this came: closed, the slot left as it is)
             old = f;
           } else {
             old = m->last;
@@ -536,7 +499,6 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h, int hdr = -1) {
           }
           LeaveCriticalSection(&frame_lock);
           SetEvent(frame_came);
-          // (the one before back to the pool: two in it, one held, one for the next)
           ComPtr<ABI::Windows::Foundation::IClosable> c;
           if (old && SUCCEEDED(old.As(&c))) c->Close();
         }
@@ -550,11 +512,8 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h, int hdr = -1) {
     mon_stop(m);
     return 0;
   }
-  // (no pointer in the picture, no yellow frame round the screen while it is kept)
   ComPtr<WGC::IGraphicsCaptureSession2> s2;
   if (SUCCEEDED(m->session.As(&s2))) s2->put_IsCursorCaptureEnabled(FALSE);
-  // (kept only with no border: a yellow frame round the screen all the time is not to be had; where Windows draws
-  // it anyway (Windows 10, or the person said no), no session, GDI's each time)
   ComPtr<WGC::IGraphicsCaptureSession3> s3;
   if (FAILED(m->session.As(&s3)) || FAILED(last_hr = s3->put_IsBorderRequired(FALSE))) {
     mon_stop(m);
@@ -573,10 +532,6 @@ static BOOL CALLBACK mon_found(HMONITOR mon, HDC, LPRECT r, LPARAM) {
   return TRUE;
 }
 
-// A package's run may keep the screen without the border only once Windows says so
-// (GraphicsCaptureAccess.RequestAccessAsync(Borderless): the manifest's graphicsCaptureWithoutBorder, Windows asking
-// the person where it asks): asked once, without waiting; the sessions made again once it is answered
-// (ps_wgc_wake). 1 allowed, 0 not, -1 not asked, -2 being asked. A run not a package's: allowed.
 extern "C" int ps_packaged(void);
 extern "C" void ps_wgc_wake(void);
 static volatile LONG borderless = -1;
@@ -590,7 +545,6 @@ static int borderless_allowed(void) {
   HRESULT fhr = RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Graphics_Capture_GraphicsCaptureAccess).Get(),
                                        IID_PPV_ARGS(&statics));
   if (fhr == CO_E_NOTINITIALIZED) {
-    // (asked on a thread without WinRT, as a recording's worker before it starts it: not an answer; asked again later)
     InterlockedExchange(&borderless, -1);
     return 0;
   }
@@ -618,7 +572,6 @@ extern "C" int ps_wgc_borderless_ok(void) {
   return borderless_allowed();
 }
 
-// Every monitor's session (made again: the monitors changed). How many there are.
 extern "C" int ps_wgc_restart(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
@@ -628,9 +581,7 @@ extern "C" int ps_wgc_restart(void) {
     dd_teardown();
     return 0;
   }
-  // Prefer zero-pool DXGI Desktop Duplication (DuplicateOutput1) over persistent WGC sessions (~260 MB VRAM saved).
   if (dd_probe()) {
-    // Tear down any lingering WGC device/sessions so only the lightweight DXGI DD device remains.
     if (ready > 0) {
       to_srgb.Reset();
       to_srgb_k.Reset();
@@ -658,8 +609,6 @@ extern "C" int ps_wgc_restart(void) {
   return nmons;
 }
 
-// Completely tear down the standalone WGC/DXGI D3D11 devices and WinRT factories when idle in Low-VRAM mode so
-// capture holds 0 MB of VRAM/RAM between captures.
 static void wgc_teardown(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
@@ -701,8 +650,6 @@ extern "C" void ps_wgc_set_keep(int keep) {
   }
 }
 
-// The device gone (the driver reset or updated, the GPU lost: its sessions give no frame again and their last stays
-// as it was): everything made again from the device up, at the tray window (ps_wgc_wake).
 static void device_lost(void) {
   wgc_teardown();
   ps_wgc_wake();
@@ -714,17 +661,12 @@ static void device_lost(void) {
 #define FRAME_TRUSTED_S 5.0
 #define FIRST_FRAME_MS 250
 
-// The picture of monitor `mon` (w by h) as it is now: its last frame copied into a staging texture and mapped. The
-// texture (an opaque handle, ps_wgc_release lets it go) and where its pixels are (rows `pitch` bytes apart); NULL
-// where its session has had no frame yet, or is of another size.
 static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int any_age, uint8_t **bits, int *pitch);
 
 extern "C" void *ps_wgc_take_now(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch) {
   return take(mon, w, h, 0, 0, w, h, 0, bits, pitch);
 }
 
-// A long screenshot begun (1) or over (0): while it goes, a session made only as needed (keep_sessions 0) is kept
-// rather than made again and let go at each of its takings; as it ends, let go, and the memory given back.
 extern "C" void ps_wgc_long_hold(int on) {
   long_holds = on;
   if (!on) kept_let_go();
@@ -732,16 +674,11 @@ extern "C" void ps_wgc_long_hold(int on) {
   wgc_teardown();
 }
 
-// A part of monitor `mon` (rx, ry, rw by rh of its w by h pixels) as it is now, for a long screenshot: its last frame
-// however old (the system gives none while nothing changes: the last is the screen then), only that part copied off.
-// NULL where its session has had no frame yet.
 extern "C" void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, uint8_t **bits, int *pitch) {
   if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 || rx + rw > w || ry + rh > h) return NULL;
   return take(mon, w, h, rx, ry, rw, rh, 1, bits, pitch);
 }
 
-// Fast on-demand capture via DXGI Desktop Duplication (IDXGIOutput5::DuplicateOutput1):
-// 0 MB idle frame pool, ~5 ms capture on 4K HDR (RGBA16F -> to_srgb) or SDR (BGRA8), zero yellow border, zero WGC leak.
 static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, uint8_t **bits, int *pitch) {
   if (dd_disabled() || dd_ok == 0) return NULL;
   LARGE_INTEGER t0, t1, f;
@@ -910,7 +847,6 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
     D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
     dd_ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, src_for_copy.Get(), 0, &box);
   }
-  // Release duplication surface & object immediately (0 MB held behind!).
   src_for_copy.Reset();
   tex.Reset();
   res.Reset();
@@ -951,7 +887,6 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     m->mon = mon, m->w = w, m->h = h;
   }
   if (!m) return NULL;
-  // (HDR turned on or off since its session was made, or the monitor's resolution changed: made again)
   float white = 1.0f;
   int hdr = to_srgb && to_srgb_k && mon_hdr(mon, &white);
   if ((m->pool && hdr != m->hdr) || m->w != w || m->h != h) {
@@ -964,7 +899,6 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   LONGLONG at = m->last_at;
   LeaveCriticalSection(&frame_lock);
   take_fresh = 0;
-  // (PINSHOT_FRAME_TRUSTED_S: another limit, for a test)
   static double trusted = -1;
   if (trusted < 0) {
     const char *e = getenv("PINSHOT_FRAME_TRUSTED_S");
@@ -972,17 +906,14 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   }
   double age = fr ? (t0.QuadPart - at) / (double)f.QuadPart : 1e9;
   if (age > trusted && !(any_age && fr)) {
-    // (made again, its first frame waited for: the system gives one as a session starts)
     fr.Reset();
     mon_stop(m);
     ResetEvent(frame_came);
     if (!mon_start(m, mon, w, h, hdr)) {
-      // (its slot still this monitor's: tried again at the next taking, not left without a monitor for good)
       m->mon = mon, m->w = w, m->h = h;
       return NULL;
     }
     take_fresh = 1;
-    // (the first frame's time counted from when the session is there, not from when the taking began)
     LARGE_INTEGER started;
     QueryPerformanceCounter(&started);
     for (;;) {
@@ -1039,8 +970,6 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   int whole = rx == 0 && ry == 0 && rw == w && rh == h;
   said_half = 0;
   if (m->hdr) {
-    // (brought down to sRGB first: only the requested region rw x rh is converted so a scrolling capture does not
-    // allocate and shade a full 4K UAV texture on every tick)
     ComPtr<ID3D11ShaderResourceView> srv;
     ComPtr<ID3D11Texture2D> half;
     uint32_t ox = (uint32_t)rx, oy = (uint32_t)ry;
@@ -1147,7 +1076,6 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
   }
   take_white = m->hdr ? white : 0.0;
-  // (sessions made only as needed: let go once taken, but while a long screenshot holds them, every 33 ms)
   if (!keep_sessions && !long_holds) {
     tex.Reset();
     {
@@ -1170,7 +1098,6 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   return staging.Detach();
 }
 
-// Trim unused driver pools on the capture D3D11 device(s) when idle.
 extern "C" void ps_wgc_trim(void) {
   if (dd_dev && dd_ctx && !long_holds) {
     dd_ctx->ClearState();
@@ -1186,19 +1113,14 @@ extern "C" void ps_wgc_trim(void) {
   }
 }
 
-// A picture taken let go (its staging texture, unmapped), and what the device keeps of it and of the textures it was
-// brought down through given back now (D3D11 frees a released texture's memory only as its work is flushed, and the
-// driver keeps what it freed for the next until told to trim).
 extern "C" void ps_wgc_release(void *taken) {
   ID3D11Texture2D *t = (ID3D11Texture2D *)taken;
   if (!t) return;
-  // (its own device's: the one now may have been made again since, device_lost)
   ComPtr<ID3D11Device> d;
   ComPtr<ID3D11DeviceContext> c;
   t->GetDevice(&d);
   d->GetImmediateContext(&c);
   c->Unmap(t, 0);
-  // (a long screenshot's, of the device in use: kept for its next tick, not made again each time)
   if (long_holds && !kept_staging && (d.Get() == dev.Get() || d.Get() == dd_dev.Get())) {
     kept_staging = t;
     t->Release();
@@ -1222,7 +1144,6 @@ extern "C" void ps_wgc_release(void *taken) {
   }
 }
 
-// How the captures stand, for the log: "sessions N; frames A B...; hr 0x..".
 extern "C" void ps_wgc_state(char *out, int n) {
   int k = snprintf(out, n, "sessions %d; frames", nmons);
   for (int i = 0; i < nmons && k < n; i++) k += snprintf(out + k, n - k, " %d%s", mons[i].frames, mons[i].hdr ? " hdr" : "");
@@ -1243,9 +1164,6 @@ typedef struct {
   int32_t pad;
 } WgcShmHeader;
 
-// Long-screenshot out-of-process WGC helper (`pinshot.exe --wgc-long <shm> <req> <rsp> <stop> <ppid> <mx> <my> <mw> <mh> <rx> <ry> <rw> <rh>`):
-// Holds one WGC session for the duration of a single Low-VRAM HDR long screenshot, serves each tick's cropped region
-// over shared memory, and exits when the long screenshot ends so Windows reclaims 100% of WGC VRAM (0 MB leaked).
 static int wgc_long_cli(LPWSTR *argv, int argc) {
   int idx = -1;
   for (int i = 1; i + 13 < argc; i++) {

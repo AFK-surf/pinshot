@@ -1,17 +1,3 @@
-// Area screen recording and its export (the Mac side of record_win.cpp and record_draw_win.cpp, the same calls and the
-// same "rec" events on the channel "ps", so record.mbt's panel is the same on both):
-// 1. The region framed by a window of its own (its rounded border drawn with a soft glow; in the Ready phase its edges
-//    and corners drag the region bigger or smaller, told as {"do":"rec-rect"}; once recording, it lets every click
-//    through: red, dashed amber while paused). It and the panel are kept out of what is recorded.
-// 2. The region recorded by ScreenCaptureKit (cropped to it on the display, the cursor as asked, the system's sound
-//    without PinShot's own) into a temporary MP4: hardware HEVC where it is (every Apple silicon Mac), else H.264, at
-//    the "Original" quality's bitrate (record.mbt's rec_target_bps), with AAC sound.
-// 3. Clicks' ripples and the keys pressed shown over the region (a click-through window of their own that is recorded
-//    with it); keys only where PinShot may watch them (Accessibility), clicks always.
-// 4. The recording exported as asked (ps_rec_export): MP4 HEVC or H.264 at a quality and size (copied as it is where
-//    nothing changes), or an animated GIF; its progress told, it called off at any point.
-//
-// Nothing of it exists until a recording panel asks: no stream, no encoder, no window, no event monitor.
 #import "mac_platform.h"
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
@@ -24,8 +10,6 @@
 
 extern void mb_post(const char *, const char *, size_t, const uint8_t *, size_t);
 extern void mb_app_window_clear(int wid);
-
-// ---- what is told ----
 
 static void recPost(NSString *state, int64_t ms, int frames, uint64_t bytes, uint64_t orig, int pct, int audio,
                     NSString *codec, NSString *path, NSString *err) {
@@ -62,7 +46,6 @@ static BOOL testing(void) {
   return t && t[0] && strcmp(t, "0") != 0;
 }
 
-// A file put on the clipboard as a file (Finder pastes it, chats attach it); a test run writes its path instead.
 static void copyFile(NSString *path) {
   const char *copyTo = getenv("PINSHOT_TEST_COPY");
   if (copyTo && copyTo[0]) {
@@ -78,7 +61,6 @@ static void copyFile(NSString *path) {
   });
 }
 
-// The bitrate record.mbt estimates sizes with (rec_target_bps): codec 0 HEVC, 1 H.264; quality 0 Original .. 3.
 static double targetBps(int codec, int qual, int w, int h, int fps) {
   double ef = fps > 30 ? 30.0 + (fps - 30) * 0.35 : fps;
   double px = (double)w * h * ef;
@@ -93,7 +75,6 @@ static double targetBps(int codec, int qual, int w, int h, int fps) {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
-// The size an export is made at (record_win.cpp's compute_scaled_dims): 1..99 a percent, >100 the longest edge.
 static void scaledDims(int sw, int sh, int param, int *ow, int *oh) {
   *ow = sw;
   *oh = sh;
@@ -108,8 +89,6 @@ static void scaledDims(int sw, int sh, int param, int *ow, int *oh) {
   }
 }
 
-// The panel's preview (record_win.cpp's build_preview_bmp): the last frame (NV12 420v or 32BGRA) cover-cropped
-// into a 352×368 BMP (2x of 176×184pt) with a dark scrim at its bottom, under the words the panel puts there.
 static NSData *previewBmp(CVPixelBufferRef pb) {
   if (!pb)
     return nil;
@@ -222,17 +201,15 @@ static NSData *previewBmp(CVPixelBufferRef pb) {
   return out;
 }
 
-// ---- the region and its screen ----
-
 static struct {
   BOOL prepared;
-  int x, y, w, h;          // the region, in the screens' pixels (mac_platform.h's ps_screen_pixels)
-  int mx, my, mw, mh;      // its screen's
-  int session;             // the panel's number: ps_rec_end begins another (a worker of the last keeps nothing)
+  int x, y, w, h;
+  int mx, my, mw, mh;
+  int session;
   BOOL inputShow;
 } R;
-static NSScreen *recScreen;  // (R.screen kept alive)
-static NSMutableSet<NSNumber *> *excluded;  // the windows kept out of the recording (their window numbers)
+static NSScreen *recScreen;
+static NSMutableSet<NSNumber *> *excluded;
 
 static NSRect regionPoints(void) {
   return ps_screen_points(recScreen, NSMakeRect(R.x, R.y, R.w, R.h));
@@ -244,13 +221,10 @@ static void postRect(void) {
   mb_post("ps", s.UTF8String, strlen(s.UTF8String), NULL, 0);
 }
 
-// ---- the frame round the region ----
-
 static NSColor *rgb(int c) {
   return [NSColor colorWithSRGBRed:((c >> 16) & 255) / 255.0 green:((c >> 8) & 255) / 255.0 blue:(c & 255) / 255.0
                              alpha:1];
 }
-
 
 @interface PSRecFrameView : NSView
 @property NSScreen *screen;
@@ -269,7 +243,7 @@ static NSColor *rgb(int c) {
 }
 @end
 
-static const CGFloat framePad = 10;  // the window reaches this far round the region (the glow, the edges' grip)
+static const CGFloat framePad = 10;
 static PSRecFrameWindow *frameWin;
 static PSRecFrameView *frameView;
 static void recDrawRegion(void);
@@ -316,7 +290,7 @@ static NSBezierPath *ps_superellipse_path(NSRect r, CGFloat rad) {
 }
 
 @implementation PSRecFrameView {
-  int dragX, dragY;  // which edges a drag moves (-1 left/top, 1 right/bottom)
+  int dragX, dragY;
   NSPoint dragFrom;
   int fromX, fromY, fromW, fromH;
 }
@@ -326,7 +300,6 @@ static NSBezierPath *ps_superellipse_path(NSRect r, CGFloat rad) {
 - (BOOL)acceptsFirstMouse:(NSEvent *)e {
   return YES;
 }
-// The border's rectangle in the view (just outside the region; kept on its screen where the region is its edge).
 - (NSRect)borderRect {
   NSRect b = NSInsetRect(self.bounds, framePad - 2, framePad - 2);
   NSRect s = self.screen.frame;
@@ -345,14 +318,12 @@ static NSBezierPath *ps_superellipse_path(NSRect r, CGFloat rad) {
   CGContextRef c = NSGraphicsContext.currentContext.CGContext;
   NSColor *col = [self.color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
   if (self.handles) {
-    // (an all but invisible band where the edges are gripped: a click on nothing at all would go through the window)
     NSBezierPath *grip = [self roundRect:r];
     grip.lineWidth = 16;
     [[NSColor colorWithWhite:0 alpha:0.01] setStroke];
     [grip stroke];
   }
   CGFloat halfW = self.handles ? 0.95 : 1.1;
-  // the glow
   CGContextSaveGState(c);
   CGContextSetShadowWithColor(c, CGSizeZero, 6, [col colorWithAlphaComponent:0.55].CGColor);
   NSBezierPath *p = [self roundRect:r];
@@ -360,11 +331,9 @@ static NSBezierPath *ps_superellipse_path(NSRect r, CGFloat rad) {
   [[col colorWithAlphaComponent:0.28] setStroke];
   [p stroke];
   CGContextRestoreGState(c);
-  // a dark casing that keeps it seen on white
   p.lineWidth = (halfW + 1.35) * 2;
   [[NSColor colorWithWhite:0 alpha:0.32] setStroke];
   [p stroke];
-  // the border
   p.lineWidth = halfW * 2;
   if (self.dashed) {
     CGFloat dash[] = {7, 6};
@@ -374,7 +343,6 @@ static NSBezierPath *ps_superellipse_path(NSRect r, CGFloat rad) {
   [p stroke];
   if (!self.handles)
     return;
-  // the corners' brackets and the edges' middle grips, lighter
   NSColor *light = [NSColor colorWithSRGBRed:MIN(1, col.redComponent + 0.28)
                                        green:MIN(1, col.greenComponent + 0.28)
                                         blue:MIN(1, col.blueComponent + 0.28)
@@ -416,7 +384,6 @@ static NSBezierPath *ps_superellipse_path(NSRect r, CGFloat rad) {
   [light setStroke];
   [marks stroke];
 }
-// Which edges a point grips (0, 0: none).
 - (BOOL)grip:(NSPoint)p x:(int *)hx y:(int *)hy {
   NSRect r = [self borderRect];
   CGFloat reach = 9, corner = 18;
@@ -531,7 +498,6 @@ static NSCursor *cursorFor(int hx, int hy) {
 }
 @end
 
-// A frame's window: on every space, over the others, never key, the pointer passing through it unless it is gripped.
 static PSRecFrameWindow *frameWindowMade(void) {
   PSRecFrameWindow *w = [[PSRecFrameWindow alloc] initWithContentRect:NSMakeRect(0, 0, 16, 16)
                                                             styleMask:NSWindowStyleMaskBorderless |
@@ -570,8 +536,6 @@ static void frameShow(NSColor *color, BOOL dashed, BOOL handles) {
   [frameWin orderFrontRegardless];
 }
 
-// A frame round the part `px` (screen `s`'s pixels) that the pointer passes through (longshot_mac.m's): made where `w`
-// is nil, else changed.
 NSWindow *ps_region_frame(NSWindow *w, NSScreen *s, NSRect px, int c, int dashed) {
   if (!w)
     w = frameWindowMade();
@@ -601,10 +565,8 @@ static void frameHide(void) {
   frameView = nil;
 }
 
-// ---- clicks and keys shown over the region ----
-
 typedef struct {
-  NSPoint at;  // in the region's view
+  NSPoint at;
   int rgb;
   double start;
 } Ripple;
@@ -721,8 +683,6 @@ static void drawTick(void) {
   drawSchedule(now);
 }
 
-// Schedule next tick matching Windows record_draw_win.cpp: 60fps only while ripples animate or keycaps fade;
-// a single one-shot timer sleeps across the 1.1s static keycap hold (zero idle redraws).
 static void drawSchedule(double now) {
   [drawTimer invalidate];
   drawTimer = nil;
@@ -832,7 +792,6 @@ static void drawSync(void) {
     drawView = [[PSRecDrawView alloc] initWithFrame:NSMakeRect(0, 0, 1, 1)];
     drawWin.contentView = drawView;
   }
-  // Kept hidden until a click or key actually triggers drawWake() (zero compositor cost while idle).
   [drawWin setFrame:regionPoints() display:NO];
   if (drawShown)
     [drawWin orderFrontRegardless];
@@ -857,7 +816,6 @@ static void drawSync(void) {
                                             ps_now_ms()};
                                         drawWake();
                                       }];
-  // (keys only where the person let PinShot watch them: never asked here, the recording goes on without them)
   if (!keyMonitor && AXIsProcessTrusted())
     keyMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown
                                                         handler:^(NSEvent *e) {
@@ -891,16 +849,13 @@ void ps_rec_input_show(int32_t on) {
   drawSync();
 }
 
-// ---- the recording ----
-
 @interface PSRecorder : NSObject <SCStreamOutput, SCStreamDelegate>
 @end
 
-static PSRecorder *recorder;     // the recording running (main thread's)
-static atomic_int recRunning;    // a recording's worker is there (till its file is written or let go)
+static PSRecorder *recorder;
+static atomic_int recRunning;
 static atomic_int recPaused;
 
-// The recording kept to export (main thread's).
 static NSString *masterPath, *masterCodec;
 static uint64_t masterBytes;
 static int64_t masterMs;
@@ -921,23 +876,21 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
   int session, fps, w, h;
   BOOL cursor, wantAudio;
   SCStream *stream;
-  dispatch_queue_t q;  // the stream's frames and sound, and everything of the writer, on it alone
+  dispatch_queue_t q;
   AVAssetWriter *writer;
   AVAssetWriterInput *vin, *ain;
   AVAssetWriterInputPixelBufferAdaptor *adaptor;
   NSString *path, *codec;
   BOOL hasAudio;
-  // (q's)
   BOOL started, stopping, failed;
-  CMTime origin;       // the host time the recording's time 0 is
-  double pausedTotal;  // seconds paused, taken off every time after
+  CMTime origin;
+  double pausedTotal;
   double pauseBegan;
   BOOL wasPaused;
   CMTime lastPts;
   CVPixelBufferRef lastFrame;
   int frames;
-  // (main's)
-  double startedAt;     // host seconds the recording was asked to start
+  double startedAt;
   dispatch_source_t ticker;
 }
 
@@ -1020,7 +973,6 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
   c.scalesToFit = NO;
   c.minimumFrameInterval = CMTimeMake(1, fps);
   c.queueDepth = 6;
-  // Hardware NV12 (420v) BT.709 straight from ScreenCaptureKit to VideoToolbox (zero BGRA->NV12 conversion, 62.5% less RAM).
   c.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
   c.colorSpaceName = kCGColorSpaceITUR_709;
   c.colorMatrix = kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
@@ -1044,7 +996,6 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
   }];
 }
 
-// The recording given up: told once, its file let go.
 - (void)fail:(NSString *)why {
   dispatch_async(q, ^{
     if (self->failed || self->stopping)
@@ -1083,7 +1034,6 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
   ticker = nil;
 }
 
-// (q's) The pause asked for, taken as a frame or a sound comes: the time paused taken off all after it.
 - (BOOL)pausedNow {
   BOOL p = atomic_load(&recPaused) != 0;
   if (p && !wasPaused) {
@@ -1158,7 +1108,6 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
   }
 }
 
-// The recording finished (or called off): its last frame held to the end, its file written, told.
 - (void)finish:(BOOL)cancel {
   [self stopTicker];
   dispatch_async(q, ^{
@@ -1201,7 +1150,6 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
     });
     return;
   }
-  // (the last frame held till the recording's end: a still screen gave no frames after it)
   CMTime end = CMTimeMakeWithSeconds(ms / 1000.0, 600);
   if (lastFrame && CMTimeCompare(end, lastPts) > 0 && vin.readyForMoreMediaData)
     [adaptor appendPixelBuffer:lastFrame withPresentationTime:end];
@@ -1230,7 +1178,6 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
         return;
       }
       if (self->session != R.session) {
-        // (the panel ended meanwhile: nothing kept of it)
         [NSFileManager.defaultManager removeItemAtPath:self->path error:nil];
         return;
       }
@@ -1251,7 +1198,7 @@ static double hostSeconds(void) { return CMTimeGetSeconds(CMClockGetTime(CMClock
 }
 @end
 
-static atomic_int expGen;       // each export's number: one called off (or the panel ended) takes the next
+static atomic_int expGen;
 static atomic_int expRunning;
 static dispatch_group_t expGroup;
 
@@ -1263,7 +1210,6 @@ int32_t ps_rec_prepare(int32_t x, int32_t y, int32_t w, int32_t h) {
     excluded = [NSMutableSet set];
   if (!swept) {
     swept = YES;
-    // (the recordings of runs no longer here deleted, off the main thread; the one kept for export deleted as it quits)
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
       NSString *dir = NSTemporaryDirectory();
       for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) {
@@ -1376,7 +1322,6 @@ int32_t ps_rec_start(int32_t fps, int32_t cursor, int32_t audio) {
                                      [r begin:filter];
                                  });
                                }];
-  // (the time told as it goes, as Windows does: every tenth of a second)
   r->ticker = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, r->q);
   dispatch_source_set_timer(r->ticker, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_SEC / 10, NSEC_PER_MSEC * 10);
   __weak PSRecorder *weak = r;
@@ -1410,11 +1355,8 @@ void ps_rec_stop(int32_t cancel) {
     [recorder finish:cancel != 0];
 }
 
-// ---- export ----
-
 static BOOL expLive(int gen) { return atomic_load(&expGen) == gen; }
 
-// An MP4 encoded again from the recording (fmt 0 HEVC, 1 H.264) at `qual` and the size asked.
 static void exportMp4(int gen, NSString *src, NSString *dst, int fmt, int qual, int ow, int oh, int fps,
                       int64_t totalMs, uint64_t orig) {
   NSString *cname = fmt == 0 ? @"HEVC (HW)" : @"H.264 (HW)";
@@ -1599,8 +1541,6 @@ static void exportMp4(int gen, NSString *src, NSString *dst, int fmt, int qual, 
   copyFile(dst);
   recPost(@"exported", totalMs, 0, bytes, orig, 100, ain != nil, cname, dst, nil);
 }
-
-// ---- Streaming GIF89a encoder (15-bit Median-Cut + dirty-rect + static-frame merge + LZW, matching record_win.cpp) ----
 
 typedef struct {
   uint16_t key;
@@ -2119,8 +2059,6 @@ static uint64_t gifFinish(PSGifWriter *g) {
   return sz > 0 ? (uint64_t)sz : 0;
 }
 
-// An animated GIF of the recording, `gfps` pictures a second at ow × oh, streaming directly with Median-Cut + dirty-rect
-// delta + static-frame merge (1:1 aligned with Windows record_win.cpp).
 static void exportGif(int gen, NSString *src, NSString *dst, int ow, int oh, int gfps, int64_t totalMs, uint64_t orig) {
   AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:src] options:nil];
   NSError *err = nil;
@@ -2283,7 +2221,7 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, i
   uint64_t orig = masterBytes;
   int sw = masterW, sh = masterH, fps = masterFps, audio = masterAudio;
   if (fmt == 3)
-    fmt = 0;  // (no AV1 encoder on a Mac: ps_rec_has_av1 says so, the panel never asks)
+    fmt = 0;
   int gfps = gif_fps <= 0 ? 15 : gif_fps;
   int ow, oh;
   scaledDims(sw, sh, max_side, &ow, &oh);
@@ -2294,7 +2232,6 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, i
     @autoreleasepool {
       BOOL sameCodec = (fmt == 0) == [mcodec hasPrefix:@"HEVC"];
       if (fmt != 2 && quality == 0 && ow == sw && oh == sh && sameCodec) {
-        // (the recording is already this: copied as it is)
         [NSFileManager.defaultManager removeItemAtPath:dst error:nil];
         [NSFileManager.defaultManager createDirectoryAtPath:dst.stringByDeletingLastPathComponent
                                 withIntermediateDirectories:YES
@@ -2316,8 +2253,6 @@ int32_t ps_rec_export(moonbit_bytes_t dest_path, int32_t fmt, int32_t quality, i
   return 1;
 }
 
-// The export under way called off: its half file deleted by its worker, the recording kept ({"state":
-// "export-cancelled"} told once it has stopped).
 void ps_rec_export_cancel(void) { atomic_fetch_add(&expGen, 1); }
 
 int32_t ps_rec_reuse(moonbit_bytes_t src_path, moonbit_bytes_t dst_path) {
@@ -2382,5 +2317,4 @@ void ps_rec_exclude(int32_t wid) {
     w.sharingType = NSWindowSharingNone;
 }
 
-// (Windows' a window made next drawn on nothing: here ps_rec_exclude makes the panel so as it is placed)
 void ps_next_win_clear(void) {}

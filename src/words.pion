@@ -1,11 +1,7 @@
-// Words written on the picture: a click with the words tool opens a line to type in where it was clicked (in the colour
-// and size chosen); a click elsewhere, Escape or another tool puts what was typed down as a mark (nothing typed: none).
-
 import "signals"
 import "ui"
 import "view"
 
-/// Where the words being written start (pixels), None while none are.
 let words_open : signals::Signal[Option[(Double, Double)]] = signals::signal_by(None, fn(a, b) {
   match (a, b) {
     (None, None) => true
@@ -16,14 +12,12 @@ let words_open : signals::Signal[Option[(Double, Double)]] = signals::signal_by(
 
 let words_field : ui::Field = ui::Field::new()
 
-/// What is typed, as it is typed (how wide its line is drawn).
 let words_typed : signals::Signal[String] = signals::signal("")
 
 fn open_words(x : Double, y : Double) -> Unit {
   words_field.set("")
   words_typed.set("")
   let size = words_pt(size_now.untracked()) * mon_scale.untracked()
-  // (the line's middle where it was clicked)
   words_open.set(Some((x, y - size * 0.65)))
 }
 
@@ -41,7 +35,6 @@ fn commit_words() -> Unit {
   }
 }
 
-/// The line typed in, while words are written.
 fn words_editor(layer : view::View) -> Unit {
   layer.show(fn() { words_open.get().is_some() }, fn(b) {
     let _ = b.over(view::Live::Is(true)).presses(view::Live::Is(true)).lines_up(view::Live::Is(Some(view::Along::Start)))
@@ -55,7 +48,6 @@ fn words_editor(layer : view::View) -> Unit {
         }
       }))
       .width(view::Live::By(fn() {
-        // (as wide as what is typed, and room for what comes next)
         let size = words_pt(size_now.get())
         let mut longest = 0
         for l in words_typed.get().split("\n") {

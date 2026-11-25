@@ -1,6 +1,3 @@
-// Starting with Windows as the Store's package does it: a package's program is not started by HKCU's Run key, its
-// manifest's startup task is (packaging/AppxManifest.xml: TaskId PinShotAtSignIn, off as installed), turned on or off
-// by Windows.ApplicationModel.StartupTask. platform_win.c asks here where the run is a package's, else keeps the Run key.
 #include <windows.h>
 #include <appmodel.h>
 #include <roapi.h>
@@ -19,7 +16,6 @@ using Microsoft::WRL::Wrappers::HStringReference;
 namespace AM = ABI::Windows::ApplicationModel;
 namespace WF = ABI::Windows::Foundation;
 
-// Whether this run is a package's (installed from the Store or an MSIX).
 extern "C" int ps_packaged(void) {
   UINT32 n = 0;
   return GetCurrentPackageFullName(&n, NULL) == ERROR_INSUFFICIENT_BUFFER;
@@ -51,8 +47,6 @@ static HRESULT wait_for(WF::IAsyncOperation<T> *op, R *out, DWORD most_ms) {
   return hr;
 }
 
-// WinRT on this thread for as long as it is asked here (paired: a thread whose COM is another mode already, the UI
-// thread's STA as OLE set it, is used as it is).
 struct RoScope {
   HRESULT hr;
   RoScope() : hr(RoInitialize(RO_INIT_SINGLETHREADED)) {}
@@ -73,7 +67,6 @@ static HRESULT startup_task(ComPtr<AM::IStartupTask> &task) {
   return wait_for(op.Get(), task.GetAddressOf(), 5000);
 }
 
-// The package's startup task: 1 on, 0 off (or not to be had).
 extern "C" int ps_startup_on(void) {
   RoScope ro;
   if (!ro.usable()) return 0;
@@ -84,8 +77,6 @@ extern "C" int ps_startup_on(void) {
   return s == AM::StartupTaskState_Enabled || s == AM::StartupTaskState_EnabledByPolicy;
 }
 
-// The package's startup task turned on or off: 1 it is as asked (turned off in Windows' settings by the person, it
-// stays off: Windows asks them there).
 extern "C" int ps_startup_set(int on) {
   RoScope ro;
   if (!ro.usable()) return 0;
@@ -95,7 +86,6 @@ extern "C" int ps_startup_set(int on) {
   ComPtr<WF::IAsyncOperation<AM::StartupTaskState>> op;
   if (FAILED(task->RequestEnableAsync(&op))) return 0;
   AM::StartupTaskState s;
-  // (Windows may ask the person first: a minute for them to answer)
   if (FAILED(wait_for(op.Get(), &s, 60000))) return 0;
   return s == AM::StartupTaskState_Enabled || s == AM::StartupTaskState_EnabledByPolicy;
 }

@@ -1,7 +1,3 @@
-// Minimal "installed" welcome window shown once after double-clicking the single-file installer (launched with
-// `--installed`): confirms installation visibly (Win11 often suppresses legacy tray balloons), shows active shortcuts,
-// offers an instant Start-with-Windows toggle, and links to Settings. Zero overhead when closed.
-
 import "signals"
 import "ui"
 import "view"
@@ -93,7 +89,6 @@ fn welcome_window(root : view::View) -> Unit {
   })
   let _ = root.box(fn(w) {
     let _ = w.over(view::Live::Is(true)).ground(view::Live::Is(set_ground)).padding(view::Live::Is((24.0, 22.0, 24.0, 20.0))).gap(view::Live::Is(16.0))
-    // Header: emerald check badge + installed version & subtitle
     let _ = w.box(fn(hdr) {
       let _ = hdr.row(view::Live::Is(true)).gap(view::Live::Is(14.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
       let _ = hdr.box(fn(badge) {
@@ -123,7 +118,6 @@ fn welcome_window(root : view::View) -> Unit {
         })
       })
     })
-    // Quick summary card: active shortcuts + start-at-login toggle
     set_group(w, "", fn(g) {
       set_row(g, "开始截图", fn(r) {
         welcome_keycap(r, fn() { key_words(settings.get().capture_key, key_choices) }, fn() { capture_key_ok.get() })
@@ -139,16 +133,13 @@ fn welcome_window(root : view::View) -> Unit {
         })
       })
     })
-    // Subtle management / uninstall hint
     let _ = w.box(fn(note) {
       let _ = note
       .padding(view::Live::Is((2.0, 0.0, 2.0, 0.0)))
       .words(view::Live::By(fn() { tr("可随时从系统托盘图标或「设置 › 应用」管理与卸载。") }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 400, line: 16.0, wrap: true })
       .ink(view::Live::Is(0x8E94A3FFL))
     })
-    // Spacer pushing footer to bottom
     let _ = w.box(fn(sp) { let _ = sp.grow(view::Live::Is(1.0)) })
-    // Footer actions
     let _ = w.box(fn(foot) {
       let _ = foot.row(view::Live::Is(true)).lies_along(view::Live::Is(view::Lies::End)).gap(view::Live::Is(8.0))
       welcome_button(foot, fn() { tr("打开设置") }, false, fn() {

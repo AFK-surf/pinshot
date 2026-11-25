@@ -1,13 +1,6 @@
-// What PinShot asks of the system, and nothing of its UI: one set of calls, answered on Windows by
-// native/platform_win.c (and on macOS by native/platform_mac.m) via native/pion_ps_bridge.c.
-// Text crosses as UTF-8 (paths ending in a NUL: cstr); what happens outside the frames (a shortcut,
-// the icon, its menu, a window's close) comes on the channel "ps" (main.pion).
-
 import "hostapi"
 import "json"
 import "ui"
-
-// ---- MoonBit-bytes C interop helpers (backed by invar's pion_mb_compat.c) ----
 
 extern "C" fn c_mb_bytes_len(p : Ptr) -> Int = "pion_mb_bytes_len"
 extern "C" fn c_mb_decref(p : Ptr) -> Unit = "moonbit_decref"
@@ -19,12 +12,10 @@ fn take_mb_bytes(p : Ptr) -> Bytes {
   b
 }
 
-/// `s` as UTF-8 bytes.
 fn utf8_encode(s : String) -> Bytes {
   s.to_bytes()
 }
 
-/// `s` as the native side reads a path or a name: UTF-8 ending in a NUL.
 fn cstr(s : String) -> Bytes {
   let b = s.to_bytes()
   let sb = StringBuilder::new()
@@ -37,7 +28,6 @@ fn cstr(s : String) -> Bytes {
   sb.to_string().to_bytes()
 }
 
-/// Decode a UTF-8 byte sequence (lossy: invalid bytes become U+FFFD) into a String.
 fn text_of(b : Bytes) -> String {
   let sb = StringBuilder::new()
   let n = b.length()
@@ -154,8 +144,6 @@ fn chars_to_string(cs : Array[Char], lo : Int, hi : Int) -> String {
   sb.to_string()
 }
 
-// ---- Direct scalar / zero-Bytes-arg C FFI ----
-
 extern "C" fn ps_start(again : Int) -> Int = "ps_start"
 extern "C" fn ps_shutter() -> Unit = "ps_shutter"
 extern "C" fn ps_ui_chinese() -> Int = "ps_ui_chinese"
@@ -203,7 +191,6 @@ extern "C" fn ps_autostart() -> Int = "ps_autostart"
 extern "C" fn ps_set_autostart(on : Int) -> Int = "ps_set_autostart"
 extern "C" fn c_ps_clipboard_image() -> Ptr = "ps_clipboard_image"
 
-// Longshot
 extern "C" fn ps_long_begin(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_long_begin"
 extern "C" fn ps_long_stop() -> Unit = "ps_long_stop"
 extern "C" fn ps_long_pause(on : Int) -> Unit = "ps_long_pause"
@@ -215,7 +202,6 @@ extern "C" fn c_ps_long_png() -> Ptr = "ps_long_png"
 extern "C" fn ps_long_preview_free() -> Unit = "ps_long_preview_free"
 extern "C" fn ps_long_exclude(wid : Int) -> Unit = "ps_long_exclude"
 
-// Record
 extern "C" fn ps_rec_prepare(x : Int, y : Int, w : Int, h : Int) -> Int = "ps_rec_prepare"
 extern "C" fn c_ps_rec_rect() -> Ptr = "ps_rec_rect"
 extern "C" fn ps_rec_start(fps : Int, cursor : Int, audio : Int) -> Int = "ps_rec_start"
@@ -229,14 +215,11 @@ extern "C" fn ps_rec_exclude(wid : Int) -> Unit = "ps_rec_exclude"
 extern "C" fn ps_next_win_clear() -> Unit = "ps_next_win_clear"
 extern "C" fn ps_rec_input_show(on : Int) -> Unit = "ps_rec_input_show"
 
-// Update / Install
 extern "C" fn ps_install_kind() -> Int = "ps_install_kind"
 extern "C" fn ps_update_cleanup() -> Unit = "ps_update_cleanup"
 extern "C" fn ps_epoch_s() -> Double = "ps_epoch_s"
 extern "C" fn ps_idle_ms() -> Int = "ps_idle_ms"
 extern "C" fn ps_update_ticks(first_ms : Int, every_ms : Int) -> Unit = "ps_update_ticks"
-
-// ---- Bridged C FFI (functions accepting Bytes args, via native/pion_ps_bridge.c) ----
 
 extern "C" fn c_ps_tray_note(t : Ptr, tl : Int64, m : Ptr, ml : Int64) -> Unit = "pion_ps_tray_note"
 extern "C" fn c_ps_set_menu(s : Ptr, sl : Int64) -> Unit = "pion_ps_set_menu"
@@ -261,8 +244,6 @@ extern "C" fn c_ps_install_sync_meta(v : Ptr, vl : Int64) -> Unit = "pion_ps_ins
 extern "C" fn c_ps_swap_exe(p : Ptr, pl : Int64, s : Ptr, sl : Int64) -> Int = "pion_ps_swap_exe"
 extern "C" fn c_ps_open_url(u : Ptr, ul : Int64) -> Unit = "pion_ps_open_url"
 extern "C" fn c_ps_stdout(s : Ptr, sl : Int64) -> Unit = "pion_ps_stdout"
-
-// ---- Wrappers keeping exact original PinShot signatures ----
 
 fn ps_args() -> Bytes { take_mb_bytes(c_ps_args()) }
 fn ps_key_name(vk : Int) -> Bytes { take_mb_bytes(c_ps_key_name(vk)) }
@@ -362,8 +343,6 @@ fn ps_swap_exe(path : Bytes, sha256 : Bytes) -> Int {
 fn ps_open_url(url : Bytes) -> Unit {
   c_ps_open_url(bytes_data_ptr(url), url.length().to_int64())
 }
-
-// ---- Window & shared helpers ----
 
 fn close_window(wid : Int) -> Unit {
   ps_let_close(wid)

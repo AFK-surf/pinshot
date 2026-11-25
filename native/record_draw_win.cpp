@@ -1,12 +1,6 @@
 // Mouse-click ripples and the keys pressed, shown over the region being recorded (Windows): a transparent,
 // click-through, per-pixel-alpha layered window (UpdateLayeredWindow + GDI+), deliberately NOT excluded from capture so
 // the recording's WGC session takes them with their anti-aliased alpha.
-//
-// Nothing of it exists unless it is asked for (ps_rec_input_show) while a recording runs: no window, no GDI+, no hooks.
-// The low-level hooks only note what happened and post the window a message (a hook's callback holds up every input of
-// the system while it runs: it never draws). It is drawn only while something moves: a ripple's 400 ms, a key's fade;
-// while a key's caps are held still (1.1 s) one timer wakes it as the fade begins. Only the box round what is drawn is
-// put on the screen (the window moved and sized to it), never the whole region.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -27,7 +21,7 @@
 namespace {
 
 struct ClickRipple {
-  float x, y;  // in the region
+  float x, y;
   uint32_t rgb;
   ULONGLONG start_ms;
 };
@@ -35,18 +29,16 @@ struct ClickRipple {
 static const UINT_PTR ANIM_TIMER_ID = 0x5244;
 static const UINT WM_RD_DRAW = WM_APP + 0x52;
 static const DWORD RIPPLE_DURATION_MS = 400;
-static const float RIPPLE_REACH = 36.0f;  // a ripple's most radius (32) and its ring's width, round its centre
+static const float RIPPLE_REACH = 36.0f;
 static const DWORD KEY_HOLD_MS = 1100;
 static const DWORD KEY_FADE_MS = 350;
 
 struct DrawState {
-  // asked for
-  int x = 0, y = 0, w = 0, h = 0;  // the region, in the screen's pixels
+  int x = 0, y = 0, w = 0, h = 0;
   bool have_rect = false;
   bool input_show = false;
   bool rec_active = false;
 
-  // there only while asked for and recording
   HWND hwnd = NULL;
   ULONG_PTR gdip_token = 0;
   bool gdip_ok = false;
@@ -68,7 +60,7 @@ struct DrawState {
 
   std::vector<ClickRipple> ripples;
   std::vector<std::wstring> caps;
-  std::vector<float> cap_ws;  // each cap's width, measured as the caps change
+  std::vector<float> cap_ws;
   bool caps_measured = false;
   ULONGLONG key_start_ms = 0;
   bool key_active = false;
@@ -115,7 +107,6 @@ static void free_dib(void) {
   D.dib_w = D.dib_h = 0;
 }
 
-// A DIB at least w by h (grown, never shrunk, while it is shown).
 static bool ensure_dib(int w, int h) {
   if (D.dib_bits && D.dib_w >= w && D.dib_h >= h) return true;
   int nw = std::max(w, D.dib_w), nh = std::max(h, D.dib_h);
@@ -165,7 +156,6 @@ static void measure_caps(Gdiplus::Graphics &g) {
   D.caps_measured = true;
 }
 
-// The keycaps' row, in the region: x, y, w, h (w 0 where there are none).
 static void caps_box(float &bx, float &by, float &bw, float &bh) {
   bx = by = bw = bh = 0.0f;
   if (!D.key_active || D.cap_ws.empty()) return;
@@ -177,11 +167,9 @@ static void caps_box(float &bx, float &by, float &bw, float &bh) {
   bx = ((float)D.w - total) * 0.5f;
   by = cy;
   bw = total;
-  bh = ch + 3.0f;  // (and the shadow below)
+  bh = ch + 3.0f;
 }
 
-// A test run (PINSHOT_TEST) told of each picture put up (PINSHOT_TEST_RECDRAW: the file a line each is written to),
-// what a check counts and times; the last picture kept as a BMP beside it.
 static void test_note(ULONGLONG now, int x, int y, int w, int h) {
   static int checked = 0;
   static char path[MAX_PATH];
@@ -253,7 +241,6 @@ static void redraw_layer(void) {
     return;
   }
 
-  // what is drawn's box, in the region
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   for (const auto &rp : D.ripples) {
     x0 = std::min(x0, rp.x - RIPPLE_REACH);
@@ -262,7 +249,6 @@ static void redraw_layer(void) {
     y1 = std::max(y1, rp.y + RIPPLE_REACH);
   }
   if (D.key_active && !D.caps_measured) {
-    // (the caps measured on a graphics of the screen's: no DIB needed for it)
     HDC screen = GetDC(NULL);
     {
       Gdiplus::Graphics mg(screen);
@@ -388,7 +374,6 @@ static bool is_modifier_vk(DWORD vk) {
          vk == VK_RSHIFT || vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN;
 }
 
-// (the hooks run on the thread that set them, the UI's, as it waits for messages: they only note and post)
 static LRESULT CALLBACK ll_mouse_proc(int code, WPARAM wp, LPARAM lp) {
   if (code == HC_ACTION && D.hwnd && (wp == WM_LBUTTONDOWN || wp == WM_RBUTTONDOWN || wp == WM_MBUTTONDOWN)) {
     const MSLLHOOKSTRUCT *ms = (const MSLLHOOKSTRUCT *)lp;
@@ -432,8 +417,8 @@ static LRESULT CALLBACK ll_key_proc(int code, WPARAM wp, LPARAM lp) {
 static LRESULT CALLBACK rec_draw_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   switch (msg) {
     case WM_RD_DRAW: redraw_layer(); return 0;
-    case WM_APP + 0x53:  // (a test run's click, at x, y of the screen: as the mouse hook would note it)
-    case WM_APP + 0x54:  // (a test run's key, wp its virtual key: as the keyboard hook would)
+    case WM_APP + 0x53:
+    case WM_APP + 0x54:
       if (GetEnvironmentVariableA("PINSHOT_TEST", NULL, 0)) {
         if (msg == WM_APP + 0x53) {
           MSLLHOOKSTRUCT ms = {};
@@ -462,7 +447,6 @@ static LRESULT CALLBACK rec_draw_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(h, msg, wp, lp);
 }
 
-// The window, GDI+ and the hooks made (asked for, recording, the region known) or let go.
 static void sync_overlay(void) {
   bool want = D.have_rect && D.rec_active && D.input_show;
   if (want && !D.hwnd) {
@@ -489,7 +473,6 @@ static void sync_overlay(void) {
                              L"PinShot.RecDraw", L"", WS_POPUP, D.x, D.y, 1, 1, NULL, NULL, GetModuleHandleW(NULL),
                              NULL);
     if (D.hwnd) {
-      // (a test run kept out of sight: drawn, never seen)
       if (GetEnvironmentVariableA("PINSHOT_TEST_CLOAKED", NULL, 0)) {
         BOOL cloak = TRUE;
         DwmSetWindowAttribute(D.hwnd, DWMWA_CLOAK, &cloak, sizeof cloak);
@@ -523,7 +506,7 @@ static void sync_overlay(void) {
   }
 }
 
-}  // namespace
+}
 
 void rec_draw_open(int x, int y, int w, int h) {
   D.rec_active = false;
@@ -553,4 +536,4 @@ void ps_rec_input_show(int32_t on) {
   sync_overlay();
 }
 
-}  // extern "C"
+}

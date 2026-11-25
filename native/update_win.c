@@ -1,13 +1,3 @@
-// PinShot's updates, the Windows side (update.mbt decides when and what; platform.mbt says each call): how this copy
-// was installed, a file fetched over HTTPS on a thread of its own (WinHTTP, the system's proxy) and its SHA-256 checked
-// as it comes, and the new version put in place: the installer run silently (installed by PinShot-Setup), or the exe
-// swapped for the new one and started (the portable pinshot.exe). A Store package is updated by the Store: none of this
-// runs there.
-//
-// What a fetch comes to is told the app on its channel "ps" (mb_post, from the fetch's thread: the host copies it in
-// and hands it to the next frame): {"do":"fetching","got":N,"total":N} as a download goes, {"do":"fetched","ok":true,
-// "status":200} with the body beside it (a small fetch) or {"do":"fetched","ok":true,"file":true} (a download, checked
-// and in place), {"do":"fetched","ok":false,"error":"..."} where it failed.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
@@ -25,9 +15,7 @@
 #pragma comment(lib, "advapi32.lib")
 
 extern void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
-// (platform_win.c: the run's one-run mutex and its icon let go, so the run started next is the one run)
 void ps_run_handover(void);
-// (startup_task.cpp)
 int ps_packaged(void);
 
 static void up_tell(const char *json, const uint8_t *bytes, size_t blen) {
@@ -56,23 +44,16 @@ static moonbit_bytes_t up_utf8(const wchar_t *w) {
   return b;
 }
 
-// ---- how this copy was installed ----
-
-// The folder of the running exe, no backslash at its end.
 static void exe_dir(wchar_t *out, DWORD n) {
   GetModuleFileNameW(NULL, out, n);
   wchar_t *slash = wcsrchr(out, L'\\');
   if (slash) *slash = 0;
 }
 
-// 2 a Store package (the Store updates it), 0 the single-file exe (both self-installed and portable copies update
-// atomically in place by swapping pinshot.exe).
 int32_t ps_install_kind(void) {
   return ps_packaged() ? 2 : 0;
 }
 
-// Where an update is downloaded to: beside the running exe (pinshot.exe.download: same folder so MoveFileExW is atomic
-// and a non-writable folder is caught before anything is fetched).
 moonbit_bytes_t ps_update_path(moonbit_bytes_t name) {
   const char *n = (const char *)name;
   if (!n[0] || strpbrk(n, "\\/:*?\"<>|") || strstr(n, "..")) return moonbit_make_bytes(0, 0);
@@ -82,8 +63,6 @@ moonbit_bytes_t ps_update_path(moonbit_bytes_t name) {
   return up_utf8(p);
 }
 
-// What an earlier update left: the old exe moved aside (pinshot.exe.old) and a download not finished. (The installer
-// left in %TEMP% is let go of by the system's cleanup; it is removed here too once it is no longer running.)
 void ps_update_cleanup(void) {
   wchar_t exe[MAX_PATH * 2], p[MAX_PATH * 2 + 16];
   GetModuleFileNameW(NULL, exe, MAX_PATH * 2);
@@ -110,8 +89,6 @@ void ps_update_cleanup(void) {
   }
 }
 
-// ---- what a release is: signed ----
-
 // The key releases are signed with (ECDSA P-256; its private half is in the owner's still.fail vault, 「PinShot 更新签名私
 // 钥」, and packaging/publish.ps1 signs latest.json with it). What latest.json says is taken only signed by it: the
 // SHA-256 a download is checked against comes from there, so whoever could change the files on the download site
@@ -130,7 +107,6 @@ static int hex_digit(char c) {
   return -1;
 }
 
-// `hex` (exactly 2 * n hex digits) into `out`: 1 it was.
 static int from_hex(const char *hex, uint8_t *out, size_t n) {
   if (strlen(hex) != n * 2) return 0;
   for (size_t i = 0; i < n; i++) {
@@ -180,14 +156,12 @@ int32_t ps_release_signed(moonbit_bytes_t version, moonbit_bytes_t setup_sha, mo
   return ok ? 1 : 0;
 }
 
-// The file `f` (open) read through and its SHA-256 compared with `sha` (lowercase hex): 1 it is that.
 static int file_is(HANDLE f, const char *sha) {
   uint8_t want[32];
   if (!from_hex(sha, want, 32)) return 0;
   BCRYPT_ALG_HANDLE alg = NULL;
   BCRYPT_HASH_HANDLE h = NULL;
   int ok = 0;
-  // (read in 64 KB pieces, its buffer only while it is read: none kept in the program for good)
   uint8_t *buf = (uint8_t *)malloc(64 * 1024);
   if (buf && BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == 0 &&
       BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0) == 0) {
@@ -206,16 +180,10 @@ static int file_is(HANDLE f, const char *sha) {
   return ok;
 }
 
-// The file at `path` opened so that nothing can write it while it is open (it may be read, and moved), or
-// INVALID_HANDLE_VALUE.
 static HANDLE open_sealed(const wchar_t *path) {
   return CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
 }
 
-// ---- a fetch ----
-
-// Whether `url` may be fetched: https only; a test run (PINSHOT_TEST) may also fetch http from this machine
-// (127.0.0.1), where updates are tried out against a release served here (PINSHOT_UPDATE_URL).
 static int url_allowed(const URL_COMPONENTS *u) {
   if (u->nScheme == INTERNET_SCHEME_HTTPS) return 1;
   const char *t = getenv("PINSHOT_TEST");
@@ -224,8 +192,8 @@ static int url_allowed(const URL_COMPONENTS *u) {
 
 typedef struct {
   wchar_t *url;
-  wchar_t *path;  // NULL: the body is told back beside the message (at most 1 MB)
-  char sha[65];   // the SHA-256 the download must have (lowercase hex); "" none checked
+  wchar_t *path;
+  char sha[65];
   char agent[64];
 } Fetch;
 
@@ -275,7 +243,6 @@ static DWORD WINAPI fetch_work(void *arg) {
     why = "network unavailable";
     goto done;
   }
-  // (resolve, connect, send 15 s each; 30 s with nothing received)
   WinHttpSetTimeouts(s, 15000, 15000, 15000, 30000);
   c = WinHttpConnect(s, host, u.nPort, 0);
   r = c ? WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -341,7 +308,6 @@ static DWORD WINAPI fetch_work(void *arg) {
         why = "too large";
         goto done;
       }
-      // (grown as it comes, to what it is: latest.json is a few hundred bytes, not the 1 MB it may be at most)
       if (body_n + n > body_cap) {
         size_t cap = body_cap ? body_cap * 2 : 16 * 1024;
         while (cap < body_n + n) cap *= 2;
@@ -392,15 +358,11 @@ done:
   free(body);
   free(part);
   fetch_free(f);
-  // (free for the next before it is told: the app may ask for another as it hears this one failed)
   InterlockedExchange(&fetch_busy, 0);
   if (why) up_failed(why);
   return 0;
 }
 
-// `url` (https only) fetched on a thread of its own: into memory (`path` empty) or into the file `path` (written beside
-// it and moved over it once whole and of the SHA-256 `sha256`: a file is never fetched unchecked). `agent` is its
-// User-Agent. 1 it is under way (told back on "ps"), 0 not (another fetch is, or a file with no SHA-256 to check).
 int32_t ps_fetch(moonbit_bytes_t url, moonbit_bytes_t path, moonbit_bytes_t sha256, moonbit_bytes_t agent) {
   uint8_t sha_bytes[32];
   if (((const char *)path)[0] && !from_hex((const char *)sha256, sha_bytes, 32)) return 0;
@@ -424,13 +386,6 @@ int32_t ps_fetch(moonbit_bytes_t url, moonbit_bytes_t path, moonbit_bytes_t sha2
   return 1;
 }
 
-// ---- the new version put in place ----
-
-// The exe swapped for the one downloaded (`path`, beside it) and started in its place: the running exe moved
-// aside to pinshot.exe.old (Windows lets a running exe be renamed, not written; the new run deletes it), the new one
-// moved in, this run's mutex and icon let go and the new one started with --updated, this one ended. Where any of that
-// fails, what was moved is put back and 0 is answered (this run goes on). The new exe is checked once more to be of
-// `sha256` before anything is moved, and kept from being written until it is started; -1 it is not that file.
 int32_t ps_swap_exe(moonbit_bytes_t path, moonbit_bytes_t sha256) {
   wchar_t exe[MAX_PATH * 2], old[MAX_PATH * 2 + 8];
   GetModuleFileNameW(NULL, exe, MAX_PATH * 2);
@@ -465,7 +420,6 @@ int32_t ps_swap_exe(moonbit_bytes_t path, moonbit_bytes_t sha256) {
   memset(&si, 0, sizeof si);
   si.cb = sizeof si;
   if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) {
-    // (the new exe would not start: the old one put back and started, so PinShot is still there)
     CloseHandle(sealed);
     sealed = INVALID_HANDLE_VALUE;
     DeleteFileW(exe);
@@ -480,9 +434,6 @@ int32_t ps_swap_exe(moonbit_bytes_t path, moonbit_bytes_t sha256) {
   return 1;
 }
 
-// ---- small things ----
-
-// A web page opened in the person's browser (https only).
 void ps_open_url(moonbit_bytes_t url) {
   if (strncmp((const char *)url, "https://", 8) != 0) return;
   wchar_t *w = up_wide((const char *)url);
@@ -490,7 +441,6 @@ void ps_open_url(moonbit_bytes_t url) {
   free(w);
 }
 
-// Seconds since 1970 (UTC): when the last check was, kept across runs.
 double ps_epoch_s(void) {
   FILETIME ft;
   GetSystemTimeAsFileTime(&ft);
@@ -500,7 +450,6 @@ double ps_epoch_s(void) {
   return (double)(t.QuadPart - 116444736000000000ULL) / 1e7;
 }
 
-// How long the person has not touched the keyboard or the mouse, in ms.
 int32_t ps_idle_ms(void) {
   LASTINPUTINFO li;
   li.cbSize = sizeof li;
@@ -516,8 +465,6 @@ static void CALLBACK update_tick(void *arg, BOOLEAN fired) {
   up_tell("{\"do\":\"update-tick\"}", NULL, 0);
 }
 
-// {"do":"update-tick"} told after `first_ms`, then every `every_ms` (once: a second call does nothing while they go);
-// `every_ms` 0: they stop (自动更新 turned off: no timer kept for nothing).
 void ps_update_ticks(int32_t first_ms, int32_t every_ms) {
   static HANDLE timer;
   if (every_ms <= 0) {

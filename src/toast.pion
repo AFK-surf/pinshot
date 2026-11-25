@@ -1,6 +1,3 @@
-// A short word by the pointer that goes by itself (the user, 2026-11-17: 「假如没有可以pin的截图，需要有个轻微提示」): a small
-// window of this run under the pointer, over the others, the keyboard left where it was, gone after a moment.
-
 import "signals"
 import "ui"
 import "view"
@@ -9,10 +6,8 @@ let toast_wid : signals::Ref[Int] = signals::ref_new(0)
 
 let toast_text : signals::Signal[String] = signals::signal("")
 
-/// A repeated message extends the lifetime of the existing window.
 let toast_generation : signals::Signal[Int] = signals::signal(0)
 
-/// Floating toast pill shadow & transparent halo derived from `ui::shadow_halo` so alpha reaches 0 before every window edge.
 let toast_shadow_blur : Double = 9.0
 
 let toast_shadow_dy : Double = 3.0
@@ -31,7 +26,6 @@ let toast_w : Double = 360.0
 
 let toast_h : Double = toast_pill_h + toast_pad_t + toast_pad_b
 
-/// `text` said by the pointer for a moment.
 fn toast(text : String) -> Unit {
   toast_text.set(text)
   toast_generation.set(toast_generation.untracked() + 1)
@@ -60,7 +54,6 @@ fn toast_window(root : view::View) -> Unit {
     }, later=true)
   })
   let _ = root.presses(view::Live::Is(false))
-  // Transparent DirectComposition window carrying an mbui superellipse pill + soft shadow (zero DWM grey border).
   let _ = root.box(fn(g) {
     let _ = g
     .over(view::Live::Is(true))

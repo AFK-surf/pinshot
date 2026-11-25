@@ -1,28 +1,3 @@
-// Lightweight area screen recorder & post-recording exporter (Windows: record_win.cpp; Mac: record_mac.m):
-// - Captures a selected region into a temporary high-quality MP4 via WGC + optimal GPU hardware cascade
-//   (HEVC hvc1 -> H.264 HW -> H.264 SW) with optional WASAPI system audio (AAC), cursor capture, and optional
-//   mouse-click ripples + keycap overlay.
-// - True DirectComposition transparent window with PinShot's concentric mbui superellipse corners & soft shadow,
-//   content-adaptive width/height (zero dead space, zero clipping in EN or ZH).
-// - All recording & export preferences (FPS, audio, cursor, clicks/keys, format, quality, resolution, GIF fps)
-//   are persisted in settings.json across runs.
-// - Post-recording encoding panel with explicit Format (MP4 H.265 / MP4 H.264 / GIF), Quality (Original / High /
-//   Balanced / Compact with live estimated file sizes on every option), and Size (Original / 1080p / 720p / 480p).
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import "hostapi"
 import "motion"
 import "signals"
@@ -43,11 +18,8 @@ let rec_content : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
 let rec_from_bar : signals::Ref[Option[(Double, Double, Double, Double)]] = signals::ref_new(None)
 
-/// True while the screenshot overlay is kept visible for 1 frame until the recording window presents & uncloaks over it.
 let rec_closing_overlay : signals::Ref[Bool] = signals::ref_new(false)
 
-/// True for Frame 0 when transitioning from the screenshot toolbar so `shell` starts at the exact screenshot toolbar width
-/// and smoothly morphs its length inward to the Ready bar width (with `cur_x` fixed so DWM never teleports the swapchain).
 let rec_morph_in : signals::Signal[Bool] = signals::signal(false)
 
 let rec_handoff_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
@@ -62,10 +34,8 @@ let rec_work : signals::Ref[Rect] = signals::ref_new(Rect::{ x: 0, y: 0, w: 0, h
 
 let rec_scale : signals::Ref[Double] = signals::ref_new(1.0)
 
-/// Phase: 0 Ready, 1 Recording, 2 Paused, 3 Finalizing master, 4 Export picker, 5 Exporting, 6 Exported, 7 Error.
 let rec_phase : signals::Signal[Int] = signals::signal(0)
 
-/// Recording & export preferences (persisted in settings.json via load_settings / save_settings).
 let rec_fps : signals::Signal[Int] = signals::signal(60)
 
 let rec_cursor : signals::Signal[Bool] = signals::signal(true)
@@ -74,16 +44,12 @@ let rec_audio : signals::Signal[Bool] = signals::signal(false)
 
 let rec_input : signals::Signal[Bool] = signals::signal(false)
 
-/// fmt: 0 = MP4 H.265, 1 = MP4 H.264, 2 = GIF, 3 = MP4 AV1
 let rec_exp_fmt : signals::Signal[Int] = signals::signal(0)
 
-/// quality: 0 = Original, 1 = High, 2 = Balanced (default), 3 = Compact
 let rec_exp_qual : signals::Signal[Int] = signals::signal(2)
 
-/// MP4 scale: 0 = 100%, 75 = 75%, 50 = 50%
 let rec_exp_scale : signals::Signal[Int] = signals::signal(0)
 
-/// GIF max long edge: 1080 = <=1080px (default), 720 = <=720px, 0 = Original (100%)
 let rec_exp_gif_scale : signals::Signal[Int] = signals::signal(1080)
 
 fn rec_active_scale(fmt : Int) -> Int {
@@ -94,10 +60,8 @@ fn rec_active_scale_now(fmt : Int) -> Int {
   if fmt == 2 { rec_exp_gif_scale.untracked() } else { rec_exp_scale.untracked() }
 }
 
-/// GIF fps: 10, 15 (default), 20
 let rec_exp_gif_fps : signals::Signal[Int] = signals::signal(15)
 
-/// Live & master stats from native side.
 let rec_ms : signals::Signal[Int] = signals::signal(0)
 
 let rec_frames : signals::Signal[Int] = signals::signal(0)
@@ -116,7 +80,6 @@ let rec_path : signals::Signal[String] = signals::signal("")
 
 let rec_err : signals::Signal[String] = signals::signal("")
 
-/// Exported files cached for the current recording: canonical combo key -> (path, bytes).
 let rec_exports : Map[String, (String, Double)] = Map::new()
 
 let rec_exports_ver : signals::Signal[Int] = signals::signal(0)
@@ -131,23 +94,18 @@ let rec_preview_key : signals::Signal[String] = signals::signal("")
 
 let rec_preview_seq : signals::Ref[Int] = signals::ref_new(0)
 
-/// Inline 2-step discard confirmation when cancelling an active recording or closing an unexported master.
 let rec_confirm_discard : signals::Signal[Bool] = signals::signal(false)
 
 let rec_discard_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
-/// Unified Monoid-style fluid tooltip coordinator for the recording window (same delay, glide, anchor & keycap rules as toolbar.mbt).
 let rec_tips : TipScope = TipScope::new()
 
-/// Live resize dimensions readout shown inside the bottom transparent halo while dragging the recording frame.
 let rec_tip : signals::Signal[String] = signals::signal("")
 
 let rec_dim_tip_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
-/// Whether the Ready bar's FPS dropdown (30 / 60 / 90 / 120 fps) is expanded.
 let rec_fps_open : signals::Signal[Bool] = signals::signal(false)
 
-/// Whether the Ready bar's FPS dropdown opens upward (when there is not enough room below the bar).
 let rec_fps_up : signals::Signal[Bool] = signals::signal(false)
 
 fn rec_fps_should_open_up() -> Bool {
@@ -167,7 +125,6 @@ fn rec_fps_should_open_up() -> Bool {
   room_below < need && room_above >= need
 }
 
-/// Transparent shadow halo around the floating FPS dropdown popup window, derived from `ui::shadow_halo` (click-through via ps_hit_inset).
 let rec_fps_shadow_blur : Double = 14.0
 
 let rec_fps_shadow_dy : Double = 4.0
@@ -250,7 +207,6 @@ fn rec_fps_close_window() -> Unit {
   }
 }
 
-/// Dismiss the FPS dropdown when either the recording bar or dropdown loses activation to an external window.
 fn rec_active(wid : Int, on : Bool, other : Int) -> Unit {
   if on || !rec_fps_open.untracked() {
     return
@@ -260,13 +216,11 @@ fn rec_active(wid : Int, on : Bool, other : Int) -> Unit {
   }
 }
 
-/// Transparent shadow halo around the floating superellipse card (L, T, R, B points; click-through via ps_hit_inset),
-/// derived from `ui::shadow_halo` for both the main card (blur=11, dy=4) and attached 24pt discard/size/tooltip pills (blur=8, dy=2).
 let rec_card_halo : (Double, Double, Double, Double) = ui::shadow_halo(11.0, 4.0)
 
 let rec_tip_halo : (Double, Double, Double, Double) = ui::shadow_halo(8.0, 2.0)
 
-let rec_tip_slot_h : Double = 30.0 // 24pt pill + 6pt gap to bar
+let rec_tip_slot_h : Double = 30.0
 
 let rec_pad_l : Double = dmax(rec_card_halo.0, rec_tip_halo.0)
 
@@ -391,7 +345,6 @@ fn rec_eff_fps(f : Int) -> Double {
   }
 }
 
-/// codec_mode: 0 = H.265, 1 = H.264, 3 = AV1
 fn rec_target_bps(codec_mode : Int, qual : Int, w : Int, h : Int, fps : Int) -> Double {
   let ef = rec_eff_fps(fps)
   let px = w.to_double() * h.to_double() * ef
@@ -422,8 +375,6 @@ fn rec_is_direct_copy_for(fmt : Int, qual : Int, max_side : Int) -> Bool {
   (fmt == 0 || fmt == 1) && qual == 0 && same_dim && ((fmt == 0) == master_hevc)
 }
 
-/// Estimated output size (bytes) for any (fmt, quality, max_side, gif_fps), anchored to the actual recorded master's
-/// scene complexity so PeakConstrainedVBR estimates stay realistic on both static and high-motion captures.
 fn rec_est_bytes(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> Double {
   let master = rec_master_bytes.get()
   if master <= 0.0 {
@@ -442,7 +393,6 @@ fn rec_est_bytes(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> Double
   let master_bps = rec_target_bps(master_codec, 0, sw, sh, fps)
   let (ow, oh) = rec_out_dims(max_side)
   if fmt == 2 {
-    // GIF with proper dirty-rect transparency & frame merge
     let master_cap = dmax(1.0, master_bps * dur_s / 8.0)
     let activity = clamp(master_vid / master_cap, 0.08, 1.0)
     let raw_gif = ow.to_double() * oh.to_double() * gif_fps.to_double() * dur_s * (0.014 + 0.075 * activity)
@@ -534,21 +484,15 @@ fn rec_out() -> Unit {
     ps_cloak(wid, 1)
   }
   let est_w = 300.0
-  // Place without stealing focus yet while the overlay stays visible underneath; once Frame 0 uncloaks cleanly on top,
-  // rec_window closes the overlay, marks capture_open=1, and focuses & fits the recording bar with zero empty-frame blink.
   rec_place_initial(est_w + rec_pad_l + rec_pad_r, bar_height + rec_pad_t + rec_pad_b, false)
   log("rec: ready \{part.w}x\{part.h} at \{part.x},\{part.y}")
 }
 
-/// Initial placement reusing the screenshot toolbar's exact right edge & Y (or under/over the region as fallback),
-/// accounting for the transparent shadow halo.
 fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
   let m = rec_mon.v
   let k = rec_scale.v
   let (x, y, w, h) = match rec_from_bar.v {
     Some((bx, by, bw, bh)) => {
-      // Exact screenshot toolbar footprint (with transparent shadow halo) so Frame 0 matches pixel-for-pixel
-      // before `shell` morphs horizontally from `bw` down to the Ready bar width with `cur_x` fixed.
       let ww = ((bw + rec_pad_l + rec_pad_r) * k).ceil().to_int()
       let hh = ((bh + rec_pad_t + rec_pad_b) * k).ceil().to_int()
       let xx = clampi(m.x + ((bx - rec_pad_l) * k).round().to_int(), m.x, m.right() - ww)
@@ -581,9 +525,6 @@ fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
 
 let rec_shrink_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
-/// Measure the inner content box (including its transparent shadow halo) and resize snugly.
-/// When shrinking (e.g. Ready bar -> Recording bar), defer HWND tightening until after the 185ms pill morph finishes
-/// and preserve the left edge (`cur_x`) so DirectComposition never teleports the swapchain for 1 frame.
 fn rec_fit_window(focus : Bool, allow_shrink~ : Bool = false) -> Unit {
   if rec_wid.v == 0 {
     return
@@ -605,7 +546,6 @@ fn rec_fit_window(focus : Bool, allow_shrink~ : Bool = false) -> Unit {
     return
   }
   let shrinking = pw > 0 && ph > 0 && (w < pw - 1 || h < ph - 1)
-  // Pure vertical dropdown open/close in Ready phase: tighten HWND immediately so an upward dropdown never shifts the bar.
   let instant_dd_shrink = rec_phase.untracked() == 0 && !rec_morph_in.untracked() && (w - pw).abs() <= 4
   if shrinking && !allow_shrink && !instant_dd_shrink {
     if focus && ui::env("PINSHOT_TEST_CLOAKED") == "" {
@@ -817,7 +757,6 @@ fn rec_run_export(ask_dialog : Bool) -> Unit {
   }
 }
 
-/// Live region resize reported from the pre-recording interactive frame (`record_win.cpp`).
 fn rec_rect_told(x : Int, y : Int, w : Int, h : Int) -> Unit {
   if rec_wid.v == 0 || w <= 0 || h <= 0 {
     return
@@ -842,8 +781,6 @@ fn rec_rect_told(x : Int, y : Int, w : Int, h : Int) -> Unit {
   }
 }
 
-/// Whether a hardware AV1 encoder is here, as the native side knows it (-1: not yet, asked on its own thread: told
-/// later as {"do":"rec-av1"}); asked only once a recording is there to export, never as the panel opens.
 fn rec_av1_told(v : Int) -> Unit {
   if v < 0 {
     return
@@ -885,7 +822,6 @@ fn rec_arm_discard() -> Unit {
 fn rec_cancel() -> Unit {
   let ph = rec_phase.untracked()
   if ph == 5 {
-    // (an export under way called off alone: the recording kept, back to choosing; told "export-cancelled")
     rec_disarm_discard()
     ps_rec_export_cancel()
     return
@@ -1057,7 +993,6 @@ fn rec_told(
       log("rec: export-error \{err}")
     }
     "error" => {
-      // (the recording's frame and its clicks' overlay let go: no recording runs)
       ps_rec_stop(1)
       ps_capture_open(0)
       signals::start_batch()
@@ -1146,7 +1081,6 @@ fn rec_tip_follow(
   )
 }
 
-/// Concentric superellipse icon button (32x32pt, r=11pt on main bar; 28x28pt, r=9pt on export header).
 fn rec_icon_btn(
   row : view::View,
   glyph_fn : () -> String,
@@ -1211,7 +1145,6 @@ fn rec_icon_btn(
   })
 }
 
-
 fn rec_action_btn(
   row : view::View,
   dot_color : Option[Int64],
@@ -1270,8 +1203,6 @@ fn rec_action_btn(
   })
 }
 
-
-/// Crisp format tab inside the Studio HUD top strip (white active pill glides underneath via sliding_thumb).
 fn rec_tab_item(
   track : view::View,
   key : Int,
@@ -1336,7 +1267,6 @@ fn rec_tab_item(
   })
 }
 
-/// Borderless lightweight inline option pill (glass active pill glides smoothly underneath via sliding_thumb).
 fn rec_inline_opt(
   row : view::View,
   key : Int,
@@ -1396,7 +1326,6 @@ fn rec_inline_opt(
   })
 }
 
-/// Airy horizontal property row: muted label left, lightweight borderless inline pills right with gliding thumb.
 fn rec_prop_row(
   parent : view::View,
   label_key : String,
@@ -1427,7 +1356,6 @@ fn rec_prop_row(
     })
   })
 }
-
 
 fn rec_window(root : view::View) -> Unit {
   rec_root.v = Some(root)
@@ -1535,12 +1463,10 @@ fn rec_window(root : view::View) -> Unit {
     rec_disarm_discard()
   })
 
-  // Sync the separate FPS dropdown popup window without ever resizing or moving `rec_wid`.
   root.reacts(fn() { (rec_phase.get(), rec_fps_open.get(), rec_fps_up.get()) }, at_start=false, fn(_) {
     rec_fps_sync()
   })
 
-  // Re-measure and adapt window dimensions cleanly whenever UI structure/labels change (never on timer ticks, dropdown open/close, or late codec init).
   root.reacts(fn() {
     (
       rec_phase.get(),
@@ -1558,7 +1484,6 @@ fn rec_window(root : view::View) -> Unit {
     )
   }, fn(_) { rec_schedule_fit(false) })
 
-  // Transparent page over DirectComposition so the inner superellipse bar/panel + soft shadow float natively
   let _ = root.box(fn(page) {
     let _ = page
     .over(view::Live::Is(true))
@@ -1571,7 +1496,6 @@ fn rec_window(root : view::View) -> Unit {
       rec_disarm_discard()
     })
 
-    // Content wrapper including transparent shadow halo whose laid_size() drives exact window size
     let _ = page.box(fn(content) {
       rec_content.v = Some(content)
       let _ = content
@@ -1579,7 +1503,6 @@ fn rec_window(root : view::View) -> Unit {
       .padding(view::Live::Is((rec_pad_l, rec_pad_t, rec_pad_r, rec_pad_b)))
       .lines_up(view::Live::Is(Some(view::Along::Start)))
 
-      // Unified morphing superellipse shell: smoothly reshapes across Ready bar -> Recording bar -> Finalizing pill -> Studio HUD card
       let _ = content.box(fn(shell) {
         let is_exp = fn() { rec_phase.get() >= 4 }
         let exp_p = motion::eased_on(shell, is_exp, motion_tween(185.0))
@@ -1618,7 +1541,6 @@ fn rec_window(root : view::View) -> Unit {
           rec_disarm_discard()
         })
 
-        // ---- Phases 0..3: Concentric superellipse floating recording bar (matches toolbar.mbt) ----
         shell.show(fn() { rec_phase.get() <= 3 }, fn(bar) {
           let _ = bar
           .row(view::Live::Is(true))
@@ -1628,7 +1550,6 @@ fn rec_window(root : view::View) -> Unit {
           .padding(view::Live::Is((10.0, bar_pad, bar_pad, bar_pad)))
           .lines_up(view::Live::Is(Some(view::Along::Middle)))
 
-          // Phase 3: Finalizing master
           bar.show(fn() { rec_phase.get() == 3 }, fn(r) {
             enter_reveal(r, ms=130.0, dy=0.0, from_scale=0.97)
             let _ = r
@@ -1651,17 +1572,14 @@ fn rec_window(root : view::View) -> Unit {
             })
           }, at_once=true)
 
-          // Phases 0, 1, 2: Ready / Recording / Paused
           bar.show(fn() { rec_phase.get() >= 0 && rec_phase.get() <= 2 }, fn(r) {
             if rec_from_bar.v.is_some() {
-              // Start softly visible (0.35 -> 1.0) so Frame 0 already shows controls while the pill morphs narrower.
               let fade = motion::NodeWay::new(0.0)
               fade.go_from(r, 0.0, 1.0, motion::tween(150.0, ease=ui::Ease::Out))
               let _ = r.alpha(view::Live::By(fn() { 0.35 + 0.65 * fade.shown(r) }))
             }
             let _ = r.row(view::Live::Is(true)).grow(view::Live::Is(1.0)).gap(view::Live::Is(bar_gap)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
 
-            // Draggable left status + tabular timer
             let _ = r.box(fn(drag) {
               track_part(drag)
               let _ = drag
@@ -1702,7 +1620,6 @@ fn rec_window(root : view::View) -> Unit {
                   }
                 }))
               })
-              // Fixed min-width + odometer rolling tabular timer
               let _ = drag.box(fn(tm_box) {
                 let _ = tm_box.min_width(view::Live::Is(Some(40.0))).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Start)))
                 rolling_label(
@@ -1717,7 +1634,6 @@ fn rec_window(root : view::View) -> Unit {
               })
             })
 
-            // FPS / codec pill (dropdown in Ready for 30 / 60 / 90 / 120 fps; persisted in settings.json)
             let _ = r.box(fn(fps_b) {
               track_part(fps_b)
               let hov = smooth_hover(fps_b, live=fn() { rec_phase.get() == 0 })
@@ -1785,7 +1701,6 @@ fn rec_window(root : view::View) -> Unit {
               }, at_once=true)
             })
 
-            // Pre-recording switches (System audio, Cursor, Click & keycap overlay): hidden once recording starts
             r.show(fn() { rec_phase.get() == 0 }, fn(opts) {
               let _ = opts.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
               rec_icon_btn(
@@ -1841,7 +1756,6 @@ fn rec_window(root : view::View) -> Unit {
                 bg_lit=0xF5A52426L,
               )
             }, at_once=true)
-            // Right-edge action pair (constant width -> rides lock-step 4pt inside the morphing pill right edge!)
             let _ = r.box(fn(acts) {
               track_part(acts)
               let _ = acts.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
@@ -1894,7 +1808,6 @@ fn rec_window(root : view::View) -> Unit {
           }, at_once=true)
         }, at_once=true)
 
-        // ---- Phases 4..7: Landscape Studio HUD floating export card (>= 520 x ~204pt) ----
         shell.show(fn() { rec_phase.get() >= 4 }, fn(exp) {
           enter_reveal(exp, ms=165.0, dy=0.0, from_scale=0.985)
           let _ = exp
@@ -1905,7 +1818,6 @@ fn rec_window(root : view::View) -> Unit {
           .padding(view::Live::Is((10.0, 10.0, 10.0, 10.0)))
           .lines_up(view::Live::Is(Some(view::Along::Middle)))
 
-        // 1. Left: Rounded full-bleed first-frame clip card (176 x 184pt, draggable)
         let _ = exp.box(fn(left) {
           let _ = left
           .width(view::Live::Is(Some(176.0)))
@@ -1922,7 +1834,6 @@ fn rec_window(root : view::View) -> Unit {
             }
           }, whole=true)
 
-          // Full-bleed cover preview (with silky bottom dark scrim composited in build_preview_bmp)
           let _ = left.box(fn(pic) {
             let _ = pic
             .over(view::Live::Is(true))
@@ -1935,7 +1846,6 @@ fn rec_window(root : view::View) -> Unit {
             .image_fades(view::Live::Is(false))
           })
 
-          // Crisp bottom metadata overlay: timecode + audio + source size, and live dimensions
           let _ = left.box(fn(ov) {
             let _ = ov
             .over(view::Live::Is(true))
@@ -2000,7 +1910,6 @@ fn rec_window(root : view::View) -> Unit {
           })
         })
 
-        // 2. Right: Airy controls column (format tabs, borderless property rows, crisp footer)
         let _ = exp.box(fn(right) {
           let _ = right
           .grow(view::Live::Is(1.0))
@@ -2009,7 +1918,6 @@ fn rec_window(root : view::View) -> Unit {
           .padding(view::Live::Is((0.0, 2.0, 2.0, 1.0)))
           .gap(view::Live::Is(8.0))
 
-          // 2a. Top row: Format pill strip (white active thumb) + draggable gap + subtle close button
           let _ = right.box(fn(top) {
             let _ = top.row(view::Live::Is(true)).gap(view::Live::Is(6.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).shrink(view::Live::Is(0.0))
 
@@ -2115,7 +2023,6 @@ fn rec_window(root : view::View) -> Unit {
               .presses(view::Live::Is(true))
               .cursor(view::Live::Is(Some(view::Cursor::Hand)))
               .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=if rec_confirm_discard.get() { tr("再按一次丢弃") } else { tr("关闭 Esc") })) }))
-              // (while it exports: that export called off, the recording kept; unexported master asks 2-step confirm in-place)
               .on_press(rec_cancel)
               .ground(view::Live::By(fn() {
                 if rec_confirm_discard.get() {
@@ -2150,11 +2057,9 @@ fn rec_window(root : view::View) -> Unit {
             })
           })
 
-          // 2b. Middle: Airy borderless property rows (Quality/FPS + Percentage Size)
           let _ = right.box(fn(rows) {
             let _ = rows.grow(view::Live::Is(1.0)).lies_along(view::Live::Is(view::Lies::Middle)).gap(view::Live::Is(8.0))
 
-            // Quality row (MP4: H.265 / H.264 / AV1)
             rows.show(fn() { rec_exp_fmt.get() != 2 }, fn(qwrap) {
               enter_reveal(qwrap, ms=125.0, dy=3.0, from_scale=0.99)
               let _ = qwrap.shrink(view::Live::Is(0.0))
@@ -2198,7 +2103,6 @@ fn rec_window(root : view::View) -> Unit {
               })
             }, at_once=true)
 
-            // FPS row (GIF)
             rows.show(fn() { rec_exp_fmt.get() == 2 }, fn(fwrap) {
               enter_reveal(fwrap, ms=125.0, dy=3.0, from_scale=0.99)
               let _ = fwrap.shrink(view::Live::Is(0.0))
@@ -2233,7 +2137,6 @@ fn rec_window(root : view::View) -> Unit {
               })
             }, at_once=true)
 
-            // Size row (MP4): Proportional scaling (100% / 75% / 50%)
             rows.show(fn() { rec_exp_fmt.get() != 2 }, fn(swrap) {
               enter_reveal(swrap, ms=125.0, dy=3.0, from_scale=0.99)
               let _ = swrap.shrink(view::Live::Is(0.0))
@@ -2268,7 +2171,6 @@ fn rec_window(root : view::View) -> Unit {
               })
             }, at_once=true)
 
-            // Size row (GIF): Max long-edge cap (1080px default / 720px / Original 100%)
             rows.show(fn() { rec_exp_fmt.get() == 2 }, fn(gswrap) {
               enter_reveal(gswrap, ms=125.0, dy=3.0, from_scale=0.99)
               let _ = gswrap.shrink(view::Live::Is(0.0))
@@ -2304,17 +2206,14 @@ fn rec_window(root : view::View) -> Unit {
             }, at_once=true)
           })
 
-          // 2c. Subtle hairline + Footer (tabular size readout left, Save As icon + White/Emerald CTA right)
           let _ = right.box(fn(ln) { let _ = ln.height(view::Live::Is(Some(1.0))).ground(view::Live::Is(0xFFFFFF1FL)) })
 
           let _ = right.box(fn(foot) {
             let _ = foot.row(view::Live::Is(true)).gap(view::Live::Is(8.0)).lines_up(view::Live::Is(Some(view::Along::Middle))).padding(view::Live::Is((0.0, 2.0, 0.0, 0.0))).shrink(view::Live::Is(0.0))
 
-            // Left: Size / progress / exported status
             let _ = foot.box(fn(st) {
               let _ = st.grow(view::Live::Is(1.0)).shrink(view::Live::Is(0.0)).min_width(view::Live::Is(Some(148.0))).gap(view::Live::Is(1.5)).lines_up(view::Live::Is(Some(view::Along::Start)))
 
-              // Phase 4 (Ready)
               st.show(fn() { rec_phase.get() == 4 }, fn(rdy) {
                 enter_reveal(rdy, ms=130.0, dy=3.0, from_scale=0.985)
                 let _ = rdy.gap(view::Live::Is(1.5)).lines_up(view::Live::Is(Some(view::Along::Start)))
@@ -2387,7 +2286,6 @@ fn rec_window(root : view::View) -> Unit {
                 })
               }, at_once=true)
 
-              // Phase 5 (Encoding)
               st.show(fn() { rec_phase.get() == 5 }, fn(enc) {
                 enter_reveal(enc, ms=130.0, dy=3.0, from_scale=0.985)
                 let _ = enc.gap(view::Live::Is(5.0)).lines_up(view::Live::Is(Some(view::Along::Start)))
@@ -2421,7 +2319,6 @@ fn rec_window(root : view::View) -> Unit {
                 })
               }, at_once=true)
 
-              // Phase 6 (Exported / Reused)
               st.show(fn() { rec_phase.get() == 6 }, fn(done_v) {
                 enter_reveal(done_v, ms=140.0, dy=3.0, from_scale=0.985)
                 let _ = done_v.gap(view::Live::Is(1.5)).lines_up(view::Live::Is(Some(view::Along::Start)))
@@ -2473,7 +2370,6 @@ fn rec_window(root : view::View) -> Unit {
                 })
               }, at_once=true)
 
-              // Phase 7 (Error)
               st.show(fn() { rec_phase.get() == 7 }, fn(err_v) {
                 enter_reveal(err_v, ms=130.0, dy=3.0, from_scale=0.985)
                 let _ = err_v
@@ -2488,7 +2384,6 @@ fn rec_window(root : view::View) -> Unit {
               }, at_once=true)
             })
 
-            // Right: Square icon Save As button + Crisp alabaster white (or translucent emerald) primary CTA
             let _ = foot.box(fn(btns) {
               let _ = btns.row(view::Live::Is(true)).gap(view::Live::Is(6.0)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
 
@@ -2617,9 +2512,6 @@ fn rec_window(root : view::View) -> Unit {
             rec_moves.moves_with(p)
           }
         }
-        // Once Frame 0 has presented & uncloaked cleanly on top of the screenshot toolbar at its exact width,
-        // cloak the overlay underneath, release `rec_morph_in` so `shell` smoothly shrinks horizontally into the Ready bar,
-        // and focus the window immediately while deferring HWND width tightening by 215ms (keeping `cur_x` fixed -> zero DWM flash).
         if rec_closing_overlay.v {
           (rec_handoff_cancel.v)()
           let cloaked = ui::env("PINSHOT_TEST_CLOAKED") != ""
@@ -2642,8 +2534,6 @@ fn rec_window(root : view::View) -> Unit {
         }
       })
 
-      // Floating resize readout / recording-bar discard pill inside the transparent halo (flips to top halo near bottom edge;
-      // on the Export Card ph >= 4, discard confirmation renders in-place on the top-right × button so feedback stays next to the cursor).
       let _ = content.box(fn(tip_row) {
         let shown_text = fn() {
           if rec_fps_open.get() {
@@ -2689,9 +2579,6 @@ fn rec_window(root : view::View) -> Unit {
   })
 }
 
-/// Dedicated transparent popup window for the 30 / 60 / 90 / 120 fps dropdown menu.
-/// Keeping it in its own window prevents `rec_wid` from resizing/moving (zero toolbar flicker)
-/// and lets `WM_ACTIVATE` dismiss the popover on any outside click.
 fn rec_fps_window(root : view::View) -> Unit {
   root.tree.hand_over_presses(false)
   let _ = root.keymap(view::Live::Is(rec_keys()))
@@ -2712,7 +2599,6 @@ fn rec_fps_window(root : view::View) -> Unit {
   })
 }
 
-/// Shared 30 / 60 / 90 / 120 fps dropdown menu card rendered inside `rec_fps_window`.
 fn rec_fps_menu_view(dd_wrap : view::View) -> Unit {
   let _ = dd_wrap.box(fn(menu) {
     let _ = menu

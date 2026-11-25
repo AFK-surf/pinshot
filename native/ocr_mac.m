@@ -1,15 +1,3 @@
-// The words in a picture read by the Mac's own OCR (Vision's VNRecognizeTextRequest: on the machine, offline, Chinese
-// and English), the Mac side of ocr_win.cpp with the same calls and the same Live Text boxes protocol.
-//
-// The picture (a PNG: a part taken, a pin) is read on a background queue, the UI going on meanwhile; what it says comes
-// back on the channel "ps" as {"do":"ocr","id":N,"why":"","lang":"zh-Hans","lines":3,"ms":120,"fmt":"boxes"} with
-// UTF-8 TSV per-word normalized [0, 1] top-left boxes beside the JSON:
-//   line_idx\tspace_before\tx\ty\tw\th\ttext\n
-// CJK characters are split per character (matching Windows IOcrWord) and Latin/digit words per whitespace-delimited
-// token using VNRecognizedText's boundingBoxForRange:error:, flipping Vision's bottom-left Y to top-left.
-//
-// Zero idle overhead: no persistent thread, VNRecognizeTextRequest, VNImageRequestHandler, or image cache is kept
-// between readings (everything released inside @autoreleasepool as each reading ends).
 #import "mac_platform.h"
 #import <ImageIO/ImageIO.h>
 #import <Vision/Vision.h>
@@ -66,7 +54,6 @@ static void ocrRun(NSData *png, OcrOut *o, BOOL wantBoxes) {
     return;
   }
   o->why = "";
-  // (Vision's boxes are 0..1 with y up: a line is those whose middles fall within each other's height)
   NSMutableArray<VNRecognizedTextObservation *> *obs = [NSMutableArray array];
   for (VNRecognizedTextObservation *r in req.results)
     if ([r topCandidates:1].firstObject.string.length)
@@ -111,8 +98,6 @@ static void ocrRun(NSData *png, OcrOut *o, BOOL wantBoxes) {
         [line appendString:s];
         continue;
       }
-      // Split candidate into per-character CJK tokens and whitespace-delimited non-CJK words,
-      // matching Windows IOcrWord granularity for smooth PixPin / Apple Live Text selection.
       NSUInteger pos = 0;
       BOOL firstInObs = YES;
       while (pos < len) {
@@ -180,8 +165,6 @@ static void ocrRun(NSData *png, OcrOut *o, BOOL wantBoxes) {
   o->ms = ps_now_ms() - t0;
 }
 
-// One reading at a time, as on Windows: asked for while one goes, the new one waits (one at most: a newer one takes its
-// place, the app wants only the last it asked for). No readings pile up, no idle thread kept.
 static NSData *nextPng;
 static int nextId;
 static BOOL running;
@@ -220,7 +203,6 @@ static void ocrLoop(void) {
   });
 }
 
-// The words in `png` read on a queue of their own, told back as {"do":"ocr","id":id,...,"fmt":"boxes"} with TSV boxes.
 int32_t ps_ocr(int32_t id, moonbit_bytes_t png) {
   int len = (int)Moonbit_array_length(png);
   if (len <= 0)
@@ -238,7 +220,6 @@ int32_t ps_ocr(int32_t id, moonbit_bytes_t png) {
   return 1;
 }
 
-// The words in `png` read now (the command line's --ocr): "why\tlang\tms\n" then plain text.
 moonbit_bytes_t ps_ocr_now(moonbit_bytes_t png) {
   int len = (int)Moonbit_array_length(png);
   OcrOut o = {"bad-picture", @"", @"", @"", 0, 0};

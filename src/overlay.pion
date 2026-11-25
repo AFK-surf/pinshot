@@ -1,13 +1,3 @@
-// The overlay (window 0): the screen as it was when the shortcut was pressed, under a veil but for the part picked or
-// the window the pointer is over; that part's frame, its handles and its size; the marks on it; the tool bar under it;
-// a magnifier by the pointer while a part is being picked. Its whole tree is made once as the run starts and kept: a
-// capture only changes what it reads.
-//
-// The hand (as PixPin's, which the user follows): over nothing picked, a click picks the window under the pointer and a
-// drag picks what it drags out; on the part picked, a drag moves it (or, a tool chosen, draws a mark), its edges and
-// corners resize it; a right click lets it go (with none, closes); a double click in it, Enter or Ctrl+C copies it;
-// Esc closes.
-
 import "hostapi"
 import "motion"
 import "pixels"
@@ -17,7 +7,6 @@ import "view"
 
 let overlay_root : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
-/// The moment of what is being done: the tree's clock.
 fn now() -> Double {
   match overlay_root.v {
     Some(r) => r.cause_at()
@@ -25,23 +14,19 @@ fn now() -> Double {
   }
 }
 
-/// The overlay's accent: the frame of what is picked, its handles.
 let accent : Int64 = 0x2F9BFFFFL
 
-/// A point of the overlay (points) in the monitor's pixels.
 fn to_px(x : Double, y : Double) -> (Double, Double) {
   let k = mon_scale.untracked()
   (clamp(x * k, 0.0, mon.v.w.to_double()), clamp(y * k, 0.0, mon.v.h.to_double()))
 }
 
-/// The monitor's size in points.
 fn mon_pt() -> (Double, Double) {
   let k = mon_scale.get()
   ignore(frozen_key.get())
   (mon.v.w.to_double() / k, mon.v.h.to_double() / k)
 }
 
-/// The monitor's usable work area `(x0, y0, x1, y1)` in monitor-local points (excluding Dock/taskbar and menu bar).
 fn work_pt() -> (Double, Double, Double, Double) {
   let k = mon_scale.get()
   ignore(frozen_key.get())
@@ -54,8 +39,6 @@ fn work_pt() -> (Double, Double, Double, Double) {
   }
 }
 
-/// Which handle of `r` (pixels) the point (pixels) is on: (hx, hy), -1 left/top, 1 right/bottom, 0 the middle; (0, 0)
-/// inside it, None outside. 6 points each side of an edge.
 fn handle_at(r : Rect, x : Double, y : Double) -> Option[(Int, Int)] {
   let reach = 6.0 * mon_scale.untracked()
   let x0 = r.x.to_double()
@@ -83,7 +66,6 @@ fn side_cursor(side : (Int, Int)) -> view::Cursor {
   }
 }
 
-/// The pointer's shape on the overlay.
 fn overlay_cursor() -> Option[view::Cursor] {
   match hand.get() {
     Drawing(_, _) | Marking | Erasing(_, _, _, _) => return Some(view::Cursor::Crosshair)
@@ -116,14 +98,10 @@ fn overlay_cursor() -> Option[view::Cursor] {
   }
 }
 
-/// What the veil leaves clear: the part picked, else the window the pointer is over.
 fn clear_part() -> Option[Rect] {
   clear_part_now.get()
 }
 
-/// What clear_part says, worked out once as the pointer or the part changes and kept: its readers (the veil, the
-/// badge, the frame's motion, the magnifier's tag) read it, and are told only where it came to another rectangle; the
-/// windows under the pointer, and the system asked whether a pane shows there, looked up once a move, not by each.
 let clear_part_now : signals::Computed[Option[Rect]] = signals::computed_by(
   fn(_) {
     match sel.get() {
@@ -140,7 +118,6 @@ let clear_part_now : signals::Computed[Option[Rect]] = signals::computed_by(
   },
 )
 
-/// The veil, the frame of what is clear and, a part picked, its eight handles: one picture in the monitor's pixels.
 fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
   if !capturing.get() {
     return None
@@ -150,12 +127,9 @@ fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
   let k = mon_scale.get()
   let picked = sel.get().is_some()
   let layers : Array[pixels::VectorPath] = []
-  // (where the part shows, on its way: shown.mbt)
   match shown_part(c) {
     Some(r) => {
       let (x, y, rw, rh) = (r.x.to_double(), r.y.to_double(), r.w.to_double(), r.h.to_double())
-      // (the veil one path, the part a hole in it: no seam where two pieces would meet; laid on a background, the hole
-      // is the whole picture as it will be copied)
       let hole = match shown_frame(c) {
         Some(f) => rect_path(f.x.to_double(), f.y.to_double(), f.w.to_double(), f.h.to_double())
         None => rect_path(x, y, rw, rh)
@@ -163,7 +137,6 @@ fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
       layers.push(fill_layer(rect_path(0.0, 0.0, w, h) + hole, 0x00000072L, even_odd=true))
       let line = dmax(1.5, (1.5 * k).round())
       let half = line / 2.0
-      // Sit strictly outside the selection perimeter (0 px eaten inside content), clamped cleanly at monitor edges.
       let fx0 = dmax(half, x - half)
       let fy0 = dmax(half, y - half)
       let fx1 = dmin(w - half, x + rw + half)
@@ -174,7 +147,6 @@ fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
       let frame_r = if cr > 0.5 { superellipse_rect_path(fx0, fy0, fw, fh, cr) } else { rect_path(fx0, fy0, fw, fh) }
       let casing_w = line + dmax(2.0, (2.0 * k).round())
       if !picked {
-        // Hover auto-detect window: airy dual-contrast PinShot blue viewfinder outline + crisp corner accents
         layers.push(stroke_layer(frame_r, 0x00000066L, casing_w))
         layers.push(stroke_layer(frame_r, 0x3DA6FFFFL, line))
         let bl = clamp(dmin(fw, fh) * 0.14, 7.0 * k, 14.0 * k)
@@ -186,8 +158,6 @@ fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
         layers.push(stroke_layer(crn, 0x00000066L, bw + dmax(2.0, (2.0 * k).round())))
         layers.push(stroke_layer(crn, 0x9ED8FFFFL, bw))
       } else {
-        // Confirmed selection (Proposal A): dual-contrast crisp white viewfinder line + L-brackets (rounded in
-        // background mode to match the card's corners) + mid-edge pill grabbers
         layers.push(stroke_layer(frame_r, 0x00000078L, casing_w))
         layers.push(stroke_layer(frame_r, 0xFFFFFFF2L, line))
         if !(hand.get() is Marking) {
@@ -217,7 +187,6 @@ fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
           layers.push(stroke_layer(crn, 0x00000080L, b_case))
           layers.push(stroke_layer(crn, 0xFFFFFFFFL, bw))
 
-          // Mid-edge directional pill grabbers (shown when side has comfortable breathing room)
           let plen = (14.0 * k).round()
           let pthk = dmax(3.0, (3.4 * k).round())
           let pcase = dmax(1.0, (1.2 * k).round())
@@ -260,8 +229,6 @@ fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
   Some(pixels::Vector::{ w, h, layers })
 }
 
-/// The overlay's window made one of PinShot's own as its first frame is drawn (its window is there then): out of sight
-/// till a capture, before anything can open one.
 let overlay_owned : signals::Ref[Bool] = signals::ref_new(false)
 
 fn overlay_first_frame() -> Unit {
@@ -278,14 +245,9 @@ fn overlay_first_frame() -> Unit {
   } else if started_with_welcome.v {
     open_welcome()
   } else if hostapi::platform() != 0 && !capturing.untracked() && settings.untracked().capture_keep {
-    // (none when the person's own is open already: a shortcut pressed as the run started, shown as its first frame)
-    // (one capture taken out of sight as it starts, all of it as one is (the screen taken, the overlay at the
-    // monitor's size, the picture a texture, a frame drawn) and let go: the first the person takes is as quick as
-    // any, not ~50 ms slower; what it held given back after, as any capture's)
     warming.v = true
     log("warm-up: asked")
     ps_capture_ask()
-    // (let go however it went, should its frame never come: a capture asked for meanwhile waits on it)
     match overlay_root.v {
       Some(r) => {
         let _ = r.at_moment(now() + 2500.0, fn() {
@@ -300,10 +262,8 @@ fn overlay_first_frame() -> Unit {
   }
 }
 
-/// Whether the capture under way is the one taken as the run starts (never seen).
 let warming : signals::Ref[Bool] = signals::ref_new(false)
 
-/// Inline 2-step discard confirmation when closing or right-clicking away a capture that already has drawn marks.
 let overlay_confirm_discard : signals::Signal[String] = signals::signal("")
 
 let overlay_discard_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
@@ -333,7 +293,6 @@ fn overlay_arm_discard(why : String) -> Unit {
   }
 }
 
-/// The overlay's tree, made once.
 fn overlay_window(root : view::View) -> Unit {
   overlay_root.v = Some(root)
   root.tree.hand_over_presses(false)
@@ -361,13 +320,11 @@ fn overlay_window(root : view::View) -> Unit {
       }
       let _ = root.at_moment(root.cause_at() + 1.0, fn() {
         if capturing.untracked() && warming.v {
-          // (drawn whole once as if seen, its magnifier and its words too, still out of sight; then let go)
           overlay_seen.set(true)
           let _ = root.at_moment(root.cause_at() + 60.0, fn() { if warming.v { close_capture() } }, later=true)
           return
         }
         if capturing.untracked() && !overlay_seen.untracked() {
-          // (a test run told to keep it out of sight, PINSHOT_TEST_CLOAKED: driven and printed, never on the screen)
           if ui::env("PINSHOT_TEST_CLOAKED") == "" {
             ps_cloak(0, 0)
           }
@@ -390,7 +347,6 @@ fn overlay_window(root : view::View) -> Unit {
     })
     .on_drag(fn(d) { stage_drag(d) })
     .on_menu(fn(_) { step_back() })
-    // the picture as it was taken, at its own pixels
     let _ = stage.box(fn(p) {
       let _ = p
       .over(view::Live::Is(true))
@@ -404,12 +360,9 @@ fn overlay_window(root : view::View) -> Unit {
       }))
       .presses(view::Live::Is(false))
     })
-    // (where the part shows follows where it is, on its way: shown.mbt)
     shown_follow(stage)
-    // (the background the part is laid on, while it is: beautify.mbt)
     beauty_layer(stage)
     marks_layer(stage, editing=true)
-    // the veil, the frame, the handles
     let _ = stage.box(fn(c) { let _ = c.over(view::Live::Is(true)).presses(view::Live::Is(false)).picture(view::Live::By(fn() { chrome_picture(c) })) })
     size_label(stage)
     toolbar(stage)
@@ -417,12 +370,9 @@ fn overlay_window(root : view::View) -> Unit {
   })
 }
 
-/// The marks (those made, and the one being drawn), each its own node over all of the picture, in the monitor's
-/// pixels: one made is drawn once, not again as the next is drawn. `editing`: the words being written too.
 fn marks_layer(parent : view::View, editing~ : Bool) -> Unit {
   let _ = parent.box(fn(layer) {
     let _ = layer.over(view::Live::Is(true))
-    // (the focus marks' dimming under the others: an arrow drawn over the dimmed part stays bright)
     let _ = layer.box(fn(f) { let _ = f.over(view::Live::Is(true)).presses(view::Live::Is(false)).picture(view::Live::By(focus_picture)) })
     layer.each(fn() { marks.get() }, fn(m) { m.id }, fn(row, m) {
       let _ = row.over(view::Live::Is(true)).presses(view::Live::Is(false))
@@ -445,7 +395,6 @@ fn marks_layer(parent : view::View, editing~ : Bool) -> Unit {
   })
 }
 
-/// One mark drawn in `b` (over all of the picture).
 fn mark_node(b : view::View, m : Mark) -> Unit {
   let k = signals::untracked(fn() { mon_scale.get() })
   let w = mon.v.w.to_double()
@@ -481,20 +430,17 @@ fn mark_node(b : view::View, m : Mark) -> Unit {
   }
 }
 
-/// Words written on the picture: at their place, in their colour and size, a dark edge round light words.
 fn words_mark(b : view::View, m : Mark, k : Double) -> Unit {
   let (x, y) = m.pts[0]
   let size = words_pt(m.size)
   let _ = b.box(fn(t) {
     let _ = t
-    // (where the line typed in showed them: its frame 3 points before the place, 4 points in)
     .offset(view::Live::Is((x / k + 1.0, y / k)))
     .words(view::Live::Is(m.words), look=view::WordsLook::{ ..view::words_plain, size, weight: 400, line: (size * 1.3).round(), wrap: false })
     .ink(view::Live::Is(m.color))
   })
 }
 
-/// The part's size, over its top left corner (inside it where there is no room over it).
 fn size_label(stage : view::View) -> Unit {
   let _ = stage.box(fn(o) {
     let _ = o.over(view::Live::Is(true)).presses(view::Live::Is(false)).lines_up(view::Live::Is(Some(view::Along::Start)))
@@ -547,7 +493,6 @@ fn size_label(stage : view::View) -> Unit {
         .ink(view::Live::Is(0xF5F6F8FFL))
       })
     })
-    // Inline 2-step discard confirmation pill when pressing Esc / right-click with drawn marks
     let _ = stage.box(fn(dc) {
       let _ = dc
       .over(view::Live::Is(true))
@@ -594,12 +539,8 @@ fn size_label(stage : view::View) -> Unit {
   })
 }
 
-// ---- the hand ----
-
-/// Where the last press went down (pixels), and whether it has moved 3 points from there.
 let down_at : signals::Ref[(Double, Double, Bool)] = signals::ref_new((0.0, 0.0, false))
 
-/// Whether the press under way put down words being written (it opens no new ones).
 let words_put_down : signals::Ref[Bool] = signals::ref_new(false)
 
 fn stage_drag(d : view::Drag) -> Unit {
@@ -620,7 +561,6 @@ fn stage_drag(d : view::Drag) -> Unit {
   }
 }
 
-/// What the hand holds let go of as it was: a mark being drawn called off, one dragged put back where it was.
 fn drop_held() -> Unit {
   signals::start_batch()
   match hand.untracked() {
@@ -632,7 +572,6 @@ fn drop_held() -> Unit {
   signals::end_batch()
 }
 
-/// Mark `m` dragged by (`dx`, `dy`) pixels: a mosaic by whole squares (it keeps to their grid).
 fn dragged(m : Mark, dx : Double, dy : Double) -> Mark {
   if m.tool == Mosaic {
     let cell = dmax(2.0, (mosaic_pt(m.size) * mon_scale.untracked()).round())
@@ -642,8 +581,6 @@ fn dragged(m : Mark, dx : Double, dy : Double) -> Mark {
   }
 }
 
-/// Where mark `m` held by (hx, hy) (-1: whole) from (x0, y0) is with the pointer at (x, y): a line's or an arrow's end
-/// kept straight with Shift held.
 fn held_to(m : Mark, hx : Int, hy : Int, x0 : Double, y0 : Double, x : Double, y : Double) -> Mark {
   if hx < 0 {
     return dragged(m, x - x0, y - y0)
@@ -657,7 +594,6 @@ fn held_to(m : Mark, hx : Int, hy : Int, x0 : Double, y0 : Double, x : Double, y
   reshaped(m, hx, hy, x, y)
 }
 
-/// Which handle of the mark picked the point (pixels) is on: (its index, hx, hy).
 fn selected_handle_at(x : Double, y : Double) -> Option[(Int, Int, Int)] {
   guard selected.get() is Some(id) && mark_index(id) is Some(i) else { return None }
   let reach = 7.0 * mon_scale.untracked()
@@ -670,7 +606,6 @@ fn selected_handle_at(x : Double, y : Double) -> Option[(Int, Int, Int)] {
   None
 }
 
-/// The mark at `i` taken up by the hand from (x, y): out of the marks while it is held, drawn as the draft, picked.
 fn take_up(i : Int, x : Double, y : Double, hx : Int, hy : Int) -> Unit {
   let before = marks.untracked()
   let rest = before.copy()
@@ -687,13 +622,11 @@ fn take_up(i : Int, x : Double, y : Double, hx : Int, hy : Int) -> Unit {
 fn press_down(x : Double, y : Double) -> Unit {
   overlay_disarm_discard()
   down_at.v = (x, y, false)
-  // (a press while words are written puts them down, and only that)
   words_put_down.v = false
   if words_open.untracked().is_some() {
     commit_words()
     words_put_down.v = true
   }
-  // (a handle of the mark picked: that end or corner moved)
   if selected_handle_at(x, y) is Some((i, hx, hy)) {
     take_up(i, x, y, hx, hy)
     return
@@ -716,7 +649,6 @@ fn press_down(x : Double, y : Double) -> Unit {
             draft.set(Some(new_mark(Pen, [(x, y), (x, y)])))
           } else {
             match mark_at(x, y, cur_tool == Move) {
-              // (on a mark: it is picked and dragged, whatever shape/line tool is held)
               Some(i) => take_up(i, x, y, -1, -1)
               None => {
                 selected.set(None)
@@ -742,8 +674,6 @@ fn press_down(x : Double, y : Double) -> Unit {
           selected.set(None)
           hand.set(Sizing(hx, hy, r))
         }
-        // (outside it: a part dragged out anew, where nothing is marked yet; but not on the background it is laid on,
-        // which is the picture as it will be copied: a click there leaves the part as it is)
         None =>
           match beauty_frame() {
             Some(f) if f.contains(x, y) => ()
@@ -753,7 +683,6 @@ fn press_down(x : Double, y : Double) -> Unit {
   }
 }
 
-/// The eraser's last point and whether it has erased anything yet, while it is dragged (Erasing).
 let erase_at : signals::Ref[(Double, Double, Bool)] = signals::ref_new((0.0, 0.0, false))
 
 fn press_moved(x : Double, y : Double) -> Unit {
@@ -785,8 +714,6 @@ fn press_moved(x : Double, y : Double) -> Unit {
     }
     Dragging(x0, y0, m, _, _, hx, hy) => if moved { draft.set(Some(held_to(m, hx, hy, x0, y0, x, y))) }
     Erasing(_, _, _, _) => {
-      // (where it is and whether it erased kept apart, not in `hand`: set at each pixel it moved every binding that
-      // reads `hand` again, comparing the marks as they were each time)
       let (lx, ly, hit) = erase_at.v
       let (cx, cy) = clamp_to_sel(x, y)
       let hit2 = erase_pen_segment(lx, ly, cx, cy)
@@ -796,7 +723,6 @@ fn press_moved(x : Double, y : Double) -> Unit {
       match draft.untracked() {
         Some(m) => {
           let (cx, cy) = clamp_to_sel(x, y)
-          // (a mosaic's corner on its squares' grid: drawn again only as it crosses into another square)
           let (cx, cy) = if m.tool == Mosaic {
             let cell = dmax(2.0, (mosaic_pt(m.size) * mon_scale.untracked()).round())
             let snap = fn(v : Double, from : Double) {
@@ -814,7 +740,6 @@ fn press_moved(x : Double, y : Double) -> Unit {
           if m.tool == Mosaic && last_pt.0 == cx && last_pt.1 == cy {
             return
           }
-          // (a line or an arrow with Shift held: straight across, up and down, or at 45 degrees)
           let (cx, cy) = if (m.tool == Line || m.tool == Arrow) && ps_shift_down() == 1 {
             let (sx, sy) = snap45(m.pts[0].0, m.pts[0].1, cx, cy)
             clamp_to_sel(sx, sy)
@@ -826,7 +751,6 @@ fn press_moved(x : Double, y : Double) -> Unit {
             let dx = cx - lx
             let dy = cy - ly
             let min_step = if m.tool == MosaicBrush { 2.0 * mon_scale.untracked() } else { 0.5 }
-            // (no point added: nothing copied, nothing set, nothing drawn again)
             if dx * dx + dy * dy < min_step * min_step {
               return
             }
@@ -844,7 +768,6 @@ fn press_moved(x : Double, y : Double) -> Unit {
   }
 }
 
-/// A point kept within the part picked.
 fn clamp_to_sel(x : Double, y : Double) -> (Double, Double) {
   match sel.untracked() {
     Some(r) =>
@@ -853,14 +776,10 @@ fn clamp_to_sel(x : Double, y : Double) -> (Double, Double) {
   }
 }
 
-/// When and where (pixels) the last click was let go (a second soon after and near it: a double click).
 let last_click : signals::Ref[(Double, Double, Double)] = signals::ref_new((0.0, 0.0, 0.0))
 
-/// Whether the first click of a potential double-click pushed an undoable mark/erase (undone if the second click lands).
 let last_click_undo : signals::Ref[Bool] = signals::ref_new(false)
 
-/// Whether the click let go at (x, y) is the second of two: as soon after the first as Windows' double click (500 ms)
-/// and within 4 points of it.
 fn second_click(x : Double, y : Double) -> Bool {
   let t = ps_now_ms()
   let (lt, lx, ly) = last_click.v
@@ -876,8 +795,6 @@ fn second_click(x : Double, y : Double) -> Bool {
 
 fn press_up(x : Double, y : Double) -> Unit {
   let (_, _, moved) = down_at.v
-  // (a double click inside the picked part finishes and copies immediately in ANY marking mode, discarding any stray
-  // mark/erase/words box created by the double click itself)
   if moved {
     last_click.v = (0.0, 0.0, 0.0)
     last_click_undo.v = false
@@ -903,7 +820,6 @@ fn press_up(x : Double, y : Double) -> Unit {
   match hand.untracked() {
     Drawing(_, _) =>
       if !moved {
-        // (a click: the window under the pointer)
         sel.set(window_at(x, y))
       } else {
         match sel.untracked() {
@@ -914,8 +830,6 @@ fn press_up(x : Double, y : Double) -> Unit {
     Dragging(x0, y0, m, before, i, hx, hy) => {
       signals::start_batch()
       draft.set(None)
-      // (put back where it was among the marks: moved, one step to undo; else as it was, picked, its colour and
-      // thickness the bar's)
       marks.set(before)
       if moved {
         replace_mark(i, held_to(m, hx, hy, x0, y0, x, y))
@@ -967,8 +881,6 @@ fn press_up(x : Double, y : Double) -> Unit {
   hand.set(Free)
 }
 
-/// A right click: the mark being drawn called off, else the tool put down, else the part let go, else the capture
-/// closed.
 fn step_back() -> Unit {
   if words_open.untracked().is_some() {
     overlay_disarm_discard()
@@ -996,9 +908,6 @@ fn step_back() -> Unit {
   }
 }
 
-// ---- the keys ----
-
-/// Map a stored Win32-style Hotkey (Alt=1, Ctrl=2, Shift=4, Win=8) to mbui's (key_code, mods).
 fn hotkey_to_mbui(h : Hotkey) -> Option[(Int, Int)] {
   if h.vk == 0 {
     return None
@@ -1062,7 +971,6 @@ fn overlay_keys(confirm : Hotkey) -> view::Keymap {
     ch('z', "redo", ctrl | shift),
     ch('c', "copy-color", 0),
     ch('b', "beautify", 0),
-    // (the whole monitor at once: as PixPin's Ctrl+A)
     ch('a', "whole", ctrl),
     k(ui::key_code_select_all, "whole", ctrl),
     k(ui::key_code_left, "left", 0),
@@ -1086,7 +994,6 @@ fn overlay_actions(root : view::View) -> Unit {
       if !capturing.untracked() {
         return false
       }
-      // (a key while words are written is theirs, but Escape, which lets them go)
       if words_open.untracked().is_some() && name != "close" {
         return false
       }
@@ -1123,8 +1030,6 @@ fn overlay_actions(root : view::View) -> Unit {
   on("redo", fn() { let _ = redo() })
   on("copy-color", copy_color)
   on("beautify", beauty_toggle)
-  // (the whole monitor picked: a window covering all of it but the taskbar is what a click picks, so the screen whole is
-  // hard to get to by the pointer: the user, 2026-11-20 「现在似乎挺难直接截全屏」)
   on("whole", fn() {
     if marks.untracked().length() == 0 {
       selected.set(None)
@@ -1133,7 +1038,6 @@ fn overlay_actions(root : view::View) -> Unit {
   })
   for step in [(1, ""), (10, "10")] {
     let (n, s) = step
-    // (the mark picked moved, else the part)
     let k = fn(dx : Int, dy : Int) {
       if !nudge_selected(dx.to_double(), dy.to_double()) {
         nudge(dx, dy)
@@ -1146,7 +1050,6 @@ fn overlay_actions(root : view::View) -> Unit {
   }
 }
 
-/// The part moved by (dx, dy) pixels.
 fn nudge(dx : Int, dy : Int) -> Unit {
   match sel.untracked() {
     Some(r) => {
@@ -1157,7 +1060,6 @@ fn nudge(dx : Int, dy : Int) -> Unit {
   }
 }
 
-/// The colour under the pointer copied as #RRGGBB.
 fn copy_color() -> Unit {
   let (x, y) = pointer_px.untracked()
   let c = pixel_at(x.to_int(), y.to_int())
@@ -1178,7 +1080,6 @@ fn hex6(c : Int) -> String {
   sb.to_string()
 }
 
-/// The timings of a capture said in the log as it is seen: from the press to the screen taken, and to the overlay seen.
 fn said_shown() -> Unit {
   let t = ps_now_ms()
   log(
@@ -1186,10 +1087,7 @@ fn said_shown() -> Unit {
   )
 }
 
-/// The mark picked, its handles (a line's ends, a box's corners) or, where it has none, a thin frame round it: in the
-/// monitor's pixels, over the marks.
 fn picked_picture() -> Option[pixels::Vector] {
-  // Eraser brush preview circle when hovering/erasing inside the selection
   if tool.get() == Eraser {
     match sel.get() {
       Some(r) => {
@@ -1211,8 +1109,6 @@ fn picked_picture() -> Option[pixels::Vector] {
       None => ()
     }
   }
-  // (a mosaic being dragged out: where it reaches, a thin frame of the accent round a faint tint of it, its squares
-  // alone showing nothing over an even ground)
   if hand.get() is Marking && draft.get() is Some(d) && (d.tool == Mosaic || d.tool == Blur) {
     let k = mon_scale.get()
     let (x0, y0) = d.pts[0]
