@@ -78,15 +78,18 @@ c_sources = [
   "native/record_mac.m",
   "native/picture_mac.m",
 ]
+cc_flags = ["-O2", "-fobjc-arc"]
 frameworks = [
   "Cocoa",
   "Carbon",
   "QuartzCore",
+  "ImageIO",
   "ScreenCaptureKit",
   "CoreMedia",
+  "CoreVideo",
   "AVFoundation",
+  "VideoToolbox",
   "Vision",
   "ServiceManagement",
   "UniformTypeIdentifiers",
 ]
-flags = ["-fobjc-arc"]
