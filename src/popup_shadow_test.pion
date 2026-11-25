@@ -67,3 +67,34 @@ test "floating popups: longshot panel (including detached jump pill inside clipp
   long_root.v = None
   t.dispose()
 }
+
+test "overlay: discard confirm pill wraps content width instead of full screen" {
+  mon.v = Rect::{ x: 0, y: 0, w: 3840, h: 2160 }
+  mon_work.v = Rect::{ x: 0, y: 0, w: 3840, h: 2160 }
+  mon_scale.set(2.0)
+  sel.set(Some(Rect::{ x: 200, y: 200, w: 2164, h: 1540 }))
+  overlay_confirm_discard.set("right")
+  let t = ui::Tester::tree(overlay_window, width=1920.0, height=1080.0, scale=2.0)
+  t.frame(ms=16.0)
+  let (pw, ph) = match overlay_discard_pill.v {
+    Some(dc) => dc.laid_size()
+    None => (0.0, 0.0)
+  }
+  if pw <= 40.0 || pw >= 360.0 || (ph - 28.0).abs() > 0.5 {
+    panic("overlay discard pill size unexpected: \{pw}x\{ph}")
+  }
+  overlay_confirm_discard.set("esc")
+  t.frame(ms=16.0)
+  let (ew, eh) = match overlay_discard_pill.v {
+    Some(dc) => dc.laid_size()
+    None => (0.0, 0.0)
+  }
+  if ew <= 40.0 || ew >= 360.0 || (eh - 28.0).abs() > 0.5 {
+    panic("overlay esc discard pill size unexpected: \{ew}x\{eh}")
+  }
+  overlay_confirm_discard.set("")
+  sel.set(None)
+  overlay_root.v = None
+  overlay_discard_pill.v = None
+  t.dispose()
+}

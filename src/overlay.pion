@@ -268,6 +268,8 @@ let overlay_confirm_discard : signals::Signal[String] = signals::signal("")
 
 let overlay_discard_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
+let overlay_discard_pill : signals::Ref[Option[view::View]] = signals::ref_new(None)
+
 fn overlay_disarm_discard() -> Unit {
   (overlay_discard_cancel.v)()
   overlay_discard_cancel.v = fn() {  }
@@ -493,9 +495,13 @@ fn size_label(stage : view::View) -> Unit {
         .ink(view::Live::Is(0xF5F6F8FFL))
       })
     })
-    let _ = stage.box(fn(dc) {
+  })
+  let _ = stage.box(fn(dw) {
+    let _ = dw.over(view::Live::Is(true)).presses(view::Live::Is(false)).lines_up(view::Live::Is(Some(view::Along::Start)))
+    let _ = dw.box(fn(dc) {
+      overlay_discard_pill.v = Some(dc)
+      let _ = dc.owns(fn() { overlay_discard_pill.v = None })
       let _ = dc
-      .over(view::Live::Is(true))
       .presses(view::Live::Is(false))
       .row(view::Live::Is(true))
       .height(view::Live::Is(Some(28.0)))
@@ -509,10 +515,14 @@ fn size_label(stage : view::View) -> Unit {
       .offset(view::Live::By(fn() {
         let k = mon_scale.get()
         let (wx0, wy0, wx1, wy1) = work_pt()
+        let w = match dc.laid_size_told() {
+          Some((pw, _)) if pw > 0.0 => pw
+          _ => 180.0
+        }
         match shown_whole(dc) {
           Some(r) => {
             let cx = (r.x.to_double() + r.w.to_double() * 0.5) / k
-            let x = clamp(cx - 110.0, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - 228.0))
+            let x = clamp(cx - w * 0.5, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - w - 8.0))
             let ry = r.y.to_double() / k
             let y = if ry >= wy0 + 40.0 {
               ry - 36.0
@@ -521,7 +531,7 @@ fn size_label(stage : view::View) -> Unit {
             }
             (x, y)
           }
-          None => ((wx0 + wx1) * 0.5 - 110.0, wy0 + 24.0)
+          None => (clamp((wx0 + wx1 - w) * 0.5, wx0 + 8.0, dmax(wx0 + 8.0, wx1 - w - 8.0)), wy0 + 24.0)
         }
       }))
       let _ = dc.box(fn(t) {
