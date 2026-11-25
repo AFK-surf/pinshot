@@ -284,13 +284,13 @@ static struct {
 static const GUID PS_MFVideoFormat_AV1 = {
     0x31305641, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
-// Build a 2x cover-cropped 32-bit BGRX BMP (316x368 for the 158x184pt landscape Studio HUD preview card)
+// Build a 2x cover-cropped 32-bit BGRX BMP (352x368 for the 176x184pt Studio HUD preview card)
 // with a silky bottom dark vignette scrim composited directly into the pixels so white overlay metadata
 // stays razor-sharp over any bright light-mode desktop capture.
 static void build_preview_bmp(const uint8_t *px, int w, int h, int pitch, bool is_bgra, std::vector<uint8_t> &out) {
   out.clear();
   if (!px || w <= 0 || h <= 0 || pitch < w * 4) return;
-  const int pw = 316, ph = 368;
+  const int pw = 352, ph = 368;
   double src_asp = (double)w / (double)h;
   double dst_asp = (double)pw / (double)ph;
   int cx0 = 0, cy0 = 0, cw = w, ch = h;

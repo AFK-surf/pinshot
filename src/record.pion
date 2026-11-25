@@ -1935,7 +1935,7 @@ fn rec_window(root : view::View) -> Unit {
               let k = rec_preview_key.get()
               if k != "" { Some((k, "", 384)) } else { None }
             }))
-            .image_contains(view::Live::Is(false))
+            .image_covers(view::Live::Is(true))
             .image_fades(view::Live::Is(false))
           })
 

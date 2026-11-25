@@ -109,7 +109,7 @@ static void scaledDims(int sw, int sh, int param, int *ow, int *oh) {
 }
 
 // The panel's preview (record_win.cpp's build_preview_bmp): the last frame (NV12 420v or 32BGRA) cover-cropped
-// into a 316×368 BMP with a dark scrim at its bottom, under the words the panel puts there.
+// into a 352×368 BMP (2x of 176×184pt) with a dark scrim at its bottom, under the words the panel puts there.
 static NSData *previewBmp(CVPixelBufferRef pb) {
   if (!pb)
     return nil;
@@ -131,7 +131,7 @@ static NSData *previewBmp(CVPixelBufferRef pb) {
     CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
     return nil;
   }
-  const int pw = 316, ph = 368;
+  const int pw = 352, ph = 368;
   double srcAsp = (double)w / h, dstAsp = (double)pw / ph;
   int cx0 = 0, cy0 = 0, cw = w, ch = h;
   if (srcAsp > dstAsp) {
