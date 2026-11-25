@@ -3,7 +3,7 @@ param(
   [string]$Name = "pengx17.PinShot",
   [string]$Publisher = "CN=0A62AE73-FF5C-4B40-9E2B-F24486072C86",
   [string]$PublisherDisplayName = "pengx17",
-  [string]$Version = "1.0.31.0",
+  [string]$Version = "1.0.32.0",
   [string]$Out = ""
 )
 # Makes PinShot's MSIX for the Microsoft Store: out\Release\pinshot.exe (scripts\build.ps1) as it is (one file, nothing
