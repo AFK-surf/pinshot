@@ -347,16 +347,20 @@
     </p>
 
     <div class="actions">
-      <a class="btn btn-primary" href="/dl/pinshot.exe">
+      <!-- (the visitor's platform first and filled, by the script at the end: Windows when it cannot tell) -->
+      <a class="btn btn-primary" id="dl-win" href="/dl/pinshot.exe">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M8 2.5v8M4.5 7.5 8 11l3.5-3.5M3 13.5h10"/>
         </svg>
         <span data-l="zh">下载 Windows 版</span><span data-l="en">Download for Windows</span>
         <span class="meta"><span class="ver">1.0.31</span> · <span class="size-exe">8.6 MB</span></span>
       </a>
-      <a class="btn btn-secondary" href="/dl/PinShot-mac.zip">
-        <span>macOS</span>
-        <span class="meta"><span data-l="zh" class="sans-in-meta">Apple 芯片</span><span data-l="en">Apple silicon</span> · macOS 14+ · <span class="size-mac">3.2 MB</span></span>
+      <a class="btn btn-secondary" id="dl-mac" href="/dl/PinShot-mac.zip">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 2.5v8M4.5 7.5 8 11l3.5-3.5M3 13.5h10"/>
+        </svg>
+        <span data-l="zh">下载 macOS 版</span><span data-l="en">Download for macOS</span>
+        <span class="meta"><span data-l="zh" class="sans-in-meta">Apple 芯片</span><span data-l="en">Apple silicon</span> · <span class="size-mac">3.2 MB</span></span>
       </a>
     </div>
 
@@ -1103,6 +1107,17 @@
     });
     var initScene = new URLSearchParams(location.search).get("scene");
     if (initScene) pickScene(initScene);
+
+    // (a Mac's visitor gets the Mac's download first; an iPad says it is a Mac too, but has a touch screen)
+    (function () {
+      var p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "";
+      var mac = /mac/i.test(p) && !(navigator.maxTouchPoints > 1);
+      if (!mac) return;
+      var win = document.getElementById("dl-win"), m = document.getElementById("dl-mac");
+      win.className = "btn btn-secondary";
+      m.className = "btn btn-primary";
+      m.parentNode.insertBefore(m, win);
+    })();
 
     fetch("/dl/latest.json").then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
       if (!j) return;
