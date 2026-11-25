@@ -77,6 +77,7 @@ c_sources = [
   "native/longshot_mac.m",
   "native/record_mac.m",
   "native/picture_mac.m",
+  "native/update_mac.m",
 ]
 cc_flags = ["-O2", "-fobjc-arc"]
 frameworks = [
@@ -91,5 +92,6 @@ frameworks = [
   "VideoToolbox",
   "Vision",
   "ServiceManagement",
+  "Security",
   "UniformTypeIdentifiers",
 ]

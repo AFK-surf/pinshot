@@ -1,6 +1,6 @@
 # PinShot
 
-**English** · [简体中文](README.zh-CN.md) · [Download](https://pin-shot.pages.dev) · [Releases](https://github.com/motion-space/pinshot/releases/latest)
+**English** · [简体中文](README.zh-CN.md) · [Download](https://pin-shot.pages.dev) · [Releases](https://github.com/AFK-surf/pinshot/releases/latest)
 
 Fast, PixPin-style screenshot, annotation, pinning, and screen recording for Windows and macOS. Written in [Pion](https://github.com/AFK-surf/pion) with [Invar](https://github.com/AFK-surf/invar): the UI and core logic are written once in `src/`, backed by a thin native layer in `native/` for Windows and macOS (zero local framework patches).
 
@@ -22,7 +22,7 @@ Fast, PixPin-style screenshot, annotation, pinning, and screen recording for Win
 
 Requires Windows 10 (2004+) or Windows 11, x64.
 
-- **Single-file self-installer**: download `pinshot.exe` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/motion-space/pinshot/releases/latest)). Double-clicking it from **Downloads** automatically installs per-user into `%LOCALAPPDATA%\Programs\PinShot` (no administrator needed), adds a Start menu entry and a **Settings › Apps** uninstaller, and launches PinShot.
+- **Single-file self-installer**: download `pinshot.exe` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/AFK-surf/pinshot/releases/latest)). Double-clicking it from **Downloads** automatically installs per-user into `%LOCALAPPDATA%\Programs\PinShot` (no administrator needed), adds a Start menu entry and a **Settings › Apps** uninstaller, and launches PinShot.
 - **Portable**: move `pinshot.exe` to any folder of your choice (or pass `--portable`) to run in place without installing.
 
 > The executable is not code-signed yet. If Windows SmartScreen warns *"Windows protected your PC"*, click **More info › Run anyway**.
@@ -33,11 +33,11 @@ Settings live in `%APPDATA%\PinShot\settings.json`; logs (including per-capture 
 
 Requires macOS 14+ on Apple silicon.
 
-1. Download `PinShot-mac.zip` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/motion-space/pinshot/releases/latest)).
+1. Download `PinShot-mac.zip` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/AFK-surf/pinshot/releases/latest)).
 2. Unzip and drag `PinShot.app` to **Applications**, then open it.
 3. On the first capture, grant permission in **System Settings › Privacy & Security › Screen & System Audio Recording**, then quit and reopen PinShot. If PinShot is not listed, click **+** and select `PinShot.app`.
 
-Settings and logs live in `~/Library/Application Support/PinShot/`. macOS builds use ad-hoc signing (not notarized); replacing the app with a newly built ad-hoc copy may require re-granting screen recording permission.
+Settings and logs live in `~/Library/Application Support/PinShot/`. Releases are signed with AFK AI's Developer ID and notarized by Apple, and update themselves like the Windows build (Settings › Automatic updates); an ad-hoc signed copy from before is replaced once by hand. Local builds are ad-hoc signed and do not update themselves; replacing the app with one may require re-granting screen recording permission.
 
 ## Usage & Shortcuts
 
@@ -112,7 +112,7 @@ Requires Xcode Command Line Tools and [Pion](https://github.com/AFK-surf/pion) (
 pionc build --release . -o out/Release/PinShot
 ```
 
-The **macOS package** GitHub Actions workflow also builds `PinShot-mac.zip` on demand and on every `v*` tag.
+The **macOS package** GitHub Actions workflow also builds `PinShot-mac.zip` on demand and on every `v*` tag, signed with AFK AI's Developer ID and notarized (`scripts/sign-mac.sh`, from the `MACOS_DEVELOPER_ID_KEYCHAIN_B64_1` / `_2` and `KEYCHAIN_PASSWORD_AFK` secrets), and attaches it to the tag's release, where `packaging/publish.ps1` takes it for the download site and `latest.json`.
 
 ## Sponsor
 

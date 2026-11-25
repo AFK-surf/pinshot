@@ -1,3 +1,4 @@
+import "hostapi"
 import "json"
 import "signals"
 import "ui"
@@ -9,6 +10,19 @@ fn download_base() -> String {
     here
   } else {
     "https://pin-shot.pages.dev/dl/"
+  }
+}
+
+fn on_mac() -> Bool {
+  hostapi::platform() == 0
+}
+
+// (what a release is downloaded as here: the Windows executable, or on macOS the zip of PinShot.app)
+fn release_file() -> String {
+  if on_mac() {
+    "PinShot-mac.zip"
+  } else {
+    "pinshot.exe"
   }
 }
 
@@ -108,7 +122,7 @@ fn updates_here() -> Bool {
 let day_s : Double = 86400.0
 
 fn update_state_path() -> String {
-  text_of(ps_data_dir()) + "\\update.json"
+  text_of(ps_data_dir()) + (if on_mac() { "/update.json" } else { "\\update.json" })
 }
 
 fn last_checked() -> Double {
@@ -147,7 +161,7 @@ fn newer(a : String, b : String) -> Bool {
 }
 
 fn agent() -> Bytes {
-  cstr("PinShot/" + app_version + " (Windows)")
+  cstr("PinShot/" + app_version + (if on_mac() { " (macOS)" } else { " (Windows)" }))
 }
 
 fn update_busy() -> Bool {
@@ -306,11 +320,17 @@ fn latest_read(body : Option[Bytes]) -> Unit {
     update.set(Latest)
     return
   }
-  let r = Release::{ version, setup_sha: s("setup_sha256"), exe_sha: s("exe_sha256") }
+  // (on macOS the release's zip, named twice where Windows names its setup and its executable: signed as those are)
+  let r = if on_mac() {
+    Release::{ version, setup_sha: s("mac_sha256"), exe_sha: s("mac_sha256") }
+  } else {
+    Release::{ version, setup_sha: s("setup_sha256"), exe_sha: s("exe_sha256") }
+  }
+  let signature = s(if on_mac() { "mac_signature" } else { "signature" })
   release.v = Some(r)
   let by_hand = !(plain_sha(r.setup_sha) &&
     plain_sha(r.exe_sha) &&
-    ps_release_signed(cstr(version), cstr(r.setup_sha), cstr(r.exe_sha), cstr(s("signature"))) == 1)
+    ps_release_signed(cstr(version), cstr(r.setup_sha), cstr(r.exe_sha), cstr(signature)) == 1)
   log("update: \{version} found\{if by_hand { " (not signed: by hand)" } else { "" }}")
   update.set(Found(version, by_hand))
   if !update_asked.v {
@@ -327,8 +347,8 @@ fn download_update() -> Unit {
     Some(_v) => _v
     None => { return }
   }
-  let url = download_base() + "v\{r.version}/pinshot.exe"
-  let path = text_of(ps_update_path(cstr("pinshot.exe")))
+  let url = download_base() + "v\{r.version}/" + release_file()
+  let path = text_of(ps_update_path(cstr(release_file())))
   update_file.v = path
   if path != "" &&
     ps_fetch(cstr(url), cstr(path), cstr(r.exe_sha), agent()) == 1 {
@@ -422,7 +442,7 @@ fn update_note() -> String {
 
 fn update_notes_url() -> String {
   match release.v {
-    Some(r) => "https://github.com/motion-space/pinshot/releases/tag/v" + r.version
+    Some(r) => "https://github.com/AFK-surf/pinshot/releases/tag/v" + r.version
     None => site_url
   }
 }
