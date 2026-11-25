@@ -679,6 +679,21 @@ extern "C" void *ps_wgc_take_part(HMONITOR mon, int w, int h, int rx, int ry, in
   return take(mon, w, h, rx, ry, rw, rh, 1, bits, pitch);
 }
 
+#define DD_FRAME_MS 300.0
+static int dd_black;  // Desktop Duplication takings that came out all black (ps_wgc_state)
+
+// Whether a picture is all black, a 32 by 32 grid of its pixels looked at.
+static int dd_all_black(const uint8_t *bits, int pitch, int w, int h) {
+  for (int j = 0; j < 32; j++) {
+    const uint8_t *row = bits + (size_t)((2 * j + 1) * (int64_t)h / 64) * pitch;
+    for (int i = 0; i < 32; i++) {
+      const uint8_t *p = row + (size_t)((2 * i + 1) * (int64_t)w / 64) * 4;
+      if (p[0] | p[1] | p[2]) return 0;
+    }
+  }
+  return 1;
+}
+
 static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, uint8_t **bits, int *pitch) {
   if (dd_disabled() || dd_ok == 0) return NULL;
   LARGE_INTEGER t0, t1, f;
@@ -699,17 +714,18 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
   ComPtr<IDXGIResource> res;
   DXGI_OUTDUPL_FRAME_INFO fi = {};
   HRESULT hr = E_FAIL;
-  for (int attempt = 0; attempt < 3; attempt++) {
+  // A fresh duplication can first hand pointer-only frames (LastPresentTime 0) whose surface is still all black:
+  // never take one; none with the desktop within DD_FRAME_MS leaves the capture to WGC / GDI.
+  for (int attempt = 0;; attempt++) {
     hr = dupl->AcquireNextFrame(attempt == 0 ? 250 : 40, &fi, &res);
-    if (SUCCEEDED(hr) && res) {
-      if (fi.LastPresentTime.QuadPart != 0 || attempt == 2) break;
-      res.Reset();
-      dupl->ReleaseFrame();
-    } else if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
-      break;
-    } else {
-      break;
-    }
+    if (FAILED(hr) || !res) break;
+    if (fi.LastPresentTime.QuadPart != 0) break;
+    res.Reset();
+    dupl->ReleaseFrame();
+    hr = DXGI_ERROR_WAIT_TIMEOUT;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if ((now.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart > DD_FRAME_MS) break;
   }
   if (FAILED(hr) || !res) {
     dupl.Reset();
@@ -732,6 +748,7 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
     return NULL;
   }
   int whole = rx == 0 && ry == 0 && rw == w && rh == h;
+  const int whole_monitor = whole;
   int is_hdr = (td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
   float white = 1.0f;
   if (is_hdr) mon_hdr(mon, &white);
@@ -854,6 +871,13 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
   dupl.Reset();
   D3D11_MAPPED_SUBRESOURCE mp;
   if (FAILED(dd_ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mp))) return NULL;
+  // (a whole monitor is never all black, its taskbar at least: such a frame is left to WGC / GDI)
+  if (whole_monitor && dd_all_black((const uint8_t *)mp.pData, (int)mp.RowPitch, rw, rh)) {
+    dd_ctx->Unmap(staging.Get(), 0);
+    staging.Reset();
+    dd_black++;
+    return NULL;
+  }
   *bits = (uint8_t *)mp.pData;
   *pitch = (int)mp.RowPitch;
   take_white = is_hdr ? white : 0.0;
@@ -1147,7 +1171,8 @@ extern "C" void ps_wgc_release(void *taken) {
 extern "C" void ps_wgc_state(char *out, int n) {
   int k = snprintf(out, n, "sessions %d; frames", nmons);
   for (int i = 0; i < nmons && k < n; i++) k += snprintf(out + k, n - k, " %d%s", mons[i].frames, mons[i].hdr ? " hdr" : "");
-  if (k < n) snprintf(out + k, n - k, "; hr 0x%08lx; ready %d", (unsigned long)last_hr, ready);
+  if (k < n) k += snprintf(out + k, n - k, "; hr 0x%08lx; ready %d", (unsigned long)last_hr, ready);
+  if (dd_black && k < n) snprintf(out + k, n - k, "; dxgi black %d", dd_black);
 }
 
 // One-shot out-of-process WGC capture (`pinshot.exe --wgc-shot <shm> <ev> <x> <y> <w> <h>`):
