@@ -254,14 +254,15 @@ fn rec_active(wid : Int, on : Bool, other : Int) -> Unit {
   }
 }
 
-/// Transparent shadow halo around the floating superellipse card (L, T, R, B points, >= 3*sigma for blur=11pt, dy=4pt so alpha reaches 0 before every window edge).
+/// Transparent shadow halo around the floating superellipse card (L, T, R, B points; click-through via ps_hit_inset).
+/// Top/bottom leave full 3*sigma shadow clearance even when the 24pt discard/size pill or tooltips appear above or below the bar.
 let rec_pad_l : Double = 36.0
 
-let rec_pad_t : Double = 32.0
+let rec_pad_t : Double = 54.0
 
 let rec_pad_r : Double = 36.0
 
-let rec_pad_b : Double = 44.0
+let rec_pad_b : Double = 58.0
 
 fn rec_combo_key(fmt : Int, qual : Int, max_side : Int, gif_fps : Int) -> String {
   let (ow, oh) = rec_out_dims(max_side)
@@ -509,6 +510,13 @@ fn rec_out() -> Unit {
   rec_wid.v = wid
   let _ = ps_own(wid, 1)
   ps_rec_exclude(wid)
+  ps_hit_inset(
+    wid,
+    (rec_pad_l * k).round().to_int(),
+    (rec_pad_t * k).round().to_int(),
+    (rec_pad_r * k).round().to_int(),
+    (rec_pad_b * k).round().to_int(),
+  )
   let cloaked = ui::env("PINSHOT_TEST_CLOAKED") != ""
   if cloaked {
     ps_cloak(wid, 1)
@@ -2641,9 +2649,9 @@ fn rec_window(root : view::View) -> Unit {
         let _ = tip_row
         .over_at(view::Live::By(fn() {
           if rec_confirm_discard.get() && rec_phase.get() < 4 && rec_fps_should_open_up() {
-            (Some(rec_pad_l), Some(4.0), Some(rec_pad_r), None)
+            (Some(rec_pad_l), Some(24.0), Some(rec_pad_r), None)
           } else {
-            (Some(rec_pad_l), None, Some(rec_pad_r), Some(6.0))
+            (Some(rec_pad_l), None, Some(rec_pad_r), Some(28.0))
           }
         }))
         .laid_nowhere(view::Live::By(fn() { shown_text() == "" }))
@@ -2657,7 +2665,7 @@ fn rec_window(root : view::View) -> Unit {
           .radius(view::Live::Is(7.0))
           .ground(view::Live::By(fn() { if rec_confirm_discard.get() { 0x3B1518F5L } else { 0x141519F5L } }))
           .edge(view::Live::By(fn() { (1.0, if rec_confirm_discard.get() { 0xF8717188L } else { 0xFFFFFF2AL }) }))
-          .shadow(view::Live::Is((8.0, 2.0, 0x00000066L)))
+          .shadow(view::Live::Is((6.0, 2.0, 0x00000058L)))
           .lines_up(view::Live::Is(Some(view::Along::Middle)))
           .lies_along(view::Live::Is(view::Lies::Middle))
           .presses(view::Live::Is(false))
