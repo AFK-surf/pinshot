@@ -533,7 +533,7 @@ fn rec_out() -> Unit {
   if cloaked {
     ps_cloak(wid, 1)
   }
-  let est_w = if english.untracked() { 362.0 } else { 344.0 }
+  let est_w = 300.0
   // Place without stealing focus yet while the overlay stays visible underneath; once Frame 0 uncloaks cleanly on top,
   // rec_window closes the overlay, marks capture_open=1, and focuses & fits the recording bar with zero empty-frame blink.
   rec_place_initial(est_w + rec_pad_l + rec_pad_r, bar_height + rec_pad_t + rec_pad_b, false)
@@ -1221,7 +1221,8 @@ fn rec_action_btn(
   bg_hover : Int64,
   bg_press : Int64,
   press : () -> Unit,
-  height~ : Double = bar_button,
+  keys~ : () -> String  = fn() { "" },
+  size~ : Double = bar_button,
   rad~ : Double = bar_btn_corner,
   dim~ : () -> Bool  = fn() { false },
 ) -> Unit {
@@ -1229,12 +1230,11 @@ fn rec_action_btn(
     let hov = smooth_hover(b, live=fn() { !dim() })
     tactile_press(b, live=fn() { !dim() })
     hig_focus(b)
+    rec_tip_follow(b, label_fn, keys=keys, live=fn() { !dim() })
     let _ = b
-    .row(view::Live::Is(true))
-    .gap(view::Live::Is(6.0))
-    .height(view::Live::Is(Some(height)))
+    .width(view::Live::Is(Some(size)))
+    .height(view::Live::Is(Some(size)))
     .shrink(view::Live::Is(0.0))
-    .padding(view::Live::Is((12.0, 0.0, 12.0, 0.0)))
     .radius(view::Live::Is(rad))
     .lines_up(view::Live::Is(Some(view::Along::Middle)))
     .lies_along(view::Live::Is(view::Lies::Middle))
@@ -1254,7 +1254,7 @@ fn rec_action_btn(
     match dot_color {
       Some(c) => {
         let _ = b.box(fn(d) {
-          let _ = d.width(view::Live::Is(Some(8.0))).height(view::Live::Is(Some(8.0))).shrink(view::Live::Is(0.0)).radius(view::Live::Is(4.0)).ground(view::Live::Is(c))
+          let _ = d.width(view::Live::Is(Some(10.0))).height(view::Live::Is(Some(10.0))).shrink(view::Live::Is(0.0)).radius(view::Live::Is(5.0)).ground(view::Live::Is(c))
         })
       }
       None => ()
@@ -1262,17 +1262,11 @@ fn rec_action_btn(
     match glyph_name {
       Some(gn) => {
         let _ = b.box(fn(g) {
-          let _ = g.width(view::Live::Is(Some(14.0))).height(view::Live::Is(Some(14.0))).shrink(view::Live::Is(0.0)).picture(view::Live::Is(Some(glyph(gn)))).tint(view::Live::Is(0xFFFFFFFFL))
+          let _ = g.width(view::Live::Is(Some(15.0))).height(view::Live::Is(Some(15.0))).shrink(view::Live::Is(0.0)).picture(view::Live::Is(Some(glyph(gn)))).tint(view::Live::Is(0xFFFFFFFFL))
         })
       }
       None => ()
     }
-    let _ = b.box(fn(t) {
-      let _ = t
-      .shrink(view::Live::Is(0.0))
-      .words(view::Live::By(label_fn), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 600, line: 16.0, wrap: false })
-      .ink(view::Live::By(fn() { if dim() { 0xFFFFFF59L } else { 0xFFFFFFFFL } }))
-    })
   })
 }
 
@@ -1874,11 +1868,12 @@ fn rec_window(root : view::View) -> Unit {
                   sb,
                   Some(0xFFFFFFFFL),
                   None,
-                  fn() { tr("录制") },
+                  fn() { "录制" },
                   0xD43339FFL,
                   0xE04046FFL,
                   0xBC282EFFL,
                   rec_start_now,
+                  keys=fn() { "Space" },
                 )
               }, at_once=true)
               acts.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(sb) {
@@ -1887,11 +1882,12 @@ fn rec_window(root : view::View) -> Unit {
                   sb,
                   None,
                   Some("stop"),
-                  fn() { tr("停止") },
+                  fn() { "停止" },
                   0xD43339FFL,
                   0xE04046FFL,
                   0xBC282EFFL,
                   rec_finish_capture,
+                  keys=fn() { "Enter" },
                 )
               }, at_once=true)
             })
