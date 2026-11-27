@@ -4,7 +4,8 @@
 # update_mac.m takes it as a release. The identity and the notarytool profile (AFK-Developer-ID-Keychain) are in AFK's
 # signing keychain: in CI its base64 in two halves, MACOS_DEVELOPER_ID_KEYCHAIN_B64_1 and _2 (a secret holds 48 KB at
 # most), opened with KEYCHAIN_PASSWORD_AFK, the same three secrets AFK-surf/monoid signs still.fail with.
-# The zip next to it (PinShot-mac.zip, what build-mac.sh made) is made again of the app signed and stapled.
+# The dmg (PinShot-mac.dmg, drag-to-Applications installer) and zip (PinShot-mac.zip, for in-app auto-updates) next to
+# it are rebuilt from the signed, notarized and stapled app.
 #   scripts/sign-mac.sh out/build/PinShot.app
 set -euo pipefail
 app="$1"
@@ -41,14 +42,24 @@ echo "sign-mac.sh: signing with $identity"
 codesign --force --options runtime --timestamp --keychain "$kc" --sign "$identity" "$app"
 codesign --verify --strict --deep -vv "$app"
 
-zip="$work/notarize.zip"
-ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+dir="$(dirname "$app")"
+name="$(basename "$app")"
+dmg="$dir/PinShot-mac.dmg"
+stage="$work/dmg"
+mkdir -p "$stage"
+ditto "$app" "$stage/$name"
+ln -s /Applications "$stage/Applications"
+rm -f "$dmg"
+hdiutil create -volname "PinShot" -srcfolder "$stage" -ov -format UDZO -imagekey zlib-level=9 "$dmg" >/dev/null
+codesign --force --timestamp --keychain "$kc" --sign "$identity" "$dmg"
+codesign --verify --strict -vv "$dmg"
+
 # (Apple's notary service now and then fails a submit with a server error a later try does not meet; a verdict,
-# Invalid as well as Accepted, is never asked again)
+# Invalid as well as Accepted, is never asked again. Notarizing the DMG notarizes both the DMG and PinShot.app inside.)
 verdict=""
 for wait_s in 0 10 30; do
   sleep "$wait_s"
-  if verdict=$(xcrun notarytool submit "$zip" --keychain-profile "$profile" --keychain "$kc" --wait --output-format json); then
+  if verdict=$(xcrun notarytool submit "$dmg" --keychain-profile "$profile" --keychain "$kc" --wait --output-format json); then
     break
   fi
   case "$verdict" in *'"status"'*) break ;; esac
@@ -60,12 +71,15 @@ status=$(printf %s "$verdict" | /usr/bin/python3 -c 'import json,sys; print(json
 if [ "$status" != "Accepted" ]; then
   id=$(printf %s "$verdict" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
   [ -n "$id" ] && xcrun notarytool log "$id" --keychain-profile "$profile" --keychain "$kc" || true
-  echo "sign-mac.sh: Apple did not notarize $app: ${status:-no verdict}" >&2
+  echo "sign-mac.sh: Apple did not notarize $dmg: ${status:-no verdict}" >&2
   exit 1
 fi
+xcrun stapler staple "$dmg"
 xcrun stapler staple "$app"
+spctl --assess --type open --context context:primary-signature -vv "$dmg"
 spctl --assess --type execute -vv "$app"
-out="$(dirname "$app")/PinShot-mac.zip"
+out="$dir/PinShot-mac.zip"
 rm -f "$out"
-(cd "$(dirname "$app")" && ditto -c -k --sequesterRsrc --keepParent "$(basename "$app")" PinShot-mac.zip)
+(cd "$dir" && ditto -c -k --sequesterRsrc --keepParent "$name" PinShot-mac.zip)
+echo "sign-mac.sh: $dmg ($(wc -c < "$dmg") bytes, sha256 $(shasum -a 256 "$dmg" | cut -d' ' -f1))"
 echo "sign-mac.sh: $out ($(wc -c < "$out") bytes, sha256 $(shasum -a 256 "$out" | cut -d' ' -f1))"

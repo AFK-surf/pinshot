@@ -33,8 +33,8 @@ Settings live in `%APPDATA%\PinShot\settings.json`; logs (including per-capture 
 
 Requires macOS 14+ on Apple silicon.
 
-1. Download `PinShot-mac.zip` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/AFK-surf/pinshot/releases/latest)).
-2. Unzip and drag `PinShot.app` to **Applications**, then open it.
+1. Download `PinShot-mac.dmg` from [pin-shot.pages.dev](https://pin-shot.pages.dev) (or [Releases](https://github.com/AFK-surf/pinshot/releases/latest)).
+2. Open the DMG and drag `PinShot.app` to **Applications**, then open it.
 3. On the first capture, grant permission in **System Settings › Privacy & Security › Screen & System Audio Recording**, then quit and reopen PinShot. If PinShot is not listed, click **+** and select `PinShot.app`.
 
 Settings and logs live in `~/Library/Application Support/PinShot/`. Releases are signed with AFK AI's Developer ID and notarized by Apple, and update themselves like the Windows build (Settings › Automatic updates); an ad-hoc signed copy from before is replaced once by hand. Local builds are ad-hoc signed and do not update themselves; replacing the app with one may require re-granting screen recording permission.
@@ -112,7 +112,7 @@ Requires Xcode Command Line Tools and [Pion](https://github.com/AFK-surf/pion) (
 pionc build --release . -o out/Release/PinShot
 ```
 
-A pushed `v<version>` tag makes the release (`.github/workflows/release.yml`): the **Windows package** and **macOS package** workflows build `pinshot.exe` and `PinShot-mac.zip` from the tag and put them on its GitHub release; then, once approved in the `release` environment (which alone holds the update-signing key and the Cloudflare token), `packaging/publish.ps1` signs `latest.json`, puts the downloads in R2 and deploys the site. The **macOS package** workflow builds `PinShot-mac.zip`, signed with AFK AI's Developer ID and notarized (`scripts/sign-mac.sh`, from the `MACOS_DEVELOPER_ID_KEYCHAIN_B64_1` / `_2` and `KEYCHAIN_PASSWORD_AFK` secrets); both package workflows also run on demand.
+A pushed `v<version>` tag makes the release (`.github/workflows/release.yml`): the **Windows package** and **macOS package** workflows build `pinshot.exe`, `PinShot-mac.dmg` (drag-to-Applications installer), and `PinShot-mac.zip` (in-app auto-update archive) from the tag and put them on its GitHub release; then, once approved in the `release` environment (which alone holds the update-signing key and the Cloudflare token), `packaging/publish.ps1` signs `latest.json`, puts the downloads in R2 and deploys the site. The **macOS package** workflow builds `PinShot-mac.dmg` and `PinShot-mac.zip`, signed with AFK AI's Developer ID and notarized (`scripts/sign-mac.sh`, from the `MACOS_DEVELOPER_ID_KEYCHAIN_B64_1` / `_2` and `KEYCHAIN_PASSWORD_AFK` secrets); both package workflows also run on demand.
 
 ## Sponsor
 
