@@ -542,6 +542,22 @@ fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
 
 let rec_shrink_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
+fn rec_sync_hit_inset(win_w : Int, win_h : Int, cw : Double, ch : Double) -> Unit {
+  if rec_wid.v == 0 {
+    return
+  }
+  let k = rec_scale.v
+  let extra_l = if win_w > 0 && cw > 20.0 { dmax(0.0, win_w.to_double() - cw * k) } else { 0.0 }
+  let extra_b = if win_h > 0 && ch > 20.0 { dmax(0.0, win_h.to_double() - ch * k) } else { 0.0 }
+  ps_hit_inset(
+    rec_wid.v,
+    (extra_l + rec_pad_l * k).round().to_int(),
+    (rec_pad_t * k).round().to_int(),
+    (rec_pad_r * k).round().to_int(),
+    (extra_b + rec_pad_b * k).round().to_int(),
+  )
+}
+
 fn rec_fit_window(focus : Bool, allow_shrink~ : Bool = false) -> Unit {
   if rec_wid.v == 0 {
     return
@@ -558,12 +574,24 @@ fn rec_fit_window(focus : Bool, allow_shrink~ : Bool = false) -> Unit {
   let w = (cw * k).ceil().to_int()
   let h = (ch * k).ceil().to_int()
   let (pw, ph) = rec_placed_size.v
-  if (w - pw).abs() <= 1 && (h - ph).abs() <= 1 && !focus {
+  // `page` right-aligns `content` (Along::End): shrinking width would shift cur_x right, which teleports
+  // the DComp swapchain for 1-2 frames. Keep the wider HWND and mark the transparent left slack click-through.
+  let target_w = if pw > 0 && w < pw { pw } else { w }
+  let target_h = h
+  if (target_w - pw).abs() <= 1 && (target_h - ph).abs() <= 1 {
+    rec_sync_hit_inset(pw, ph, cw, ch)
+    if focus && ui::env("PINSHOT_TEST_CLOAKED") == "" {
+      let r = numbers_of(text_of(ps_window_rect(rec_wid.v)))
+      if r.length() >= 4 {
+        ps_place(rec_wid.v, r[0].round().to_int(), r[1].round().to_int(), pw, ph, 1, 1)
+      }
+    }
     return
   }
-  let shrinking = pw > 0 && ph > 0 && (w < pw - 1 || h < ph - 1)
+  let shrinking_h = ph > 0 && target_h < ph - 1
   let instant_dd_shrink = rec_phase.untracked() == 0 && !rec_morph_in.untracked() && (w - pw).abs() <= 4
-  if shrinking && !allow_shrink && !instant_dd_shrink {
+  if shrinking_h && !allow_shrink && !instant_dd_shrink {
+    rec_sync_hit_inset(pw, ph, cw, ch)
     if focus && ui::env("PINSHOT_TEST_CLOAKED") == "" {
       let r = numbers_of(text_of(ps_window_rect(rec_wid.v)))
       if r.length() >= 4 {
@@ -588,30 +616,33 @@ fn rec_fit_window(focus : Bool, allow_shrink~ : Bool = false) -> Unit {
   (rec_shrink_cancel.v)()
   rec_shrink_cancel.v = fn() {  }
   let r = numbers_of(text_of(ps_window_rect(rec_wid.v)))
-  let anchor_bottom = rec_phase.untracked() == 0 && rec_fps_up.untracked() && ph > 0 && (h - ph).abs() > 1
+  let anchor_bottom = rec_phase.untracked() == 0 && rec_fps_up.untracked() && ph > 0 && (target_h - ph).abs() > 1
   let (x, y) = if r.length() >= 4 && r[2] > 0.0 && r[3] > 0.0 {
     let cur_x = r[0].round().to_int()
     let cur_y = r[1].round().to_int()
     let next_y = if anchor_bottom {
-      rec_clamp_y(cur_y + ph - h, h)
+      rec_clamp_y(cur_y + ph - target_h, target_h)
     } else {
-      rec_clamp_y(cur_y, h)
+      rec_clamp_y(cur_y, target_h)
     }
-    // (the card is laid at the window's right (rec_window's page): its right edge, under the selection's, kept)
     let cur_w = r[2].round().to_int()
-    if shrinking || (w - pw).abs() <= 24 {
-      (rec_clamp_x(cur_x + cur_w - w, w), next_y)
+    if target_w == pw {
+      let wk = rec_work.v
+      let slack_l = if target_w > w { target_w - w } else { 0 }
+      let min_x = wk.x - slack_l - (rec_pad_l * k).round().to_int()
+      let max_x = wk.right() - target_w + (rec_pad_r * k).round().to_int()
+      (clampi(cur_x, min_x, max_x), next_y)
     } else {
-      let cx = (r[0] + r[2] / 2.0).round().to_int()
-      (rec_clamp_x(cx - w / 2, w), next_y)
+      (rec_clamp_x(cur_x + cur_w - target_w, target_w), next_y)
     }
   } else {
     let p = rec_part.v
-    (rec_clamp_x(p.x + p.w / 2 - w / 2, w), rec_clamp_y(p.bottom(), h))
+    (rec_clamp_x(p.x + p.w - target_w + (rec_pad_r * k).round().to_int(), target_w), rec_clamp_y(p.bottom(), target_h))
   }
-  rec_placed_size.v = (w, h)
+  rec_placed_size.v = (target_w, target_h)
   let do_focus = focus && ui::env("PINSHOT_TEST_CLOAKED") == ""
-  ps_place(rec_wid.v, x, y, w, h, 1, if do_focus { 1 } else { 0 })
+  ps_place(rec_wid.v, x, y, target_w, target_h, 1, if do_focus { 1 } else { 0 })
+  rec_sync_hit_inset(target_w, target_h, cw, ch)
 }
 
 fn rec_schedule_fit(focus : Bool) -> Unit {
@@ -1725,6 +1756,7 @@ fn rec_window(root : view::View) -> Unit {
             })
 
             r.show(fn() { rec_phase.get() == 0 }, fn(opts) {
+              track_part(opts)
               let _ = opts.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).shrink(view::Live::Is(0.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
               rec_icon_btn(
                 opts,
@@ -1763,7 +1795,11 @@ fn rec_window(root : view::View) -> Unit {
               )
             }, at_once=true)
 
-            bar_rule_node(r)
+            let _ = r.box(fn(rule) {
+              track_part(rule)
+              let _ = rule.shrink(view::Live::Is(0.0))
+              bar_rule_node(rule)
+            })
             r.show(fn() { rec_morph_in.get() }, fn(sp) { let _ = sp.grow(view::Live::Is(1.0)) }, at_once=true)
             r.show(fn() { rec_phase.get() == 1 || rec_phase.get() == 2 }, fn(pb) {
               enter_reveal(pb, ms=130.0, dy=0.0, from_scale=0.92)
@@ -2543,13 +2579,20 @@ fn rec_window(root : view::View) -> Unit {
           // those due by a late first frame run before it lays out, so each try is set after the host's now; and the
           // overlay, the screenshot bar in it, put away only once the record bar is on the screen: no frame of neither)
           let tries = signals::ref_new(0)
+          let revealed_once = signals::ref_new(false)
           let hand_off : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
           hand_off.v = fn() {
             rec_handoff_cancel.v = root.at_moment(
-              if tries.v == 0 { root.cause_at() + 1.0 } else { dmax(root.cause_at(), hostapi::now()) + 16.0 },
+              if tries.v == 0 { root.cause_at() + 1.0 } else { dmax(root.cause_at(), hostapi::now()) + 1.0 },
               fn() {
                 rec_handoff_cancel.v = fn() {  }
-                if (!shell.was_placed() || ps_win_revealed(rec_wid.v) == 0) && tries.v < 30 {
+                if (!shell.was_placed() || ps_win_revealed(rec_wid.v) == 0) && tries.v < 120 {
+                  tries.v = tries.v + 1
+                  (hand_off.v)()
+                  return
+                }
+                if !cloaked && !revealed_once.v && tries.v < 120 {
+                  revealed_once.v = true
                   tries.v = tries.v + 1
                   (hand_off.v)()
                   return
