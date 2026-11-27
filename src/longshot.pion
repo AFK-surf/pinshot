@@ -445,7 +445,7 @@ fn long_png() -> Option[Bytes] {
   if png.length() == 0 {
     None
   } else {
-    Some(png)
+    Some(pixels::png_with_dpi(png, export_dpi(long_scale.v)))
   }
 }
 

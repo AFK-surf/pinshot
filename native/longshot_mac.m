@@ -326,6 +326,16 @@ static void stream_start(void) {
     c.pixelFormat = kCVPixelFormatType_32BGRA;
     c.colorSpaceName = kCGColorSpaceSRGB;
     c.showsCursor = NO;
+#if defined(__MAC_14_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_14_0
+    if (@available(macOS 14.0, *)) {
+      c.captureResolution = SCCaptureResolutionBest;
+    }
+#endif
+#if defined(__MAC_15_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_15_0
+    if (@available(macOS 15.0, *)) {
+      c.captureDynamicRange = SCCaptureDynamicRangeSDR;
+    }
+#endif
     stream = [[SCStream alloc] initWithFilter:f configuration:c delegate:me];
     NSError *err = nil;
     if (![stream addStreamOutput:me

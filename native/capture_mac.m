@@ -241,7 +241,20 @@ static void capture(BOOL interactive, void (^done)(BOOL)) {
       SCStreamConfiguration *cfg = [SCStreamConfiguration new];
       cfg.width = (size_t)NSWidth(bounds);
       cfg.height = (size_t)NSHeight(bounds);
+      cfg.scalesToFit = NO;
+      cfg.pixelFormat = kCVPixelFormatType_32BGRA;
+      cfg.colorSpaceName = kCGColorSpaceSRGB;
       cfg.showsCursor = NO;
+#if defined(__MAC_14_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_14_0
+      if (@available(macOS 14.0, *)) {
+        cfg.captureResolution = SCCaptureResolutionBest;
+      }
+#endif
+#if defined(__MAC_15_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_15_0
+      if (@available(macOS 15.0, *)) {
+        cfg.captureDynamicRange = SCCaptureDynamicRangeSDR;
+      }
+#endif
       [SCScreenshotManager captureImageWithFilter:filter configuration:cfg
           completionHandler:^(CGImageRef image, NSError *err) { finish(image, snapWindows, err); }];
       return;
@@ -274,6 +287,27 @@ moonbit_bytes_t ps_capture_take(void) {
   if (!capBits || width <= 0 || height <= 0)
     return moonbit_make_bytes(0, 0);
   return ps_raw_bmp(capBits, width, height, pitch);
+}
+moonbit_bytes_t ps_capture_crop_rgba(int32_t x, int32_t y, int32_t w, int32_t h) {
+  if (!capBits || width <= 0 || height <= 0 || x < 0 || y < 0 || w <= 0 || h <= 0)
+    return moonbit_make_bytes(0, 0);
+  if (x > width - w || y > height - h)
+    return moonbit_make_bytes(0, 0);
+  size_t n = (size_t)w * (size_t)h * 4;
+  if (n > 0x7FFFFFFFu)
+    return moonbit_make_bytes(0, 0);
+  moonbit_bytes_t out = moonbit_make_bytes((int32_t)n, 0);
+  for (int32_t row = 0; row < h; row++) {
+    const uint8_t *s = capBits + (size_t)(y + row) * (size_t)pitch + (size_t)x * 4;
+    uint8_t *d = (uint8_t *)out + (size_t)row * (size_t)w * 4;
+    for (int32_t col = 0; col < w; col++, s += 4, d += 4) {
+      d[0] = s[2];
+      d[1] = s[1];
+      d[2] = s[0];
+      d[3] = 255;
+    }
+  }
+  return out;
 }
 moonbit_bytes_t ps_windows(void) { return ps_string(windows); }
 int ps_window_shows(int of, int i, int x, int y) {

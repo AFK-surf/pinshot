@@ -1,0 +1,49 @@
+test "export: export_dpi maps macOS 72*scale and Windows 96*scale into valid PNG pHYs" {
+  let h = hostapi::host()
+  let orig = h.platform
+
+  h.platform = fn() -> Int { 0 }
+  let mac_2x = export_dpi(2.0)
+  let mac_1x = export_dpi(0.5)
+  if (mac_2x - 144.0).abs() > 0.001 {
+    panic("expected macOS 2x DPI = 144.0, got \{mac_2x}")
+  }
+  if (mac_1x - 72.0).abs() > 0.001 {
+    panic("expected macOS clamped 1x DPI = 72.0, got \{mac_1x}")
+  }
+
+  h.platform = fn() -> Int { 3 }
+  let win_150 = export_dpi(1.5)
+  let win_200 = export_dpi(2.0)
+  if (win_150 - 144.0).abs() > 0.001 {
+    panic("expected Windows 150% DPI = 144.0, got \{win_150}")
+  }
+  if (win_200 - 192.0).abs() > 0.001 {
+    panic("expected Windows 200% DPI = 192.0, got \{win_200}")
+  }
+  h.platform = orig
+
+  let pr = pixels::PngRows::new(2, 2)
+  let rgba = FixedArray::make(16, 0xFF as Byte)
+  rgba[0] = 0x12 as Byte
+  rgba[1] = 0x34 as Byte
+  rgba[2] = 0x56 as Byte
+  pr.add(rgba, 2)
+  let tagged = pixels::png_with_dpi(pr.end(), mac_2x)
+  match pixels::png_phys(tagged) {
+    Some((x, y, unit)) => {
+      if x != 5669 || y != 5669 || unit != 1 {
+        panic("unexpected pHYs: (\{x}, \{y}, \{unit})")
+      }
+    }
+    None => panic("missing pHYs chunk on tagged PNG")
+  }
+  match pixels::decode_png(tagged) {
+    Some((dw, dh, px)) => {
+      if dw != 2 || dh != 2 || px[0].to_int() != 0x12 || px[1].to_int() != 0x34 || px[2].to_int() != 0x56 {
+        panic("lossless PNG pixel mismatch after pHYs tagging")
+      }
+    }
+    None => panic("decode_png failed on tagged PNG")
+  }
+}
