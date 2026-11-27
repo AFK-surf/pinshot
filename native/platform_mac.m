@@ -420,6 +420,11 @@ void ps_hide(int wid) {
     previousApp = nil;
   }
 }
+int32_t ps_win_revealed(int32_t wid) {
+  (void)wid;
+  return 1;
+}
+
 void ps_cloak(int wid, int on) {
   NSWindow *w = mb_app_window_of(wid);
   w.alphaValue = on ? 0 : 1;

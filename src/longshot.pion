@@ -165,7 +165,7 @@ fn long_out() -> Unit {
   long_preview_due.v = false
   let mh = work.h.to_double() / k
   long_box_h.v = clamp(mh - 56.0 - long_halo_t - long_halo_b - long_chrome_h(), 220.0, 560.0)
-  ps_next_win_clear()
+  ps_next_win_clear_active()
   let wid = ui::window_open_here("long")
   if wid <= 0 {
     log("long: no window")

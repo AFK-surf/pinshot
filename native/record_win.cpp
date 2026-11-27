@@ -3578,9 +3578,16 @@ void ps_rec_quit(void) {
 }
 
 extern void mb_app_next_clear(void);
+extern void mb_app_next_clear_ex(int clear, int no_activate);
 
 void ps_next_win_clear(void) {
   mb_app_next_clear();
+}
+
+// (Invar's mb_app_next_clear also opens the window without activating it; panels that take keys need the focus)
+void ps_next_win_clear_active(void) {
+  const char *cl = getenv("PINSHOT_TEST_CLOAKED");
+  mb_app_next_clear_ex(1, (cl && cl[0]) ? 1 : 0);
 }
 
 extern void mb_render_set_clear(int wid, int on);
