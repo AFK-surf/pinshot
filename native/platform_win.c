@@ -1407,6 +1407,18 @@ void ps_cloak(int32_t wid, int32_t on) {
   }
 }
 
+// Whether window `wid` is on the screen: shown and uncloaked (Invar uncloaks a new window once the compositor has
+// taken its first frame). A test run's windows stay cloaked: shown is enough there.
+int32_t ps_win_revealed(int32_t wid) {
+  HWND h = own_window(wid);
+  if (!h || !IsWindowVisible(h)) return 0;
+  const char *cl = getenv("PINSHOT_TEST_CLOAKED");
+  if (cl && cl[0]) return 1;
+  BOOL cloaked = FALSE;
+  if (FAILED(DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked))) return 1;
+  return cloaked ? 0 : 1;
+}
+
 void ps_topmost(int32_t wid, int32_t on, int32_t front) {
   HWND h = own_window(wid);
   if (!h) return;

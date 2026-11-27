@@ -2540,7 +2540,8 @@ fn rec_window(root : view::View) -> Unit {
           let cloaked = ui::env("PINSHOT_TEST_CLOAKED") != ""
           // (the overlay closed and the morph set off only once the bar has been laid out in a frame: moves_for
           // reshapes only what was placed, and moments come on the clock whether a frame was drawn or not: all
-          // those due by a late first frame run before it lays out, so each try is set after the host's now)
+          // those due by a late first frame run before it lays out, so each try is set after the host's now; and the
+          // overlay, the screenshot bar in it, put away only once the record bar is on the screen: no frame of neither)
           let tries = signals::ref_new(0)
           let hand_off : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
           hand_off.v = fn() {
@@ -2548,7 +2549,7 @@ fn rec_window(root : view::View) -> Unit {
               if tries.v == 0 { root.cause_at() + 1.0 } else { dmax(root.cause_at(), hostapi::now()) + 16.0 },
               fn() {
                 rec_handoff_cancel.v = fn() {  }
-                if !shell.was_placed() && tries.v < 30 {
+                if (!shell.was_placed() || ps_win_revealed(rec_wid.v) == 0) && tries.v < 30 {
                   tries.v = tries.v + 1
                   (hand_off.v)()
                   return
