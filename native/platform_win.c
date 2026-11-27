@@ -633,7 +633,8 @@ static BOOL CALLBACK window_found(HWND h, LPARAM lp) {
   if (!IsWindowVisible(h) || IsIconic(h)) return TRUE;
   DWORD pid = 0;
   GetWindowThreadProcessId(h, &pid);
-  if (pid == GetCurrentProcessId()) return TRUE;
+  int is_pin = pid == GetCurrentProcessId() && GetPropW(h, L"PinShot.Pin") != NULL;
+  if (pid == GetCurrentProcessId() && !is_pin) return TRUE;
   BOOL cloaked = FALSE;
   DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked);
   if (cloaked) return TRUE;
@@ -645,10 +646,14 @@ static BOOL CALLBACK window_found(HWND h, LPARAM lp) {
     if (GetLayeredWindowAttributes(h, NULL, &alpha, &flags) && (flags & LWA_ALPHA) && alpha == 0) return TRUE;
   }
   RECT r;
-  if (FAILED(DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r)) && !GetWindowRect(h, &r)) return TRUE;
+  if (is_pin) {
+    if (!GetWindowRect(h, &r)) return TRUE;
+  } else if (FAILED(DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r)) && !GetWindowRect(h, &r)) {
+    return TRUE;
+  }
   if ((r.right - r.left) < 8 || (r.bottom - r.top) < 8 || !rect_on_monitor(r)) return TRUE;
   list_put(l, r, h);
-  EnumChildWindows(h, child_found, lp);
+  if (!is_pin) EnumChildWindows(h, child_found, lp);
   return TRUE;
 }
 
@@ -836,6 +841,7 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   }
   switch (msg) {
     case WM_HOTKEY:
+      AllowSetForegroundWindow(GetCurrentProcessId());
       if (wp == HK_CAPTURE) {
         cap_key_lag = (double)((DWORD)GetTickCount() - (DWORD)GetMessageTime());
         capture_asked("key");
@@ -1230,6 +1236,7 @@ static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PT
       RemovePropW(h, L"PinShot.Clear");
       RemovePropW(h, L"PinShot.Cloaked");
       RemovePropW(h, L"PinShot.Wid");
+      RemovePropW(h, L"PinShot.Pin");
       RemovePropW(h, L"PinShot.HitInset");
       RemoveWindowSubclass(h, own_proc, 1);
       break;
@@ -1307,6 +1314,7 @@ int32_t ps_own(int32_t wid, int32_t topmost) {
 void ps_shadow(int32_t wid) {
   HWND h = own_window(wid);
   if (!h) return;
+  SetPropW(h, L"PinShot.Pin", (HANDLE)1);
   enum DWMNCRENDERINGPOLICY p = DWMNCRP_ENABLED;
   DwmSetWindowAttribute(h, DWMWA_NCRENDERING_POLICY, &p, sizeof p);
   MARGINS m = {1, 1, 1, 1};
@@ -1343,6 +1351,24 @@ void ps_toast_place(int32_t wid, int32_t w, int32_t h) {
   SetWindowPos(hw, HWND_TOPMOST, x, y, ww, wh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
+static void force_foreground(HWND hw) {
+  SetForegroundWindow(hw);
+  if (GetForegroundWindow() != hw) {
+    HWND fg = GetForegroundWindow();
+    DWORD fg_tid = fg ? GetWindowThreadProcessId(fg, NULL) : 0;
+    DWORD cur_tid = GetCurrentThreadId();
+    if (fg_tid && fg_tid != cur_tid) {
+      AttachThreadInput(cur_tid, fg_tid, TRUE);
+      BringWindowToTop(hw);
+      SetForegroundWindow(hw);
+      SetFocus(hw);
+      AttachThreadInput(cur_tid, fg_tid, FALSE);
+      return;
+    }
+  }
+  SetFocus(hw);
+}
+
 void ps_place(int32_t wid, int32_t x, int32_t y, int32_t w, int32_t h, int32_t show, int32_t focus) {
   HWND hw = own_window(wid);
   if (!hw) return;
@@ -1351,8 +1377,7 @@ void ps_place(int32_t wid, int32_t x, int32_t y, int32_t w, int32_t h, int32_t s
   HWND after = show && (GetWindowLongPtrW(hw, GWL_EXSTYLE) & WS_EX_TOPMOST) ? HWND_TOPMOST : (show ? HWND_TOP : NULL);
   SetWindowPos(hw, after, x, y, w, h, f);
   if (show && focus) {
-    SetForegroundWindow(hw);
-    SetFocus(hw);
+    force_foreground(hw);
   }
 }
 
@@ -1417,10 +1442,13 @@ int32_t ps_win_revealed(int32_t wid) {
 void ps_topmost(int32_t wid, int32_t on, int32_t front) {
   HWND h = own_window(wid);
   if (!h) return;
-  SetWindowPos(h, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  UINT flags = SWP_NOMOVE | SWP_NOSIZE | (front ? SWP_SHOWWINDOW : SWP_NOACTIVATE);
+  SetWindowPos(h, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, flags);
   if (front) {
-    if (!on) SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetForegroundWindow(h);
+    if (!on) SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    force_foreground(h);
+    SetPropW(h, L"PinShot.Frames", (HANDLE)(INT_PTR)30);
+    SetTimer(h, 0x5053, 16, NULL);
   }
 }
 

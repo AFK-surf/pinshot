@@ -327,6 +327,14 @@ extern void mb_app_manage_window(int wid);
 extern void mb_host_window_drag(void);
 static NSRunningApplication *previousApp;
 static NSMapTable<NSWindow *, NSScreen *> *windowScreens;
+static NSHashTable<NSWindow *> *pinWindows;
+BOOL ps_is_pin_window_number(NSInteger num) {
+  for (NSWindow *w in pinWindows) {
+    if (w.visible && w.alphaValue > 0.01 && w.windowNumber == num)
+      return YES;
+  }
+  return NO;
+}
 static NSView *mbViewOf(NSWindow *w) {
   for (NSView *sub in w.contentView.subviews) {
     if (sub.acceptsFirstResponder)
@@ -380,7 +388,13 @@ int ps_own(int wid, int top) {
   }
   return 1;
 }
-void ps_shadow(int wid) { mb_app_window_of(wid).hasShadow = YES; }
+void ps_shadow(int wid) {
+  NSWindow *w = mb_app_window_of(wid);
+  if (!w) return;
+  w.hasShadow = YES;
+  if (!pinWindows) pinWindows = [NSHashTable weakObjectsHashTable];
+  [pinWindows addObject:w];
+}
 void ps_place(int wid, int x, int y, int width, int height, int show, int focus) {
   NSWindow *w = mb_app_window_of(wid);
   NSScreen *s = wid ? [windowScreens objectForKey:w] : ps_capture_screen();
@@ -437,9 +451,13 @@ void ps_cloak(int wid, int on) {
 }
 void ps_topmost(int wid, int on, int front) {
   NSWindow *w = mb_app_window_of(wid);
+  if (!w) return;
   w.level = on ? NSFloatingWindowLevel : NSNormalWindowLevel;
-  if (front)
-    [w orderFrontRegardless];
+  if (front) {
+    [NSApp activateIgnoringOtherApps:YES];
+    [w makeKeyAndOrderFront:nil];
+    [w makeFirstResponder:mbViewOf(w)];
+  }
 }
 void ps_toast_place(int wid, int width, int height) {
   NSWindow *w = mb_app_window_of(wid);

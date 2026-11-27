@@ -61,7 +61,48 @@ let pin_n : signals::Ref[Int] = signals::ref_new(0)
 
 let pins_hidden : signals::Ref[Bool] = signals::ref_new(false)
 
+fn bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  let n = a.length()
+  if n != b.length() {
+    return false
+  }
+  for i in 0..<n {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn find_pin_by_png(png : Bytes) -> Option[Pin] {
+  for what in pins.keys() {
+    match pins.get(what) {
+      Some(p) if bytes_eq(p.png, png) => return Some(p)
+      _ => ()
+    }
+  }
+  None
+}
+
 fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.0, start_ocr~ : Bool = false) -> Unit {
+  match find_pin_by_png(png) {
+    Some(existing) => {
+      let cloaked = ui::env("PINSHOT_TEST_CLOAKED") != ""
+      let top = if existing.top.untracked() { 1 } else { 0 }
+      ps_topmost(existing.wid.v, top, if cloaked { 0 } else { 1 })
+      if pins_hidden.v {
+        ps_place_show(existing.wid.v)
+        pins_hidden.v = false
+      }
+      pin_active(existing.wid.v, true)
+      if start_ocr && !existing.ocr_on.untracked() {
+        pin_start_ocr(existing, from_capture=true)
+      }
+      log("pin \{w}x\{h} already open -> focused (\{pins.length()} open)")
+      return
+    }
+    None => ()
+  }
   pin_n.v += 1
   let what = "pin:\{pin_n.v}"
   let key = "mem:" + what

@@ -1,0 +1,15 @@
+test "pin: bytes_eq matches identical images and rejects differing lengths or bytes" {
+  let a = bytes_from_arr([0x89 as Byte, 0x50 as Byte, 0x4E as Byte, 0x47 as Byte])
+  let b = bytes_from_arr([0x89 as Byte, 0x50 as Byte, 0x4E as Byte, 0x47 as Byte])
+  let c = bytes_from_arr([0x89 as Byte, 0x50 as Byte, 0x4E as Byte, 0x48 as Byte])
+  let d = bytes_from_arr([0x89 as Byte, 0x50 as Byte, 0x4E as Byte])
+  if !bytes_eq(a, b) {
+    panic("expected identical bytes to match")
+  }
+  if bytes_eq(a, c) {
+    panic("expected differing byte to fail")
+  }
+  if bytes_eq(a, d) {
+    panic("expected differing length to fail")
+  }
+}

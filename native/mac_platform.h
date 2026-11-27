@@ -16,3 +16,4 @@ NSRect ps_screen_pixels(NSScreen *screen, NSRect frame);
 NSRect ps_screen_points(NSScreen *screen, NSRect pixels);
 void ps_capture_ask(void);
 void ps_bmp_header(uint8_t h[54], int32_t w, int32_t hh);
+BOOL ps_is_pin_window_number(NSInteger num);

@@ -104,8 +104,11 @@ static NSString *windowList(CGDirectDisplayID displayID, CGFloat k) {
     if (layer < 0 || layer >= 20)
       continue;
     NSNumber *pidNum = info[(id)kCGWindowOwnerPID];
-    if (pidNum && pidNum.intValue == ownPID)
-      continue;
+    if (pidNum && pidNum.intValue == ownPID) {
+      NSNumber *num = info[(id)kCGWindowNumber];
+      if (!num || !ps_is_pin_window_number(num.integerValue))
+        continue;
+    }
     NSNumber *alphaNum = info[(id)kCGWindowAlpha];
     if (alphaNum && alphaNum.doubleValue <= 0.01)
       continue;
