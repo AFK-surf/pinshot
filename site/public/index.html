@@ -355,7 +355,7 @@
         <span data-l="zh">下载 Windows 版</span><span data-l="en">Download for Windows</span>
         <span class="meta"><span class="ver">1.0.33</span> · <span class="size-exe">8.6 MB</span></span>
       </a>
-      <a class="btn btn-secondary" id="dl-mac" href="/dl/PinShot-mac.zip">
+      <a class="btn btn-secondary" id="dl-mac" href="/dl/PinShot-mac.dmg">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M8 2.5v8M4.5 7.5 8 11l3.5-3.5M3 13.5h10"/>
         </svg>
@@ -1124,7 +1124,8 @@
       var mb = function (n) { return (n / 1048576).toFixed(1) + " MB"; };
       document.querySelectorAll(".ver").forEach(function (e) { e.textContent = j.version; });
       if (j.setup) document.querySelectorAll(".size-setup").forEach(function (e) { e.textContent = mb(j.setup); });
-      if (j.mac) document.querySelectorAll(".size-mac").forEach(function (e) { e.textContent = mb(j.mac); });
+      var macSz = j.mac_dmg || j.mac;
+      if (macSz) document.querySelectorAll(".size-mac").forEach(function (e) { e.textContent = mb(macSz); });
       if (j.exe) document.querySelectorAll(".size-exe").forEach(function (e) { e.textContent = mb(j.exe); });
     }).catch(function () {});
   })();

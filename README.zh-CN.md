@@ -33,8 +33,8 @@
 
 需要 macOS 14 或更新版本、Apple 芯片（Apple Silicon）。
 
-1. 前往 [pin-shot.pages.dev](https://pin-shot.pages.dev)（或 [Releases](https://github.com/motion-space/pinshot/releases/latest)）下载 `PinShot-mac.zip`。
-2. 解压后将 `PinShot.app` 拖入「应用程序」文件夹并打开。
+1. 前往 [pin-shot.pages.dev](https://pin-shot.pages.dev)（或 [Releases](https://github.com/AFK-surf/pinshot/releases/latest)）下载 `PinShot-mac.dmg`。
+2. 打开 DMG 后将 `PinShot.app` 拖入「应用程序」文件夹并打开。
 3. 首次截图时，在「**系统设置 › 隐私与安全性 › 屏幕与系统音频录制**」（部分系统显示为「屏幕录制」）中允许 PinShot，然后退出并重新打开。若列表中没有 PinShot，点击 **+** 手动选择 `PinShot.app`。
 
 配置与日志位于 `~/Library/Application Support/PinShot/`。正式包使用 AFK AI 的 Developer ID 签名并经 Apple 公证，可直接打开，并像 Windows 版一样自动更新（「设置 › 自动更新」）；此前 ad-hoc 签名的旧版需手动替换一次。本地编译的包为 ad-hoc 签名、不会自动更新，替换后系统可能需要重新授权屏幕录制权限。
@@ -112,7 +112,7 @@ packaging/pack-msix.ps1          # 打包 Microsoft Store MSIX
 pionc build --release . -o out/Release/PinShot
 ```
 
-GitHub Actions 中的 **macOS package** 工作流会在手动触发或推送 `v*` 标签时自动构建并产出 `PinShot-mac.zip`。
+GitHub Actions 中的 **macOS package** 工作流会在手动触发或推送 `v*` 标签时自动构建并产出 `PinShot-mac.dmg`（以及供应用内自动更新使用的 `PinShot-mac.zip`）。
 
 ## 赞助支持
 

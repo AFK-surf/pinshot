@@ -1,7 +1,8 @@
 name: Release
-# A pushed tag v<version> makes the release: pinshot.exe (Windows package) and PinShot-mac.zip (macOS package, signed
-# and notarized) built from the tag and put on its GitHub release, which is made here when it is not there yet (made
-# by hand first, with notes of its own, it is kept and only given the files).
+# A pushed tag v<version> makes the release: pinshot.exe (Windows package), PinShot-mac.dmg (macOS drag-to-Applications
+# installer, signed and notarized) and PinShot-mac.zip (in-app auto-update archive) built from the tag and put on its
+# GitHub release, which is made here when it is not there yet (made by hand first, with notes of its own, it is kept and
+# only given the files).
 on:
   push:
     tags: ['v*']
@@ -63,12 +64,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           ls -l assets
-          (cd assets && sha256sum pinshot.exe PinShot-mac.zip)
+          (cd assets && sha256sum pinshot.exe PinShot-mac.dmg PinShot-mac.zip)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" assets/pinshot.exe assets/PinShot-mac.zip --clobber
+            gh release upload "$GITHUB_REF_NAME" assets/pinshot.exe assets/PinShot-mac.dmg assets/PinShot-mac.zip --clobber
           else
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
-              assets/pinshot.exe assets/PinShot-mac.zip
+              assets/pinshot.exe assets/PinShot-mac.dmg assets/PinShot-mac.zip
           fi
 
   # The download site and the updates: latest.json signed with the release key, pinshot.exe and the Mac build put in

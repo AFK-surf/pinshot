@@ -91,4 +91,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: PinShot-mac-${{ runner.arch }}
-          path: pinshot/out/build/PinShot-mac.zip
+          path: |
+            pinshot/out/build/PinShot-mac.dmg
+            pinshot/out/build/PinShot-mac.zip
+          if-no-files-found: error

@@ -37,6 +37,11 @@ export PINSHOT_ROOT="$root"
 source "$root/packaging/macos/bundle.sh"
 app_bundle "$app"
 codesign --force --deep --sign - "$app"
-rm -f "$root/out/build/PinShot-mac.zip"
+rm -f "$root/out/build/PinShot-mac.zip" "$root/out/build/PinShot-mac.dmg"
 (cd "$root/out/build" && ditto -c -k --sequesterRsrc --keepParent PinShot.app PinShot-mac.zip)
-echo "build-mac.sh: out/build/PinShot-mac.zip ($(wc -c < "$root/out/build/PinShot-mac.zip") bytes)"
+dmg_stage=$(mktemp -d "${TMPDIR:-/tmp}/pinshot-dmg.XXXXXX")
+trap 'rm -rf "$dmg_stage"' EXIT
+ditto "$app" "$dmg_stage/PinShot.app"
+ln -s /Applications "$dmg_stage/Applications"
+hdiutil create -volname "PinShot" -srcfolder "$dmg_stage" -ov -format UDZO -imagekey zlib-level=9 "$root/out/build/PinShot-mac.dmg" >/dev/null
+echo "build-mac.sh: out/build/PinShot-mac.dmg ($(wc -c < "$root/out/build/PinShot-mac.dmg") bytes), PinShot-mac.zip ($(wc -c < "$root/out/build/PinShot-mac.zip") bytes)"
