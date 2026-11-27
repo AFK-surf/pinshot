@@ -785,19 +785,9 @@ moonbit_bytes_t ps_long_info(void) {
   return bytes_of(s, (size_t)n);
 }
 
-typedef struct Held Held;
-Held *ps_held_new(uint8_t *pixels);
-void ps_held_name(Held *h, const uint8_t *at, int32_t w, int32_t hh, int32_t pitch, uint8_t out[44]);
-void ps_held_drop(Held *h, int on_ui_thread);
+void ps_bmp_header(uint8_t h[54], int32_t w, int32_t hh);
 
-#define PREVIEW_SLOTS 12
-static Held *kept[PREVIEW_SLOTS];
-static int turn;
-
-void ps_long_preview_free(void) {
-  for (int i = 0; i < PREVIEW_SLOTS; i++) ps_held_drop(kept[i], 1), kept[i] = NULL;
-  turn = 0;
-}
+void ps_long_preview_free(void) {}
 
 moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) {
   if (!L.out_h || box_w <= 0 || box_h <= 0) return moonbit_make_bytes(0, 0);
@@ -813,16 +803,9 @@ moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) 
   if (pw < 1) pw = 1;
   if (ph < 1) ph = 1;
   if (ph > box_h) ph = box_h;
-  turn = (turn + 1) % PREVIEW_SLOTS;
-  ps_held_drop(kept[turn], 1);
-  kept[turn] = NULL;
-  uint8_t *p = (uint8_t *)malloc((size_t)pw * ph * 4);
-  if (!p) return moonbit_make_bytes(0, 0);
-  kept[turn] = ps_held_new(p);
-  if (!kept[turn]) {
-    free(p);
-    return moonbit_make_bytes(0, 0);
-  }
+  moonbit_bytes_t out = moonbit_make_bytes((int32_t)(54 + (size_t)pw * (size_t)ph * 4), 0);
+  ps_bmp_header(out, pw, ph);
+  uint8_t *p = out + 54;
   for (int y = 0; y < ph; y++) {
     int y0 = from + (int)((double)y * src_h / ph), y1 = from + (int)((double)(y + 1) * src_h / ph);
     if (y1 <= y0) y1 = y0 + 1;
@@ -842,9 +825,7 @@ moonbit_bytes_t ps_long_preview(int32_t box_w, int32_t box_h, int32_t from_row) 
       d[0] = (uint8_t)(b / n), d[1] = (uint8_t)(g / n), d[2] = (uint8_t)(r / n), d[3] = 255;
     }
   }
-  uint8_t out[44];
-  ps_held_name(kept[turn], p, pw, ph, pw * 4, out);
-  return bytes_of(out, sizeof out);
+  return out;
 }
 
 moonbit_bytes_t ps_long_png(void) {

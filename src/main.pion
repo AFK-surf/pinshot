@@ -92,7 +92,7 @@ pub fn main(_world : World) -> Int {
   apply_keys()
   start_updates(updated, installed=installed)
   hostapi::window_hold()
-  hostapi::window_setup(100.0, 100.0, 320.0, 200.0, false)
+  hostapi::window_setup(100.0, 100.0, 320.0, 200.0, inset=false)
   if again == 1 {
     started_with_settings.v = true
   } else if installed || (ui::env("PINSHOT_TEST") != "" && ui::env("PINSHOT_TEST_WELCOME") != "") {

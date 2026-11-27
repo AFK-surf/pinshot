@@ -1,4 +1,5 @@
 import "hostapi"
+import "kit"
 import "signals"
 import "ui"
 import "view"
@@ -53,7 +54,7 @@ let long_confirm_reset : signals::Signal[Bool] = signals::signal(false)
 
 let long_reset_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
-let long_tips : TipScope = TipScope::new()
+let long_tips : kit::TipLayer = kit::TipLayer::new()
 
 let long_preview_n : signals::Ref[Int] = signals::ref_new(0)
 
@@ -398,11 +399,12 @@ fn long_preview_make() -> Unit {
     (long_box_h.v * k).round().to_int(),
     from_row,
   )
-  if b.length() < 28 {
+  if b.length() < 54 {
     return
   }
-  let pw = le32(b, 16)
-  let ph = le32(b, 20)
+  let pw = le32(b, 18)
+  let raw_h = le32(b, 22)
+  let ph = if raw_h < 0 { -raw_h } else { raw_h }
   long_preview_n.v += 1
   let key = "mem:long/\{long_preview_n.v}"
   ui::add_image(key, b)
@@ -542,7 +544,7 @@ fn long_gone() -> Unit {
     ps_capture_open(0)
   }
   long_disarm_reset()
-  long_tips.off()
+  long_tips.dismiss()
   long_clear_preview_images()
   long_root.v = None
   ps_long_preview_free()
@@ -742,7 +744,7 @@ fn long_window(root : view::View) -> Unit {
       long_copy_button(bar)
     })
   })
-  long_tips.mount(outer)
+  let _ = long_tips.mount(outer)
   })
 
   let on = fn(name : String, f : () -> Unit) {

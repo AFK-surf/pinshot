@@ -1,4 +1,5 @@
 import "hostapi"
+import "kit"
 import "motion"
 import "pixels"
 import "signals"
@@ -413,7 +414,7 @@ fn tool_button(
   dim~ : () -> Bool  = fn() { false },
   strong~ : Bool = false,
   tip~ : Bool = true,
-  tips~ : TipScope = bar_tips,
+  tips~ : kit::TipLayer = bar_tips,
   keys~ : () -> String  = fn() { "" },
   slot_views~ : Option[(Int, Map[Int, view::View])] = None,
 ) -> Unit {
@@ -429,7 +430,7 @@ fn tool_group_button(
   dim~ : () -> Bool  = fn() { false },
   strong~ : Bool = false,
   tip~ : Bool = true,
-  tips~ : TipScope = bar_tips,
+  tips~ : kit::TipLayer = bar_tips,
   keys~ : () -> String  = fn() { "" },
   slot_views~ : Option[(Int, Map[Int, view::View])] = None,
 ) -> Unit {
@@ -456,7 +457,7 @@ fn tool_group_button(
     .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr(label_fn()))) }))
     .on_press(fn() {
       if tip {
-        tips.off()
+        tips.dismiss()
       }
       if !dim() {
         press()
@@ -473,7 +474,7 @@ fn tool_group_button(
       }
     }))
     if tip {
-      tips.follow(b, label_fn, view::Side::Top, keys=keys)
+      ps_tip_follow(tips, b, label_fn, view::Side::Top, keys=keys)
     }
     let _ = b.box(fn(g) {
       let _ = g
@@ -977,359 +978,97 @@ fn glyph(name : String) -> pixels::Vector {
   }
 }
 
-let tip_wait : Double = 400.0
+let bar_tips : kit::TipLayer = kit::TipLayer::new()
 
-let tip_linger : Double = 300.0
-
-let tip_in_ms : Double = 120.0
-
-let tip_out_ms : Double = 120.0
-
-let tip_out_scale : Double = 0.97
-
-struct TipScope {
-  layer : signals::Ref[Option[view::View]]
-  owner : signals::Signal[Int]
-  next_id : signals::Ref[Int]
-  hands : motion::Handoff
-  went_at : signals::Ref[Double]
-  shut_now : signals::Ref[() -> Unit]
-}
-
-fn TipScope::new() -> TipScope {
-  TipScope::{
-    layer: signals::ref_new(None),
-    owner: signals::signal(0),
-    next_id: signals::ref_new(0),
-    hands: motion::Handoff::new(within=tip_linger),
-    went_at: signals::ref_new(-1.0e18),
-    shut_now: signals::ref_new(fn() {  }),
+fn ps_tip_look() -> kit::TipLook {
+  kit::TipLook::{
+    ground: 0x26282FF7L,
+    ink: 0xECEEF2FFL,
+    edge: (1.0, 0xFFFFFF18L),
+    shadow: (8.0, 2.0, 0x00000048L),
+    radius: 10.0,
+    size: 12.0,
+    line: 16.0,
+    weight: 500,
+    wrap: false,
+    pad_x: 10.0,
+    pad_y: 5.0,
+    max_width: 300.0,
+    cap_ground: 0xFFFFFF1FL,
+    cap_ink: 0xE6E8EDFFL,
+    cap_radius: 6.0,
+    cap_size: 11.0,
+    cap_line: 14.0,
+    cap_weight: 500,
+    cap_pad_x: 5.0,
+    cap_over: 1.5,
+    cap_in: 3.5,
+    cap_gap: 2.0,
+    cap_label_gap: 7.0,
+    scale_from: 1.0,
+    exit_scale: 0.97,
   }
 }
 
-fn TipScope::off(self : TipScope) -> Unit {
-  self.owner.set(0)
-  (self.shut_now.v)()
-  self.shut_now.v = fn() {  }
-  self.went_at.v = -1.0e18
-}
-
-fn TipScope::mount(self : TipScope, parent : view::View) -> Unit {
-  let _ = parent.box(fn(l) {
-    let _ = l.over(view::Live::Is(true)).presses(view::Live::Is(false)).points(view::Live::Is(false))
-    self.layer.v = Some(l)
-    let _ = l.owns(fn() {
-      self.off()
-      self.layer.v = None
-    })
-  })
-}
-
-let bar_tips : TipScope = TipScope::new()
-
-struct TipFade {
-  mut from : Double
-  mut to : Double
-  mut start : Double
-  mut ms : Double
-  mut ease : ui::Ease
-  moving : signals::Signal[Bool]
-  mut due : Option[() -> Unit]
-}
-
-fn TipFade::new() -> TipFade {
-  TipFade::{ from: 0.0, to: 0.0, start: 0.0, ms: 0.0, ease: ui::Ease::Out, moving: signals::signal_by(false, fn(a, b) { a == b }), due: None }
-}
-
-fn TipFade::at(self : TipFade, t : Double) -> Double {
-  if self.ms <= 0.0 || t >= self.start + self.ms {
-    return self.to
+fn ps_tip_shortcut(keys : String) -> String {
+  if hostapi::platform() != 0 || keys == "" {
+    return keys
   }
-  let p = (t - self.start) / self.ms
-  self.from + (self.to - self.from) * self.ease.at(if p < 0.0 { 0.0 } else { p })
-}
-
-fn TipFade::stop(self : TipFade) -> Unit {
-  match self.due {
-    Some(s) => s()
-    None => ()
-  }
-  self.due = None
-}
-
-fn TipFade::go(self : TipFade, node : view::View, to : Double, at : Double, ms : Double, ease : ui::Ease) -> Unit {
-  self.from = self.at(at)
-  self.to = to
-  self.start = at
-  self.ms = ms
-  self.ease = ease
-  self.stop()
-  self.moving.set(true)
-  self.due = Some(node.at_moment(at + ms, fn() { self.moving.set(false) }))
-}
-
-fn TipFade::put(self : TipFade, to : Double) -> Unit {
-  self.from = to
-  self.to = to
-  self.start = 0.0
-  self.ms = 0.0
-  self.stop()
-  self.moving.set(false)
-}
-
-fn TipFade::shown(self : TipFade, v : view::View) -> Double {
-  if self.moving.get() {
-    self.at(v.drawn_at())
-  } else {
-    self.to
-  }
-}
-
-fn tip_side_tag(side : view::Side) -> Int {
-  match side {
-    Top => 0
-    Right => 1
-    Bottom => 2
-    Left => 3
-  }
-}
-
-fn tip_off() -> Unit {
-  bar_tips.off()
-}
-
-fn tip_key_caps(keys : String) -> Array[String] {
-  let caps : Array[String] = []
-  let trimmed = trim_ws(keys)
-  if trimmed == "" {
-    return caps
-  }
-  let on_mac = hostapi::platform() == 0
-  let chars = str_chars(trimmed)
-  let is_mark = fn(c : Char) { c == '⌃' || c == '⌥' || c == '⇧' || c == '⌘' }
-  if is_mark(chars[0]) {
-    let mut at = 0
-    while at < chars.length() && is_mark(chars[at]) {
-      caps.push(chars[at].to_string())
-      at += 1
-    }
-    let rest = trim_ws(chars_to_string(chars, at, chars.length()))
-    if rest != "" {
-      caps.push(rest)
-    }
-    return caps
-  }
-  let mut part : Array[Char] = []
-  for c in chars {
-    if c == '+' && part.length() > 0 {
-      let s = trim_ws(chars_to_string(part, 0, part.length()))
-      caps.push(if on_mac && s == "Ctrl" { "⌘" } else if on_mac && s == "Alt" { "⌥" } else if on_mac && s == "Shift" { "⇧" } else { s })
-      part = []
-    } else {
-      part.push(c)
+  let parts = keys.split("+")
+  let out : Array[String] = []
+  for raw in parts {
+    let s = trim_ws(raw)
+    if s == "Ctrl" {
+      out.push("⌘")
+    } else if s == "Alt" {
+      out.push("⌥")
+    } else if s == "Shift" {
+      out.push("⇧")
+    } else if s == "Enter" {
+      out.push("Return")
+    } else if s != "" {
+      out.push(s)
     }
   }
-  if part.length() > 0 {
-    let s = trim_ws(chars_to_string(part, 0, part.length()))
-    caps.push(if on_mac && s == "Enter" { "Return" } else { s })
+  let sb = StringBuilder::new()
+  for i, p in out {
+    if i > 0 {
+      sb.write_char('+')
+    }
+    sb.write_string(p)
   }
-  caps
+  sb.to_string()
 }
 
-fn TipScope::follow(
-  self : TipScope,
+fn ps_tip_follow(
+  tips : kit::TipLayer,
   b : view::View,
   label : () -> String,
   side : view::Side,
   keys~ : () -> String  = fn() { "" },
   live~ : () -> Bool  = fn() { true },
 ) -> Unit {
-  let anchor_id = b.id()
-  self.next_id.v = self.next_id.v + 1
-  let id = self.next_id.v
-  let fade = TipFade::new()
-  let open : signals::Signal[Bool] = signals::signal_by(false, fn(a, b) { a == b })
-  let glide = self.hands.part(
-    fn(t) {
-      if signals::untracked(fn() { self.owner.get() == id }) {
-        fade.at(t)
-      } else {
-        0.0
-      }
-    },
-    tag=tip_side_tag(side),
-    gave=fn() {
-      fade.put(0.0)
-      open.set(false)
-    },
+  let _ = kit::tip_node(
+    tips,
+    b,
+    fn() { tr(label()) },
+    side=side,
+    gap=6.0,
+    edge_pad=4.0,
+    shortcut=fn() { ps_tip_shortcut(keys()) },
+    look=ps_tip_look,
+    disabled=fn() { !live() },
   )
-  let made = signals::ref_new(false)
-  let holder_v : signals::Ref[Option[view::View]] = signals::ref_new(None)
-  let shut = signals::ref_new(false)
-  let rest : signals::Ref[Option[() -> Unit]] = signals::ref_new(None)
-  let stop_rest = fn() {
-    match rest.v {
-      Some(cancel) => cancel()
-      None => ()
-    }
-    rest.v = None
-  }
-  let make = fn() -> Bool {
-    let l = match self.layer.v {
-      Some(_v) => _v
-      None => { return false }
-    }
-    let holder = l.box(fn(h) { let _ = h.transitions_only().over(view::Live::Is(true)) }).lives_with(b)
-    holder_v.v = Some(holder)
-    holder.show(fn() { open.get() }, leave=tip_out_ms, fn(t) {
-      let caps = tip_key_caps(signals::untracked(keys))
-      let has_keys = caps.length() > 0
-      let _ = t
-      .beside(anchor_id, side=side, along=view::Along::Middle, offset=6.0, padding=4.0)
-      .presses(view::Live::Is(false))
-      .points(view::Live::Is(false))
-      .padding(view::Live::Is(if has_keys { (10.0, 4.0, 4.0, 4.0) } else { (10.0, 5.0, 10.0, 5.0) }))
-      .radius(view::Live::Is(10.0))
-      .ground(view::Live::Is(0x26282FF7L))
-      .edge(view::Live::Is((1.0, 0xFFFFFF18L)))
-      .shadow(view::Live::Is((8.0, 2.0, 0x00000048L)))
-      .alpha(view::Live::By(fn() {
-        let a = if self.owner.get() == id { fade.shown(t) } else { 0.0 }
-        if a * 2.0 < 1.0 {
-          a * 2.0
-        } else {
-          1.0
-        }
-      }))
-      .scale(
-        view::Live::By(fn() {
-          let a = fade.shown(t)
-          if fade.to > 0.5 {
-            1.0
-          } else {
-            tip_out_scale + (1.0 - tip_out_scale) * a
-          }
-        }),
-        about=view::Pivot::FromBeside,
-      )
-      .hides(view::Live::By(fn() { self.owner.get() != id }))
-      let content = t.box(fn(content) {
-        let _ = content
-        .row(view::Live::Is(true))
-        .gap(view::Live::Is(7.0))
-        .lines_up(view::Live::Is(Some(view::Along::Middle)))
-        .alpha(view::Live::By(fn() {
-          let a = fade.shown(t)
-          let g = if a * 2.0 < 1.0 { a * 2.0 } else { 1.0 }
-          let w = if a * 2.0 - 1.0 > 0.0 { a * 2.0 - 1.0 } else { 0.0 }
-          if g > 0.0 {
-            w / g
-          } else {
-            0.0
-          }
-        }))
-        let _ = content.box(fn(w) {
-          let _ = w
-          .padding(view::Live::Is((0.0, 1.0, 0.0, 1.0)))
-          .words(view::Live::By(fn() { tr(label()) }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-          .ink(view::Live::Is(0xECEEF2FFL))
-        })
-        if has_keys {
-          let _ = content.box(fn(q) {
-            let _ = q.row(view::Live::Is(true)).gap(view::Live::Is(2.0)).lines_up(view::Live::Is(Some(view::Along::Middle)))
-            for cap in caps {
-              let _ = q.box(fn(k) {
-                let _ = k
-                .height(view::Live::Is(Some(19.0)))
-                .min_width(view::Live::Is(Some(19.0)))
-                .padding(view::Live::Is((5.0, 0.0, 5.0, 0.0)))
-                .radius(view::Live::Is(6.0))
-                .ground(view::Live::Is(0xFFFFFF1FL))
-                .lines_up(view::Live::Is(Some(view::Along::Middle)))
-                .lies_along(view::Live::Is(view::Lies::Middle))
-                let _ = k.box(fn(kw) {
-                  let _ = kw
-                  .words(view::Live::Is(cap), look=view::WordsLook::{ ..view::words_plain, size: 11.0, weight: 500, line: 14.0, wrap: false })
-                  .ink(view::Live::Is(0xE6E8EDFFL))
-                })
-              })
-            }
-          })
-        }
-      })
-      glide.draws(t, carries=content)
-    })
-    true
-  }
-  let set_open = fn(on : Bool) {
-    if on == open.untracked() {
-      return
-    }
-    let at = b.cause_at()
-    if on {
-      // Take over from the previous tooltip BEFORE claiming owner, so prev's seen(at) still sees it as active.
-      let taken = glide.came(at, motion::hand_spring)
-      if !made.v {
-        made.v = make()
-      }
-      if made.v {
-        self.owner.set(id)
-        self.shut_now.v = fn() {
-          fade.put(0.0)
-          glide.still()
-          open.set(false)
-        }
-      }
-      match taken {
-        Some(_) => fade.put(1.0)
-        None => fade.go(b, 1.0, at, tip_in_ms, ui::Ease::Out)
-      }
-    } else {
-      fade.go(b, 0.0, at, tip_out_ms, ui::Ease::Leave)
-      self.went_at.v = at
-      glide.left(at)
-    }
-    match holder_v.v {
-      Some(h) if h.alive() => view::transition(within=h, fn() { open.set(on) })
-      _ => open.set(on)
-    }
-  }
-  b.reacts(fn() { (b.pointed(), b.pressed(), live()) }, fn(st) {
-    let (pointed, pressed, ok) = st
-    let at = b.cause_at()
-    stop_rest()
-    if pressed {
-      shut.v = true
-    } else if !pointed {
-      shut.v = false
-    }
-    if !ok || shut.v || !pointed {
-      set_open(false)
-    } else if open.untracked() {
-      self.owner.set(id)
-    } else if at < self.went_at.v + tip_linger || glide.other_near(at) {
-      set_open(true)
-    } else {
-      rest.v = Some(
-        b.at_moment(at + tip_wait, fn() {
-          if b.pointed() && !b.pressed() && !shut.v && signals::untracked(live) {
-            set_open(true)
-          }
-        }),
-      )
-    }
-  })
-  let _ = b.owns(fn() {
-    stop_rest()
-    fade.stop()
-    glide.gone()
-  })
+}
+
+fn tip_off() -> Unit {
+  bar_tips.dismiss()
 }
 
 fn tip_follows(b : view::View, label : () -> String, side : view::Side, keys~ : () -> String  = fn() { "" }) -> Unit {
-  bar_tips.follow(b, label, side, keys=keys)
+  ps_tip_follow(bar_tips, b, label, side, keys=keys)
 }
 
 fn bar_tip_node(o : view::View) -> Unit {
-  bar_tips.mount(o)
+  let _ = bar_tips.mount(o)
 }

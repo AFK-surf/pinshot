@@ -134,3 +134,56 @@ test "overlay: discard confirm pill wraps content width and anchors to cursor (r
   overlay_discard_pill.v = None
   t.dispose()
 }
+
+test "toolbar: ps_tip_follow uses kit::tip_node with 400ms delay, warm skip, Esc priority, and live guard" {
+  let tips = kit::TipLayer::new()
+  let live_a = signals::signal(true)
+  let root_esc = view::ref_new(false)
+  let t = ui::Tester::tree(fn(root : view::View) {
+    let _ = root.keymap(view::Live::Is(view::Keymap::new([
+      view::Binding::{ keys: [view::Stroke::{ code: ui::key_escape, mods: 0 }], action: "close", when: view::KeyWhen::Always },
+    ])))
+    let _ = root.on_action("close", fn(_) {
+      root_esc.v = true
+      true
+    })
+    let _ = root.box(fn(row) {
+      let _ = row.row(view::Live::Is(true)).gap(view::Live::Is(8.0)).padding(view::Live::Is((40.0, 40.0, 0.0, 0.0)))
+      let _ = row.box(fn(b1) {
+        let _ = b1.width(view::Live::Is(Some(32.0))).height(view::Live::Is(Some(32.0))).presses(view::Live::Is(true))
+        ps_tip_follow(tips, b1, fn() { "矩形" }, view::Side::Bottom, keys=fn() { "Ctrl+S" }, live=fn() { live_a.get() })
+      })
+      let _ = row.box(fn(b2) {
+        let _ = b2.width(view::Live::Is(Some(32.0))).height(view::Live::Is(Some(32.0))).presses(view::Live::Is(true))
+        ps_tip_follow(tips, b2, fn() { "画笔" }, view::Side::Bottom)
+      })
+    })
+    let _ = tips.mount(root)
+  }, width=400.0, height=200.0)
+  t.frame()
+
+  t.move_to(56.0, 56.0)
+  t.frame(ms=350.0)
+  if t.find(tr("矩形")).is_some() { panic("tip appeared before 400ms") }
+  t.frame(ms=80.0)
+  t.frame(ms=150.0)
+  if t.find(tr("矩形")).is_none() { panic("tip did not appear after 400ms") }
+
+  t.move_to(96.0, 56.0)
+  t.frame(ms=20.0)
+  if t.find(tr("画笔")).is_none() { panic("neighbour tip did not warm-skip") }
+
+  t.key(ui::key_escape)
+  t.frame(ms=200.0)
+  if root_esc.v { panic("Esc leaked to root keymap while tip was open") }
+  if t.find(tr("画笔")).is_some() { panic("tip remained open after Esc") }
+
+  t.move_to(10.0, 10.0)
+  t.frame(ms=20.0)
+  live_a.set(false)
+  t.move_to(56.0, 56.0)
+  t.frame(ms=500.0)
+  if t.find(tr("矩形")).is_some() { panic("tip appeared while live=false") }
+
+  t.dispose()
+}

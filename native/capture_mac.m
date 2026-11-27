@@ -1,53 +1,43 @@
 #import "mac_platform.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
-#import <stdatomic.h>
 
-struct PSHeld {
-  uint8_t *pixels;
-  atomic_int refs;
-};
-
-static void held_hook(void *ctx, int op) {
-  PSHeld *h = (PSHeld *)ctx;
-  if (!h)
-    return;
-  if (op)
-    atomic_fetch_add(&h->refs, 1);
-  else
-    ps_held_drop(h);
+void ps_bmp_header(uint8_t h[54], int32_t w, int32_t hh) {
+  memset(h, 0, 54);
+  uint32_t img = (uint32_t)((size_t)w * (size_t)hh * 4);
+  uint32_t size = 54u + img, off = 54u, hsize = 40u;
+  int32_t neg_h = -hh;
+  uint16_t planes = 1, bits = 32;
+  h[0] = 'B';
+  h[1] = 'M';
+  memcpy(h + 2, &size, 4);
+  memcpy(h + 10, &off, 4);
+  memcpy(h + 14, &hsize, 4);
+  memcpy(h + 18, &w, 4);
+  memcpy(h + 22, &neg_h, 4);
+  memcpy(h + 26, &planes, 2);
+  memcpy(h + 28, &bits, 2);
+  memcpy(h + 34, &img, 4);
 }
 
-PSHeld *ps_held_new(uint8_t *pixels) {
-  PSHeld *h = (PSHeld *)calloc(1, sizeof *h);
-  if (!h)
-    return NULL;
-  h->pixels = pixels;
-  atomic_init(&h->refs, 1);
-  return h;
-}
-
-void ps_held_name(PSHeld *h, const uint8_t *at, int32_t w, int32_t hh, int32_t pitch, uint8_t out[44]) {
-  uint64_t a = (uint64_t)(uintptr_t)at, fn = (uint64_t)(uintptr_t)held_hook, ctx = (uint64_t)(uintptr_t)h;
-  memcpy(out, "MBRAWPTR", 8);
-  memcpy(out + 8, &a, 8);
-  memcpy(out + 16, &w, 4);
-  memcpy(out + 20, &hh, 4);
-  memcpy(out + 24, &pitch, 4);
-  memcpy(out + 28, &fn, 8);
-  memcpy(out + 36, &ctx, 8);
-}
-
-void ps_held_drop(PSHeld *h) {
-  if (!h)
-    return;
-  if (atomic_fetch_sub(&h->refs, 1) == 1) {
-    free(h->pixels);
-    free(h);
+static moonbit_bytes_t ps_raw_bmp(const uint8_t *bits, int32_t w, int32_t hh, int32_t pitch) {
+  if (!bits || w <= 0 || hh <= 0)
+    return moonbit_make_bytes(0, 0);
+  size_t row = (size_t)w * 4;
+  if ((size_t)pitch < row)
+    return moonbit_make_bytes(0, 0);
+  size_t img = row * (size_t)hh;
+  moonbit_bytes_t b = moonbit_make_bytes((int32_t)(54 + img), 0);
+  ps_bmp_header(b, w, hh);
+  if ((size_t)pitch == row) {
+    memcpy(b + 54, bits, img);
+  } else {
+    for (int32_t y = 0; y < hh; y++)
+      memcpy(b + 54 + (size_t)y * row, bits + (size_t)y * (size_t)pitch, row);
   }
+  return b;
 }
 
 static BOOL pending, captureOpen;
-static PSHeld *capHeld;
 static uint8_t *capBits;
 static int width, height, pitch;
 static double elapsed;
@@ -86,11 +76,9 @@ NSScreen *ps_capture_screen(void) { return capturedScreen; }
 
 void ps_capture_release(void) {
   capturedScreen = nil;
-  if (capHeld) {
-    PSHeld *h = capHeld;
-    capHeld = NULL;
+  if (capBits) {
+    free(capBits);
     capBits = NULL;
-    ps_held_drop(h);
   }
   windows = nil;
   width = height = pitch = 0;
@@ -160,12 +148,6 @@ static BOOL keepImage(CGImageRef image) {
   CGContextSetBlendMode(ctx, kCGBlendModeCopy);
   CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), image);
   CGContextRelease(ctx);
-  PSHeld *held = ps_held_new(buf);
-  if (!held) {
-    free(buf);
-    return NO;
-  }
-  capHeld = held;
   capBits = buf;
   width = w;
   height = h;
@@ -284,18 +266,14 @@ int ps_capture_now(void) {
   return success;
 }
 moonbit_bytes_t ps_capture_info(void) {
-  return ps_string(capHeld ? [NSString stringWithFormat:@"%.0f,%.0f,%d,%d,%.0f,%.2f,sck", bounds.origin.x,
+  return ps_string(capBits ? [NSString stringWithFormat:@"%.0f,%.0f,%d,%d,%.0f,%.2f,sck", bounds.origin.x,
                                                         bounds.origin.y, width, height, scale * 96, elapsed]
                            : @"");
 }
 moonbit_bytes_t ps_capture_take(void) {
-  if (!capHeld || !capBits || width <= 0 || height <= 0)
+  if (!capBits || width <= 0 || height <= 0)
     return moonbit_make_bytes(0, 0);
-  uint8_t d[44];
-  ps_held_name(capHeld, capBits, width, height, pitch, d);
-  moonbit_bytes_t b = moonbit_make_bytes(44, 0);
-  memcpy(b, d, 44);
-  return b;
+  return ps_raw_bmp(capBits, width, height, pitch);
 }
 moonbit_bytes_t ps_windows(void) { return ps_string(windows); }
 int ps_window_shows(int of, int i, int x, int y) {
