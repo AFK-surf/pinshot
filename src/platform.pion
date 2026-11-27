@@ -213,6 +213,7 @@ extern "C" fn c_ps_rec_preview() -> Ptr = "ps_rec_preview"
 extern "C" fn ps_rec_end() -> Unit = "ps_rec_end"
 extern "C" fn ps_rec_exclude(wid : Int) -> Unit = "ps_rec_exclude"
 extern "C" fn ps_next_win_clear() -> Unit = "ps_next_win_clear"
+extern "C" fn ps_next_win_clear_active() -> Unit = "ps_next_win_clear_active"
 extern "C" fn ps_rec_input_show(on : Int) -> Unit = "ps_rec_input_show"
 
 extern "C" fn ps_install_kind() -> Int = "ps_install_kind"

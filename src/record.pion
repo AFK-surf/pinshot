@@ -157,7 +157,11 @@ fn rec_fps_place() -> Unit {
   let rx = r[0].round().to_int()
   let ry = r[1].round().to_int()
   let rh = r[3].round().to_int()
-  let card_x = rx + ((rec_pad_l + 62.0) * k).round().to_int()
+  let content_x = match rec_content.v {
+    Some(c) => c.laid_window_now().0
+    None => 0.0
+  }
+  let card_x = rx + ((content_x + rec_pad_l + 62.0) * k).round().to_int()
   let px = clampi(card_x - (rec_fps_pad_x * k).round().to_int(), m.x, m.right() - pw)
   let py = if upward {
     let bar_top = ry + (rec_pad_t * k).round().to_int()
@@ -459,7 +463,7 @@ fn rec_out() -> Unit {
   rec_clear_preview()
   signals::end_batch()
   ps_rec_input_show(if rec_input.untracked() { 1 } else { 0 })
-  ps_next_win_clear()
+  ps_next_win_clear_active()
   let wid = ui::window_open_here("rec")
   if wid <= 0 {
     log("rec: no window")
@@ -488,6 +492,19 @@ fn rec_out() -> Unit {
   log("rec: ready \{part.w}x\{part.h} at \{part.x},\{part.y}")
 }
 
+// The window kept where its card (not its transparent halo) stays in the work area: the halo may go past the edge.
+fn rec_clamp_x(x : Int, w : Int) -> Int {
+  let wk = rec_work.v
+  let k = rec_scale.v
+  clampi(x, wk.x - (rec_pad_l * k).round().to_int(), wk.right() - w + (rec_pad_r * k).round().to_int())
+}
+
+fn rec_clamp_y(y : Int, h : Int) -> Int {
+  let wk = rec_work.v
+  let k = rec_scale.v
+  clampi(y, wk.y - (rec_pad_t * k).round().to_int(), wk.bottom() - h + (rec_pad_b * k).round().to_int())
+}
+
 fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
   let m = rec_mon.v
   let k = rec_scale.v
@@ -495,8 +512,8 @@ fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
     Some((bx, by, bw, bh)) => {
       let ww = ((bw + rec_pad_l + rec_pad_r) * k).ceil().to_int()
       let hh = ((bh + rec_pad_t + rec_pad_b) * k).ceil().to_int()
-      let xx = clampi(m.x + ((bx - rec_pad_l) * k).round().to_int(), m.x, m.right() - ww)
-      let yy = clampi(m.y + ((by - rec_pad_t) * k).round().to_int(), m.y, m.bottom() - hh)
+      let xx = rec_clamp_x(m.x + ((bx - rec_pad_l) * k).round().to_int(), ww)
+      let yy = rec_clamp_y(m.y + ((by - rec_pad_t) * k).round().to_int(), hh)
       (xx, yy, ww, hh)
     }
     None => {
@@ -507,13 +524,13 @@ fn rec_place_initial(pt_w : Double, pt_h : Double, focus : Bool) -> Unit {
       let gap = (8.0 * k).round().to_int()
       let pad_t = (rec_pad_t * k).round().to_int()
       let pad_b = (rec_pad_b * k).round().to_int()
-      let xx = clampi(p.x + (p.w - ww) / 2, wk.x, wk.right() - ww)
-      let yy = if p.bottom() + gap - pad_t + hh <= wk.bottom() {
+      let xx = rec_clamp_x(p.x + p.w - ww + (rec_pad_r * k).round().to_int(), ww)
+      let yy = if p.bottom() + gap - pad_t + hh - pad_b <= wk.bottom() {
         p.bottom() + gap - pad_t
-      } else if p.y - gap + pad_b - hh >= wk.y {
+      } else if p.y - gap + pad_b - hh + pad_t >= wk.y {
         p.y - gap + pad_b - hh
       } else {
-        clampi(p.y + (p.h - hh) / 2, wk.y, wk.bottom() - hh)
+        rec_clamp_y(p.y + (p.h - hh) / 2, hh)
       }
       (xx, yy, ww, hh)
     }
@@ -537,7 +554,6 @@ fn rec_fit_window(focus : Bool, allow_shrink~ : Bool = false) -> Unit {
   if cw < 20.0 || ch < 20.0 {
     return
   }
-  let m = rec_work.v
   let k = rec_scale.v
   let w = (cw * k).ceil().to_int()
   let h = (ch * k).ceil().to_int()
@@ -577,19 +593,21 @@ fn rec_fit_window(focus : Bool, allow_shrink~ : Bool = false) -> Unit {
     let cur_x = r[0].round().to_int()
     let cur_y = r[1].round().to_int()
     let next_y = if anchor_bottom {
-      clampi(cur_y + ph - h, m.y, m.bottom() - h)
+      rec_clamp_y(cur_y + ph - h, h)
     } else {
-      clampi(cur_y, m.y, m.bottom() - h)
+      rec_clamp_y(cur_y, h)
     }
+    // (the card is laid at the window's right (rec_window's page): its right edge, under the selection's, kept)
+    let cur_w = r[2].round().to_int()
     if shrinking || (w - pw).abs() <= 24 {
-      (clampi(cur_x, m.x, m.right() - w), next_y)
+      (rec_clamp_x(cur_x + cur_w - w, w), next_y)
     } else {
       let cx = (r[0] + r[2] / 2.0).round().to_int()
-      (clampi(cx - w / 2, m.x, m.right() - w), next_y)
+      (rec_clamp_x(cx - w / 2, w), next_y)
     }
   } else {
     let p = rec_part.v
-    (clampi(p.x + p.w / 2 - w / 2, m.x, m.right() - w), clampi(p.bottom(), m.y, m.bottom() - h))
+    (rec_clamp_x(p.x + p.w / 2 - w / 2, w), rec_clamp_y(p.bottom(), h))
   }
   rec_placed_size.v = (w, h)
   let do_focus = focus && ui::env("PINSHOT_TEST_CLOAKED") == ""
@@ -1487,7 +1505,7 @@ fn rec_window(root : view::View) -> Unit {
   let _ = root.box(fn(page) {
     let _ = page
     .over(view::Live::Is(true))
-    .lines_up(view::Live::Is(Some(view::Along::Start)))
+    .lines_up(view::Live::Is(Some(view::Along::End)))
     .presses(view::Live::Is(true))
     .on_press(fn() {
       if rec_fps_open.untracked() {

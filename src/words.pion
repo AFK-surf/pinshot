@@ -51,7 +51,8 @@ fn words_editor(layer : view::View) -> Unit {
         let size = words_pt(size_now.get())
         let mut longest = 0
         for l in words_typed.get().split("\n") {
-          if l.length() > longest { longest = l.length() }
+          let n = str_chars(l).length()
+          if n > longest { longest = n }
         }
         Some(dmax(120.0, longest.to_double() * size * 1.05 + size * 2.0))
       }))

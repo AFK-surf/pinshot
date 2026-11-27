@@ -2318,3 +2318,5 @@ void ps_rec_exclude(int32_t wid) {
 }
 
 void ps_next_win_clear(void) {}
+
+void ps_next_win_clear_active(void) {}
