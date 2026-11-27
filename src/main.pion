@@ -101,7 +101,7 @@ pub fn main(_world : World) -> Int {
   let _ = ui::on_before_frame(fn() {
     overlay_first_frame()
   })
-  ui::run("PinShot", overlay_window, theme=app_theme)
+  ui::run("PinShot", overlay_window, theme=app_theme, transitions_only=false)
   0
 }
 
