@@ -113,14 +113,6 @@ static double helper_ms, helper_white;
 static int helper_said_half;
 
 static Shot cap;
-
-typedef struct Held {
-  Shot s;
-  uint8_t *pixels;
-  volatile LONG refs;
-} Held;
-#define WM_PS_HELD_FREE (WM_APP + 47)
-static Held *cap_held;
 static volatile LONG cap_busy;
 static int cap_ok;
 static int cap_x, cap_y, cap_w, cap_h, cap_dpi;
@@ -163,54 +155,42 @@ static void shot_free(Shot *s) {
   memset(s, 0, sizeof *s);
 }
 
-static void held_free(Held *h) {
-  shot_free(&h->s);
-  free(h->pixels);
-  free(h);
-}
-
 static HWND tray_hwnd;
-void ps_held_drop(Held *h, int on_ui_thread) {
-  if (!h || InterlockedDecrement(&h->refs) != 0) return;
-  if (on_ui_thread || !tray_hwnd || !PostMessageW(tray_hwnd, WM_PS_HELD_FREE, 0, (LPARAM)h)) held_free(h);
+
+void ps_bmp_header(uint8_t h[54], int32_t w, int32_t hh) {
+  memset(h, 0, 54);
+  uint32_t img = (uint32_t)((size_t)w * (size_t)hh * 4);
+  uint32_t size = 54u + img, off = 54u, hsize = 40u;
+  int32_t neg_h = -hh;
+  uint16_t planes = 1, bits = 32;
+  h[0] = 'B';
+  h[1] = 'M';
+  memcpy(h + 2, &size, 4);
+  memcpy(h + 10, &off, 4);
+  memcpy(h + 14, &hsize, 4);
+  memcpy(h + 18, &w, 4);
+  memcpy(h + 22, &neg_h, 4);
+  memcpy(h + 26, &planes, 2);
+  memcpy(h + 28, &bits, 2);
+  memcpy(h + 34, &img, 4);
 }
 
-static void held_hook(void *ctx, int op) {
-  Held *h = (Held *)ctx;
-  if (op) InterlockedIncrement(&h->refs);
-  else ps_held_drop(h, 0);
-}
-
-Held *ps_held_new(uint8_t *pixels) {
-  Held *h = (Held *)calloc(1, sizeof *h);
-  if (!h) return NULL;
-  h->pixels = pixels;
-  h->refs = 1;
-  return h;
-}
-
-void ps_held_name(Held *h, const uint8_t *at, int32_t w, int32_t hh, int32_t pitch, uint8_t out[44]) {
-  uint64_t a = (uint64_t)(uintptr_t)at, fn = (uint64_t)(uintptr_t)held_hook, ctx = (uint64_t)(uintptr_t)h;
-  memcpy(out, "MBRAWPTR", 8);
-  memcpy(out + 8, &a, 8);
-  memcpy(out + 16, &w, 4);
-  memcpy(out + 20, &hh, 4);
-  memcpy(out + 24, &pitch, 4);
-  memcpy(out + 28, &fn, 8);
-  memcpy(out + 36, &ctx, 8);
-}
-
-static void cap_drop(void) {
-  if (cap_held) {
-    cap_held->s = cap;
-    memset(&cap, 0, sizeof cap);
-    Held *h = cap_held;
-    cap_held = NULL;
-    ps_held_drop(h, 1);
+static moonbit_bytes_t ps_raw_bmp(const uint8_t *bits, int32_t w, int32_t hh, int32_t pitch) {
+  if (!bits || w <= 0 || hh <= 0) return moonbit_make_bytes(0, 0);
+  size_t row = (size_t)w * 4;
+  if ((size_t)pitch < row) return moonbit_make_bytes(0, 0);
+  size_t img = row * (size_t)hh;
+  moonbit_bytes_t b = moonbit_make_bytes((int32_t)(54 + img), 0);
+  ps_bmp_header(b, w, hh);
+  if ((size_t)pitch == row) {
+    memcpy(b + 54, bits, img);
   } else {
-    shot_free(&cap);
+    for (int32_t y = 0; y < hh; y++) memcpy(b + 54 + (size_t)y * row, bits + (size_t)y * (size_t)pitch, row);
   }
+  return b;
 }
+
+static void cap_drop(void) { shot_free(&cap); }
 
 static int monitor_under_pointer(void) {
   static int aware;
@@ -548,11 +528,7 @@ moonbit_bytes_t ps_capture_info(void) {
 
 moonbit_bytes_t ps_capture_take(void) {
   if (!cap.bits || cap_busy || !cap_ok) return moonbit_make_bytes(0, 0);
-  if (!cap_held) cap_held = ps_held_new(NULL);
-  if (!cap_held) return moonbit_make_bytes(0, 0);
-  uint8_t d[44];
-  ps_held_name(cap_held, cap.bits, cap.w, cap.h, cap.pitch, d);
-  return ps_bytes(d, sizeof d);
+  return ps_raw_bmp(cap.bits, cap.w, cap.h, cap.pitch);
 }
 
 void ps_capture_release(void) {
@@ -895,9 +871,6 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         KillTimer(h, PS_IDLE_TRIM_TIMER);
         if (!capture_open && !cap_busy) gpu_trim_now(1);
       }
-      return 0;
-    case WM_PS_HELD_FREE:
-      held_free((Held *)lp);
       return 0;
     case WM_PS_TAKEN: {
       char json[128];

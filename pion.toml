@@ -7,6 +7,7 @@ license = "MIT"
 dmath = { path = "../invar/packages/dmath" }
 host = { path = "../invar/packages/host" }
 hostapi = { path = "../invar/packages/hostapi" }
+kit = { path = "../invar/packages/kit" }
 motion = { path = "../invar/packages/motion" }
 paint = { path = "../invar/packages/paint" }
 pixels = { path = "../invar/packages/pixels" }

@@ -392,19 +392,37 @@ fn overlay_window(root : view::View) -> Unit {
   })
 }
 
+fn same_mark(a : Mark, b : Mark) -> Bool {
+  if a.id != b.id || a.tool != b.tool || a.color != b.color || a.size != b.size || a.n != b.n || a.words != b.words || a.pts.length() != b.pts.length() {
+    return false
+  }
+  for i, p in a.pts {
+    let q = b.pts[i]
+    if p.0 != q.0 || p.1 != q.1 {
+      return false
+    }
+  }
+  true
+}
+
 fn marks_layer(parent : view::View, editing~ : Bool) -> Unit {
   let _ = parent.box(fn(layer) {
     let _ = layer.over(view::Live::Is(true))
     let _ = layer.box(fn(f) { let _ = f.over(view::Live::Is(true)).presses(view::Live::Is(false)).picture(view::Live::By(focus_picture)) })
-    layer.each(fn() { marks.get() }, fn(m) { m.id }, fn(row, m) {
+    layer.each_eq(same_mark, fn() { marks.get() }, fn(m) { m.id }, fn(row, m) {
       let _ = row.over(view::Live::Is(true)).presses(view::Live::Is(false))
       mark_node(row, signals::untracked(fn() { m.get() }))
     }, at_once=true)
     let _ = layer.box(fn(d) {
       let _ = d.over(view::Live::Is(true)).presses(view::Live::Is(false))
-      d.pick(fn() { draft.get() }, fn(b, m) {
+      let draft_seq = signals::ref_new(0)
+      d.pick(fn() {
+        let _ = draft.get()
+        draft_seq.v = draft_seq.v + 1
+        draft_seq.v
+      }, fn(b, _) {
         let _ = b.over(view::Live::Is(true))
-        match m {
+        match draft.untracked() {
           Some(m) => mark_node(b, m)
           None => ()
         }

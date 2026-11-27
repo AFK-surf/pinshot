@@ -1,4 +1,5 @@
 import "hostapi"
+import "kit"
 import "motion"
 import "signals"
 import "ui"
@@ -98,7 +99,7 @@ let rec_confirm_discard : signals::Signal[Bool] = signals::signal(false)
 
 let rec_discard_cancel : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
 
-let rec_tips : TipScope = TipScope::new()
+let rec_tips : kit::TipLayer = kit::TipLayer::new()
 
 let rec_tip : signals::Signal[String] = signals::signal("")
 
@@ -926,7 +927,7 @@ fn rec_gone() -> Unit {
   (rec_dim_tip_cancel.v)()
   rec_dim_tip_cancel.v = fn() {  }
   rec_tip.set("")
-  rec_tips.off()
+  rec_tips.dismiss()
   if rec_closing_overlay.v {
     rec_closing_overlay.v = false
     close_capture()
@@ -1126,7 +1127,8 @@ fn rec_tip_follow(
   side~ : view::Side = view::Side::Bottom,
   live~ : () -> Bool  = fn() { true },
 ) -> Unit {
-  rec_tips.follow(
+  ps_tip_follow(
+    rec_tips,
     v,
     label_fn,
     side,
@@ -1511,7 +1513,7 @@ fn rec_window(root : view::View) -> Unit {
 
   root.reacts(fn() { rec_phase.get() }, at_start=false, fn(_) {
     rec_tip.set("")
-    rec_tips.off()
+    rec_tips.dismiss()
     rec_fps_open.set(false)
     rec_fps_up.set(false)
     rec_disarm_discard()
@@ -2656,7 +2658,7 @@ fn rec_window(root : view::View) -> Unit {
         })
       })
     })
-    rec_tips.mount(page)
+    let _ = rec_tips.mount(page)
   })
 }
 
