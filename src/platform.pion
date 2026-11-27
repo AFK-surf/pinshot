@@ -162,6 +162,7 @@ extern "C" fn ps_capture_open(on : Int) -> Unit = "ps_capture_open"
 extern "C" fn ps_set_capture_keep(keep : Int) -> Unit = "ps_set_capture_keep"
 extern "C" fn c_ps_capture_info() -> Ptr = "ps_capture_info"
 extern "C" fn c_ps_capture_take() -> Ptr = "ps_capture_take"
+extern "C" fn c_ps_capture_crop_rgba(x : Int, y : Int, w : Int, h : Int) -> Ptr = "ps_capture_crop_rgba"
 extern "C" fn ps_capture_release() -> Unit = "ps_capture_release"
 extern "C" fn ps_pixel(x : Int, y : Int) -> Int = "ps_pixel"
 extern "C" fn ps_mean(x : Int, y : Int, cell : Int) -> Int = "ps_mean"
@@ -251,6 +252,7 @@ fn ps_args() -> Bytes { take_mb_bytes(c_ps_args()) }
 fn ps_key_name(vk : Int) -> Bytes { take_mb_bytes(c_ps_key_name(vk)) }
 fn ps_capture_info() -> Bytes { take_mb_bytes(c_ps_capture_info()) }
 fn ps_capture_take() -> Bytes { take_mb_bytes(c_ps_capture_take()) }
+fn ps_capture_crop_rgba(x : Int, y : Int, w : Int, h : Int) -> Bytes { take_mb_bytes(c_ps_capture_crop_rgba(x, y, w, h)) }
 fn ps_windows() -> Bytes { take_mb_bytes(c_ps_windows()) }
 fn ps_window_rect(wid : Int) -> Bytes { take_mb_bytes(c_ps_window_rect(wid)) }
 fn ps_pointer() -> Bytes { take_mb_bytes(c_ps_pointer()) }

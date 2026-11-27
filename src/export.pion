@@ -6,6 +6,24 @@ import "view"
 
 let exporting : signals::Ref[String] = signals::ref_new("")
 
+fn export_dpi(scale : Double) -> Double {
+  let base = if hostapi::platform() == 0 { 72.0 } else { 96.0 }
+  base * dmax(1.0, scale)
+}
+
+fn direct_crop_png(r : Rect, dpi : Double) -> Option[Bytes] {
+  if r.w <= 0 || r.h <= 0 {
+    return None
+  }
+  let rgba = ps_capture_crop_rgba(r.x, r.y, r.w, r.h)
+  if rgba.length() != r.w * r.h * 4 {
+    return None
+  }
+  let pr = pixels::PngRows::new(r.w, r.h)
+  pr.add(pixels::bytes_to_fixed(rgba), r.h)
+  Some(pixels::png_with_dpi(pr.end(), dpi))
+}
+
 fn picture_of_part(done : (Option[Bytes]) -> Unit, framed~ : Bool = true) -> Unit {
   let r = match sel.untracked() {
     Some(_v) => _v
@@ -15,12 +33,29 @@ fn picture_of_part(done : (Option[Bytes]) -> Unit, framed~ : Bool = true) -> Uni
     commit_words()
   }
   let k = mon_scale.untracked()
+  let dpi = export_dpi(k)
+  let use_beauty = framed && beauty_on.untracked()
+  // Fast lossless 1:1 pixel crop when there are no annotations and no beautify frame:
+  // skips GPU float32 bilinear/mipmap resampling and preserves every captured physical pixel verbatim.
+  if !use_beauty && marks.untracked().length() == 0 && draft.untracked().is_none() {
+    match direct_crop_png(r, dpi) {
+      Some(png) => {
+        ui::after_frame(fn() {
+          done(Some(png))
+          hostapi::request_frame()
+        })
+        hostapi::request_frame()
+        return
+      }
+      None => ()
+    }
+  }
   let key = frozen_key.untracked()
   let px = dmax(mon.v.w.to_double(), mon.v.h.to_double()).to_int()
   let w = r.w.to_double() / k
   let h = r.h.to_double() / k
   let (mw, mh) = (mon.v.w.to_double() / k, mon.v.h.to_double() / k)
-  if framed && beauty_on.untracked() {
+  if use_beauty {
     let room = beauty_rooms[beauty.untracked().room]
     ui::take_picture("part", w + 2.0 * room, fn(b) {
       let _ = b.height(view::Live::Is(Some(h + 2.0 * room))).clips(view::Live::Is(true)).lines_up(view::Live::Is(Some(view::Along::Start)))
@@ -38,7 +73,7 @@ fn picture_of_part(done : (Option[Bytes]) -> Unit, framed~ : Bool = true) -> Uni
           })
         }, overlay=false)
       })
-    }, done, scale=k)
+    }, done, scale=k, dpi=dpi)
     return
   }
   ui::take_picture("part", w, fn(b) {
@@ -52,7 +87,7 @@ fn picture_of_part(done : (Option[Bytes]) -> Unit, framed~ : Bool = true) -> Uni
       let _ = s.box(fn(p) { let _ = p.over(view::Live::Is(true)).image(view::Live::Is(Some((key, "", px)))) })
       marks_layer(s, editing=false)
     })
-  }, done, scale=k)
+  }, done, scale=k, dpi=dpi)
 }
 
 fn copy_out() -> Unit {

@@ -1,7 +1,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <d3d11.h>
-#include <dxgi1_5.h>
+#include <dxgi1_6.h>
 #include <roapi.h>
 #include <wrl.h>
 #include <wrl/wrappers/corewrappers.h>
@@ -510,30 +510,152 @@ extern "C" int ps_wgc_ready(void) {
   return 1;
 }
 
-#define WHITES_MOST 8
-static struct {
-  wchar_t name[CCHDEVICENAME];
-  float white;
-} whites[WHITES_MOST];
-static float disk_white = -1;
+#define PS_COLOR_SDR 0
+#define PS_COLOR_WCG 1
+#define PS_COLOR_HDR 2
 
-static float *white_of(const wchar_t *name) {
+// Windows 11 24H2+ (Build 26100) CCD packet that separates HDR from WCG / Auto Color Management (ACM).
+// Defined locally with the exact Win32 ABI layout so builds on older Windows 10/11 SDKs succeed unchanged.
+#define PS_DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2 ((DISPLAYCONFIG_DEVICE_INFO_TYPE)15)
+typedef struct PsAdvancedColorInfo2 {
+  DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+  UINT32 value;
+  DISPLAYCONFIG_COLOR_ENCODING colorEncoding;
+  UINT32 bitsPerColorChannel;
+  UINT32 activeColorMode;  // 0 = SDR, 1 = WCG (ACM), 2 = HDR
+} PsAdvancedColorInfo2;
+
+#define WHITES_MOST 16
+#define WHITE_KEY_LEN 260
+typedef struct WhiteEntry {
+  wchar_t key[WHITE_KEY_LEN];
+  float white;
+  uint64_t used;
+} WhiteEntry;
+static WhiteEntry whites[WHITES_MOST];
+static WhiteEntry disk_whites[WHITES_MOST];
+static int disk_whites_loaded = 0;
+static uint64_t white_tick = 0;
+
+static float *white_slot(WhiteEntry *table, const wchar_t *key, int create) {
+  if (!key || !key[0]) return NULL;
   for (int i = 0; i < WHITES_MOST; i++)
-    if (whites[i].name[0] && !wcscmp(whites[i].name, name)) return &whites[i].white;
-  for (int i = 0; i < WHITES_MOST; i++)
-    if (!whites[i].name[0]) {
-      wcscpy_s(whites[i].name, CCHDEVICENAME, name);
-      whites[i].white = 0;
-      return &whites[i].white;
+    if (table[i].key[0] && !wcscmp(table[i].key, key)) {
+      table[i].used = ++white_tick;
+      return &table[i].white;
     }
-  return NULL;
+  if (!create) return NULL;
+  int victim = 0;
+  for (int i = 0; i < WHITES_MOST; i++) {
+    if (!table[i].key[0]) {
+      victim = i;
+      break;
+    }
+    if (table[i].used < table[victim].used) victim = i;
+  }
+  wcsncpy_s(table[victim].key, WHITE_KEY_LEN, key, _TRUNCATE);
+  table[victim].white = 0.0f;
+  table[victim].used = ++white_tick;
+  return &table[victim].white;
+}
+
+static int white_file_path(wchar_t *dir, size_t dir_cap, wchar_t *file, size_t file_cap) {
+  DWORD n = GetEnvironmentVariableW(L"APPDATA", dir, (DWORD)dir_cap);
+  if (n == 0 || n >= dir_cap - 40) return 0;
+  wcscat_s(dir, dir_cap, L"\\PinShot");
+  wcscpy_s(file, file_cap, dir);
+  wcscat_s(file, file_cap, L"\\sdr-white.txt");
+  return 1;
+}
+
+static void disk_whites_merge_from_file(const wchar_t *path, const wchar_t *skip_key) {
+  if (!path || !path[0]) return;
+  FILE *f = NULL;
+  if (_wfopen_s(&f, path, L"r") != 0 || !f) return;
+  wchar_t line[WHITE_KEY_LEN + 64];
+  while (fgetws(line, (int)(sizeof line / sizeof line[0]), f)) {
+    // Only accept per-monitor "key\twhite" records; ignore legacy single-float untagged lines so one
+    // monitor's SDR white level can never contaminate a different monitor.
+    wchar_t *tab = wcschr(line, L'\t');
+    if (!tab || tab == line) continue;
+    *tab = 0;
+    if (skip_key && !wcscmp(line, skip_key)) continue;
+    float v = (float)_wtof(tab + 1);
+    if (v > 1.001f && v <= 20.0f) {
+      float *slot = white_slot(disk_whites, line, 1);
+      if (slot) *slot = v;
+    }
+  }
+  fclose(f);
+}
+
+static void disk_whites_ensure_loaded(const wchar_t *path) {
+  if (disk_whites_loaded) return;
+  disk_whites_loaded = 1;
+  disk_whites_merge_from_file(path, NULL);
+}
+
+static void disk_whites_save(const wchar_t *dir, const wchar_t *path, const wchar_t *updated_key) {
+  if (!dir || !path || !path[0]) return;
+  // Re-read any updates written by helper processes (--wgc-shot / --wgc-long) for other monitors, then
+  // write via a per-PID temp file and atomically replace sdr-white.txt.
+  disk_whites_merge_from_file(path, updated_key);
+  CreateDirectoryW(dir, NULL);
+  wchar_t tmp[MAX_PATH + 32];
+  int n = _snwprintf_s(tmp, MAX_PATH + 32, _TRUNCATE, L"%ls.tmp.%lu", path, (unsigned long)GetCurrentProcessId());
+  if (n <= 0) return;
+  FILE *f = NULL;
+  if (_wfopen_s(&f, tmp, L"w") != 0 || !f) return;
+  int ok = 1;
+  for (int i = 0; i < WHITES_MOST; i++) {
+    if (disk_whites[i].key[0] && disk_whites[i].white > 1.001f) {
+      if (fwprintf(f, L"%ls\t%.3f\n", disk_whites[i].key, disk_whites[i].white) < 0) ok = 0;
+    }
+  }
+  if (fclose(f) != 0) ok = 0;
+  if (ok) {
+    if (!MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileW(tmp);
+  } else {
+    DeleteFileW(tmp);
+  }
+}
+
+static int dxgi_output_color_space(HMONITOR mon, DXGI_COLOR_SPACE_TYPE *out_cs) {
+  ComPtr<IDXGIAdapter1> adap;
+  ComPtr<IDXGIOutput> out;
+  if (!dd_find_output(mon, adap, out)) return 0;
+  ComPtr<IDXGIOutput6> out6;
+  if (FAILED(out.As(&out6)) || !out6) return 0;
+  DXGI_OUTPUT_DESC1 desc1 = {};
+  if (FAILED(out6->GetDesc1(&desc1))) return 0;
+  *out_cs = desc1.ColorSpace;
+  return 1;
+}
+
+static void target_monitor_key(LUID adapter_id, UINT32 target_id, const wchar_t *fallback, wchar_t *out, size_t cap) {
+  DISPLAYCONFIG_TARGET_DEVICE_NAME tn = {};
+  tn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+  tn.header.size = sizeof tn;
+  tn.header.adapterId = adapter_id;
+  tn.header.id = target_id;
+  const wchar_t *src = fallback ? fallback : L"";
+  if (DisplayConfigGetDeviceInfo(&tn.header) == ERROR_SUCCESS && tn.monitorDevicePath[0]) {
+    src = tn.monitorDevicePath;
+  }
+  size_t o = 0;
+  for (size_t i = 0; src[i] && o + 1 < cap; i++) {
+    wchar_t ch = src[i];
+    if (ch == L'\t' || ch == L'\r' || ch == L'\n') ch = L'_';
+    out[o++] = ch;
+  }
+  out[o] = 0;
 }
 
 #define HDR_ASKED_MS 1000
 static struct {
   HMONITOR mon;
   ULONGLONG at;
-  int hdr;
+  int hdr;  // PS_COLOR_SDR / PS_COLOR_WCG / PS_COLOR_HDR
   float white;
 } hdr_asked[WHITES_MOST];
 static void hdr_forget(void) { memset(hdr_asked, 0, sizeof hdr_asked); }
@@ -560,83 +682,109 @@ static int mon_hdr(HMONITOR mon, float *white) {
   return hdr;
 }
 
+static int path_color_mode(HMONITOR mon, LUID adapter_id, UINT32 target_id, int *dxgi_checked, int *dxgi_ok,
+                           DXGI_COLOR_SPACE_TYPE *dxgi_cs) {
+  PsAdvancedColorInfo2 ai2 = {};
+  ai2.header.type = PS_DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2;
+  ai2.header.size = sizeof ai2;
+  ai2.header.adapterId = adapter_id;
+  ai2.header.id = target_id;
+  if (DisplayConfigGetDeviceInfo(&ai2.header) == ERROR_SUCCESS) {
+    if (ai2.activeColorMode == 2) return PS_COLOR_HDR;
+    if (ai2.activeColorMode == 1) return PS_COLOR_WCG;
+    return PS_COLOR_SDR;
+  }
+  DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO ai = {};
+  ai.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+  ai.header.size = sizeof ai;
+  ai.header.adapterId = adapter_id;
+  ai.header.id = target_id;
+  if (DisplayConfigGetDeviceInfo(&ai.header) != ERROR_SUCCESS || !ai.advancedColorEnabled) {
+    return PS_COLOR_SDR;
+  }
+  // On Windows 11 22H2/23H2, advancedColorEnabled is TRUE for both HDR and Auto Color Management (ACM/WCG).
+  // Disambiguate using IDXGIOutput6::GetDesc1() ColorSpace (G2084_P2020 = true HDR; G22_P709 = ACM SDR).
+  if (!*dxgi_checked) {
+    *dxgi_checked = 1;
+    *dxgi_ok = dxgi_output_color_space(mon, dxgi_cs);
+  }
+  if (*dxgi_ok) {
+    return (*dxgi_cs == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) ? PS_COLOR_HDR : PS_COLOR_WCG;
+  }
+  return PS_COLOR_HDR;
+}
+
 static int mon_hdr_asked(HMONITOR mon, float *white) {
   *white = 1.0f;
   MONITORINFOEXW mi;
   mi.cbSize = sizeof mi;
-  if (!GetMonitorInfoW(mon, &mi)) return 0;
+  if (!GetMonitorInfoW(mon, &mi)) return PS_COLOR_SDR;
   UINT32 np = 0, nm = 0;
-  if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS || !np) return 0;
+  if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS || !np) return PS_COLOR_SDR;
   DISPLAYCONFIG_PATH_INFO *paths = (DISPLAYCONFIG_PATH_INFO *)calloc(np, sizeof *paths);
   DISPLAYCONFIG_MODE_INFO *modes = (DISPLAYCONFIG_MODE_INFO *)calloc(nm ? nm : 1, sizeof *modes);
-  int hdr = 0;
+  int best_mode = PS_COLOR_SDR;
+  LUID best_adapter = {0, 0};
+  UINT32 best_target = 0;
+  int have_target = 0;
+  int dxgi_checked = 0, dxgi_ok = 0;
+  DXGI_COLOR_SPACE_TYPE dxgi_cs = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
   if (paths && modes && QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths, &nm, modes, NULL) == ERROR_SUCCESS) {
-    hdr = -1;
-  }
-  for (UINT32 i = 0; hdr == -1 && i < np; i++) {
-    DISPLAYCONFIG_SOURCE_DEVICE_NAME sn = {};
-    sn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
-    sn.header.size = sizeof sn;
-    sn.header.adapterId = paths[i].sourceInfo.adapterId;
-    sn.header.id = paths[i].sourceInfo.id;
-    if (DisplayConfigGetDeviceInfo(&sn.header) != ERROR_SUCCESS || wcscmp(sn.viewGdiDeviceName, mi.szDevice)) continue;
-    DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO ai = {};
-    ai.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
-    ai.header.size = sizeof ai;
-    ai.header.adapterId = paths[i].targetInfo.adapterId;
-    ai.header.id = paths[i].targetInfo.id;
-    if (DisplayConfigGetDeviceInfo(&ai.header) != ERROR_SUCCESS || !ai.advancedColorEnabled) {
-      hdr = 0;
-      break;
+    // Scan all active paths matching this GDI display (cloned displays share one viewGdiDeviceName across targets).
+    for (UINT32 i = 0; i < np; i++) {
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME sn = {};
+      sn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+      sn.header.size = sizeof sn;
+      sn.header.adapterId = paths[i].sourceInfo.adapterId;
+      sn.header.id = paths[i].sourceInfo.id;
+      if (DisplayConfigGetDeviceInfo(&sn.header) != ERROR_SUCCESS || wcscmp(sn.viewGdiDeviceName, mi.szDevice))
+        continue;
+      int mode = path_color_mode(mon, paths[i].targetInfo.adapterId, paths[i].targetInfo.id, &dxgi_checked, &dxgi_ok,
+                                 &dxgi_cs);
+      if (!have_target || mode > best_mode) {
+        best_mode = mode;
+        best_adapter = paths[i].targetInfo.adapterId;
+        best_target = paths[i].targetInfo.id;
+        have_target = 1;
+      }
     }
+  }
+  if (best_mode == PS_COLOR_HDR && have_target) {
     DISPLAYCONFIG_SDR_WHITE_LEVEL wl = {};
     wl.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
     wl.header.size = sizeof wl;
-    wl.header.adapterId = paths[i].targetInfo.adapterId;
-    wl.header.id = paths[i].targetInfo.id;
+    wl.header.adapterId = best_adapter;
+    wl.header.id = best_target;
     if (DisplayConfigGetDeviceInfo(&wl.header) == ERROR_SUCCESS && wl.SDRWhiteLevel >= 1000)
       *white = (float)wl.SDRWhiteLevel / 1000.0f;
     // (a monitor asleep or turned off at its button says 80 nits, its white unknown: the last it said awake kept,
-    // each monitor's its own; ScreenReplay found the same, 2026-11-15)
-    // Kept on disk too (%APPDATA%\PinShot\sdr-white.txt): a run started while the monitor sleeps has it. Written only
-    // as a monitor's own white changes, never as captures go from one monitor to another.
-    wchar_t path[MAX_PATH];
-    DWORD n = GetEnvironmentVariableW(L"APPDATA", path, MAX_PATH);
-    int have_path = n > 0 && n < MAX_PATH - 40;
-    if (have_path) wcscat_s(path, MAX_PATH, L"\\PinShot\\sdr-white.txt");
-    if (disk_white < 0) {
-      disk_white = 0;
-      FILE *f = NULL;
-      if (have_path && _wfopen_s(&f, path, L"r") == 0 && f) {
-        if (fscanf_s(f, "%f", &disk_white) != 1) disk_white = 0;
-        fclose(f);
-      }
-    }
-    float *last = white_of(mi.szDevice);
+    // strictly per monitor in memory and on disk in %APPDATA%\PinShot\sdr-white.txt so monitors never cross-pollute)
+    wchar_t mon_key[WHITE_KEY_LEN];
+    target_monitor_key(best_adapter, best_target, mi.szDevice, mon_key, WHITE_KEY_LEN);
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    int have_path = white_file_path(dir, MAX_PATH, path, MAX_PATH);
+    if (have_path) disk_whites_ensure_loaded(path);
+    float *last = white_slot(whites, mon_key, 1);
+    float *saved = have_path ? white_slot(disk_whites, mon_key, 1) : NULL;
     if (*white > 1.001f) {
-      if (last && *last != *white && *white != disk_white && have_path) {
-        FILE *f = NULL;
-        if (_wfopen_s(&f, path, L"w") == 0 && f) {
-          fprintf(f, "%.3f\n", *white);
-          fclose(f);
-          disk_white = *white;
-        }
+      if (saved && fabsf(*saved - *white) > 0.0005f) {
+        *saved = *white;
+        disk_whites_save(dir, path, mon_key);
       }
       if (last) *last = *white;
     } else if (last && *last > 1.001f) {
       *white = *last;
-    } else if (disk_white > 1.001f) {
-      *white = disk_white;
+    } else if (saved && *saved > 1.001f) {
+      *white = *saved;
     }
-    hdr = 1;
   }
   free(paths);
   free(modes);
-  return hdr == 1;
+  return best_mode;
 }
 
 extern "C" int ps_wgc_mon_hdr(HMONITOR mon, float *white) {
-  return mon_hdr_asked(mon, white);
+  return mon_hdr(mon, white);
 }
 
 static void mon_stop(Mon *m) {
@@ -662,7 +810,7 @@ static void mon_stop(Mon *m) {
 static int mon_start(Mon *m, HMONITOR mon, int w, int h, int hdr = -1) {
   float white;
   m->mon = mon, m->w = w, m->h = h, m->frames = 0;
-  m->hdr = hdr >= 0 ? hdr : (to_srgb && to_srgb_k && mon_hdr(mon, &white));
+  m->hdr = hdr >= 0 ? hdr : ((to_srgb && to_srgb_k) ? mon_hdr(mon, &white) : PS_COLOR_SDR);
   EnterCriticalSection(&frame_lock);
   unsigned gen = ++m->gen;
   m->live = 1;
@@ -673,8 +821,8 @@ static int mon_start(Mon *m, HMONITOR mon, int w, int h, int hdr = -1) {
   int nbufs = (keep_sessions || long_holds) ? 2 : 1;
   if (FAILED(last_hr = pool_statics->CreateFreeThreaded(
                      rt_dev.Get(),
-                     m->hdr ? ABI::Windows::Graphics::DirectX::DirectXPixelFormat_R16G16B16A16Float
-                            : ABI::Windows::Graphics::DirectX::DirectXPixelFormat_B8G8R8A8UIntNormalized,
+                     m->hdr > 0 ? ABI::Windows::Graphics::DirectX::DirectXPixelFormat_R16G16B16A16Float
+                                : ABI::Windows::Graphics::DirectX::DirectXPixelFormat_B8G8R8A8UIntNormalized,
                      nbufs, size, &m->pool)))
     return 0;
   auto arrived = Callback<Microsoft::WRL::Implements<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
@@ -1180,12 +1328,12 @@ static int hdr_convert_gpu(ID3D11Device *d, ID3D11DeviceContext *c,
                            ID3D11ComputeShader *tile_cs, ID3D11Buffer *tile_k,
                            ID3D11ComputeShader *srgb_cs, ID3D11Buffer *srgb_k,
                            ID3D11ShaderResourceView *src_srv, ID3D11UnorderedAccessView *dst_uav,
-                           float white, uint32_t ox, uint32_t oy, int rw, int rh) {
+                           float white, uint32_t ox, uint32_t oy, int rw, int rh, int run_tone_map) {
   uint32_t has_hdr = 0;
   ComPtr<ID3D11ShaderResourceView> peak_srv, pmask_srv;
   int tw = (rw + 7) / 8;
   int th = (rh + 7) / 8;
-  if (tile_cs && tile_k && tw > 0 && th > 0) {
+  if (run_tone_map && tile_cs && tile_k && tw > 0 && th > 0) {
     D3D11_TEXTURE2D_DESC td = {};
     td.Width = (UINT)tw;
     td.Height = (UINT)th;
@@ -1397,13 +1545,13 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
   }
   int whole = rx == 0 && ry == 0 && rw == w && rh == h;
   const int whole_monitor = whole;
-  int is_hdr = (td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+  int is_fp16 = (td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
   float white = 1.0f;
-  if (is_hdr) mon_hdr(mon, &white);
+  int color_mode = is_fp16 ? mon_hdr(mon, &white) : PS_COLOR_SDR;
   said_half = 0;
   ComPtr<ID3D11Texture2D> src_for_copy = tex;
   D3D11_TEXTURE2D_DESC copy_desc = td;
-  if (is_hdr) {
+  if (is_fp16) {
     if (!dd_srgb || !dd_srgb_k) {
       tex.Reset(); res.Reset(); dupl->ReleaseFrame(); dupl.Reset();
       return NULL;
@@ -1461,7 +1609,8 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
       return NULL;
     }
     if (!hdr_convert_gpu(dd_dev.Get(), dd_ctx.Get(), dd_tile_max.Get(), dd_tile_k.Get(),
-                         dd_srgb.Get(), dd_srgb_k.Get(), srv.Get(), uav.Get(), white, ox, oy, rw, rh)) {
+                         dd_srgb.Get(), dd_srgb_k.Get(), srv.Get(), uav.Get(), white, ox, oy, rw, rh,
+                         color_mode == PS_COLOR_HDR ? 1 : 0)) {
       tex.Reset(); res.Reset(); dupl->ReleaseFrame(); dupl.Reset();
       return NULL;
     }
@@ -1518,7 +1667,7 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
   }
   *bits = (uint8_t *)mp.pData;
   *pitch = (int)mp.RowPitch;
-  take_white = is_hdr ? white : 0.0;
+  take_white = (color_mode == PS_COLOR_HDR) ? white : (is_fp16 ? 1.0 : 0.0);
   take_age = 0.0;
   take_fresh = 0;
   take_used_dd = 1;
@@ -1556,7 +1705,7 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
   }
   if (!m) return NULL;
   float white = 1.0f;
-  int hdr = to_srgb && to_srgb_k && mon_hdr(mon, &white);
+  int hdr = (to_srgb && to_srgb_k) ? mon_hdr(mon, &white) : PS_COLOR_SDR;
   if ((m->pool && hdr != m->hdr) || m->w != w || m->h != h) {
     mon_stop(m);
     m->mon = mon, m->w = w, m->h = h;
@@ -1694,7 +1843,8 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
       return NULL;
     }
     if (!hdr_convert_gpu(dev.Get(), ctx.Get(), to_tile_max.Get(), to_tile_k.Get(),
-                         to_srgb.Get(), to_srgb_k.Get(), srv.Get(), uav.Get(), white, ox, oy, rw, rh)) {
+                         to_srgb.Get(), to_srgb_k.Get(), srv.Get(), uav.Get(), white, ox, oy, rw, rh,
+                         m->hdr == PS_COLOR_HDR ? 1 : 0)) {
       tex.Reset(); surface.Reset(); access.Reset(); fr.Reset();
       drop_on_demand();
       return NULL;
@@ -1733,7 +1883,7 @@ static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, in
     D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
     ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
   }
-  take_white = m->hdr ? white : 0.0;
+  take_white = (m->hdr == PS_COLOR_HDR) ? white : (m->hdr > 0 ? 1.0 : 0.0);
   if (one_shot && !long_holds) {
     tex.Reset();
     {
@@ -1808,7 +1958,9 @@ extern "C" void ps_wgc_release(void *taken) {
 
 extern "C" void ps_wgc_state(char *out, int n) {
   int k = snprintf(out, n, "sessions %d; frames", nmons);
-  for (int i = 0; i < nmons && k < n; i++) k += snprintf(out + k, n - k, " %d%s", mons[i].frames, mons[i].hdr ? " hdr" : "");
+  for (int i = 0; i < nmons && k < n; i++)
+    k += snprintf(out + k, n - k, " %d%s", mons[i].frames,
+                  mons[i].hdr == PS_COLOR_HDR ? " hdr" : (mons[i].hdr == PS_COLOR_WCG ? " wcg" : ""));
   if (k < n) k += snprintf(out + k, n - k, "; hr 0x%08lx; ready %d", (unsigned long)last_hr, ready);
   if (dd_black && k < n) snprintf(out + k, n - k, "; dxgi black %d", dd_black);
 }
