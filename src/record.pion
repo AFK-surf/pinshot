@@ -2515,22 +2515,34 @@ fn rec_window(root : view::View) -> Unit {
         if rec_closing_overlay.v {
           (rec_handoff_cancel.v)()
           let cloaked = ui::env("PINSHOT_TEST_CLOAKED") != ""
-          rec_handoff_cancel.v = root.at_moment(
-            root.cause_at() + 1.0,
-            fn() {
-              rec_handoff_cancel.v = fn() {  }
-              if rec_closing_overlay.v {
-                rec_closing_overlay.v = false
-                close_capture()
-                ps_capture_open(1)
-              }
-              if rec_morph_in.untracked() {
-                rec_morph_in.set(false)
-              }
-              rec_schedule_fit(!cloaked)
-            },
-            later=true,
-          )
+          // (the overlay closed and the morph set off only once the bar has been laid out in a frame: moves_for
+          // reshapes only what was placed, and a moment comes on the clock whether a frame was drawn or not)
+          let tries = signals::ref_new(0)
+          let hand_off : signals::Ref[() -> Unit] = signals::ref_new(fn() {  })
+          hand_off.v = fn() {
+            rec_handoff_cancel.v = root.at_moment(
+              root.cause_at() + (if tries.v == 0 { 1.0 } else { 16.0 }),
+              fn() {
+                rec_handoff_cancel.v = fn() {  }
+                if !shell.was_placed() && tries.v < 30 {
+                  tries.v = tries.v + 1
+                  (hand_off.v)()
+                  return
+                }
+                if rec_closing_overlay.v {
+                  rec_closing_overlay.v = false
+                  close_capture()
+                  ps_capture_open(1)
+                }
+                if rec_morph_in.untracked() {
+                  rec_morph_in.set(false)
+                }
+                rec_schedule_fit(!cloaked)
+              },
+              later=true,
+            )
+          }
+          (hand_off.v)()
         }
       })
 
