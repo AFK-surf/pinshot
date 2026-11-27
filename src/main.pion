@@ -269,4 +269,4 @@ let app_theme : () -> ui::Theme = fn() { theme_kept }
 
 let theme_kept : ui::Theme = ui::Theme::{ ..ui::Theme::dark(), bg: 0x000000FFL, tabular: true }
 
-let app_version : String = "1.0.33"
+let app_version : String = "1.0.34"
