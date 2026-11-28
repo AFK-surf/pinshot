@@ -53,9 +53,20 @@ static const char *why_of(DWORD e) {
   }
 }
 
+// One session for every request, made at the first (WinHTTP's own proxy and resolver threads come with it, once).
+static HINTERNET session;
+static INIT_ONCE session_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK session_open(PINIT_ONCE once, PVOID arg, PVOID *ctx) {
+  (void)once, (void)arg, (void)ctx;
+  session = WinHttpOpen(L"PinShot", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  return TRUE;
+}
+
 static DWORD WINAPI ask_work(void *arg) {
   Ask *a = (Ask *)arg;
   HINTERNET s = NULL, c = NULL, r = NULL;
+  ULONGLONG deadline = GetTickCount64() + (ULONGLONG)a->timeout * 2;
   uint8_t *body = NULL;
   size_t body_n = 0, body_cap = 0;
   const char *why = "";
@@ -81,12 +92,12 @@ static DWORD WINAPI ask_work(void *arg) {
     size_t pl = wcslen(path);
     memmove(path + pl, path + 2048, (u.dwExtraInfoLength + 1) * sizeof(wchar_t));
   }
-  s = WinHttpOpen(L"PinShot", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  InitOnceExecuteOnce(&session_once, session_open, NULL, NULL);
+  s = session;
   if (!s) {
     why = "network";
     goto done;
   }
-  WinHttpSetTimeouts(s, a->timeout, a->timeout, a->timeout, a->timeout);
   c = WinHttpConnect(s, host, u.nPort, 0);
   r = c ? WinHttpOpenRequest(c, a->verb, path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                              WINHTTP_FLAG_REFRESH | (u.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0))
@@ -94,6 +105,12 @@ static DWORD WINAPI ask_work(void *arg) {
   if (!r) {
     why = why_of(GetLastError());
     goto done;
+  }
+  WinHttpSetTimeouts(r, a->timeout, a->timeout, a->timeout, a->timeout);
+  {
+    // (a key in the headers never goes on to where a redirect points)
+    DWORD never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    WinHttpSetOption(r, WINHTTP_OPTION_REDIRECT_POLICY, &never, sizeof never);
   }
   if (!WinHttpSendRequest(r, a->headers[0] ? a->headers : WINHTTP_NO_ADDITIONAL_HEADERS, a->headers[0] ? (DWORD)-1L : 0,
                           a->body_n ? a->body : WINHTTP_NO_REQUEST_DATA, a->body_n, a->body_n, 0) ||
@@ -111,6 +128,11 @@ static DWORD WINAPI ask_work(void *arg) {
       goto done;
     }
     if (n == 0) break;
+    if (GetTickCount64() > deadline) {
+      why = "timeout";
+      status = 0;
+      goto done;
+    }
     if (body_n + n > HTTP_MOST) {
       why = "large";
       status = 0;
@@ -139,7 +161,6 @@ done:;
   mb_post("ps", json, (size_t)jn, body, status ? body_n : 0);
   if (r) WinHttpCloseHandle(r);
   if (c) WinHttpCloseHandle(c);
-  if (s) WinHttpCloseHandle(s);
   free(body);
   ask_free(a);
   return 0;

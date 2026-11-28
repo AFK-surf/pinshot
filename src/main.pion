@@ -137,6 +137,8 @@ fn told(json : String, bytes : Option[Bytes]) -> Unit {
     "pin-clipboard" => pin_clipboard()
     "ocr" => ocr_told(o, bytes)
     "http" => http_told(o, bytes)
+    "tr-words" => tr_words_told(o, bytes)
+    "tr-pic" => tr_pic_told(o, bytes)
     "long" => {
       let n = fn(k : String) { jnum(o, k, 0.0).to_int() }
       long_told(

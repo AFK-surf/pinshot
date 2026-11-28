@@ -1,4 +1,5 @@
 import "json"
+import "pixels"
 import "signals"
 import "ui"
 import "view"
@@ -24,18 +25,25 @@ struct TrBlock {
   lh : Double
   src : String
   text : String
-  bg : Int64
-  ink : Int64
+}
+
+struct TrShown {
+  blocks : Array[TrBlock]
+  key : String
+  words : Array[OcrWord]
+  full : String
 }
 
 enum PinTr {
   TrIdle
   TrWorking
-  TrReady(Array[TrBlock])
+  TrReady(TrShown)
   TrError(String)
 }
 
 let tr_providers : Array[String] = ["google", "deepseek", "openai"]
+
+let tr_chunk_most : Int = 4000
 
 fn trn(zh : String, arg : String) -> String {
   str_replace_all(tr(zh), "{}", arg)
@@ -60,6 +68,14 @@ fn tr_default_model(p : String) -> String {
 
 fn tr_key_env(p : String) -> String {
   if p == "deepseek" { "DEEPSEEK_API_KEY" } else { "OPENAI_API_KEY" }
+}
+
+fn tr_key_of(s : Settings, p : String) -> String {
+  if p == "deepseek" { s.tr_key_deepseek } else { s.tr_key_openai }
+}
+
+fn tr_model_of(s : Settings, p : String) -> String {
+  if p == "deepseek" { s.tr_model_deepseek } else { s.tr_model_openai }
 }
 
 fn is_han(n : Int) -> Bool {
@@ -135,20 +151,27 @@ fn google_request(text : String, target : String) -> TrRequest {
 }
 
 fn llm_prompt(target : String, lines : Int) -> String {
-  "You are a translation engine. The user's message is text read by OCR from a screenshot: \{lines} lines, each " +
-  "one block of the picture (a paragraph, a label, a name, a message). Translate each line on its own into " +
-  "\{tr_lang_en(target)} and answer with exactly \{lines} lines in the same order, one translation per line, never " +
-  "joining or splitting lines. Leave code, commands, paths, identifiers, numbers and URLs as they are; a line with " +
-  "nothing to translate is given back as it is. Output only the translations, without notes or quotes."
+  "You are a translation engine. The user's message is text read by OCR from a screenshot: \{lines} numbered lines " +
+  "(\"1. ...\"), each one block of the picture (a paragraph, a label, a name, a message). Translate each line on its " +
+  "own into \{tr_lang_en(target)} and answer with exactly \{lines} lines, each starting with the same number and a " +
+  "period, in the same order, never joining or splitting lines. Leave code, commands, paths, identifiers, numbers and " +
+  "URLs as they are; a line with nothing to translate is given back as it is. Output only the numbered translations."
 }
 
 fn llm_request(base : String, model : String, key : String, text : String, target : String) -> TrRequest {
   let thinking = if str_contains(base, "deepseek.com") { "\"thinking\":{\"type\":\"disabled\"}," } else { "" }
   let q = fn(s : String) { json_stringify(json::Json::Str(s)) }
-  let lines = text.split("\n").length()
+  let lines = text.split("\n")
+  let numbered = StringBuilder::new()
+  for i, l in lines {
+    if i > 0 {
+      numbered.write_char('\n')
+    }
+    numbered.write_string("\{i + 1}. " + l)
+  }
   let body = "{\"model\":\{q(model)},\{thinking}\"stream\":false,\"messages\":[" +
-    "{\"role\":\"system\",\"content\":\{q(llm_prompt(target, lines))}}," +
-    "{\"role\":\"user\",\"content\":\{q(text)}}]}"
+    "{\"role\":\"system\",\"content\":\{q(llm_prompt(target, lines.length()))}}," +
+    "{\"role\":\"user\",\"content\":\{q(numbered.to_string())}}]}"
   let mut url = trim_ws(base)
   while str_has_suffix(url, "/") {
     url = str_slice_bytes(url, 0, url.length() - 1)
@@ -163,7 +186,7 @@ fn llm_request(base : String, model : String, key : String, text : String, targe
 }
 
 fn tr_api_key(s : Settings) -> String {
-  let own = trim_ws(s.tr_key)
+  let own = trim_ws(tr_key_of(s, s.tr_provider))
   if own != "" {
     own
   } else {
@@ -181,7 +204,7 @@ fn tr_request_for(s : Settings, text : String, target : String) -> Result[TrRequ
     return Err(trn("还没填 {} 的 API Key：在设置 → 翻译里填写。", tr_provider_name(p)))
   }
   let base = if p == "openai" && trim_ws(s.tr_base) != "" { s.tr_base } else { tr_default_base(p) }
-  let model = if trim_ws(s.tr_model) != "" { trim_ws(s.tr_model) } else { tr_default_model(p) }
+  let model = if trim_ws(tr_model_of(s, p)) != "" { trim_ws(tr_model_of(s, p)) } else { tr_default_model(p) }
   Ok(llm_request(base, model, key, text, target))
 }
 
@@ -245,9 +268,13 @@ fn tr_read_answer(p : String, status : Int, err : String, body : String) -> TrAn
         "connect" => trn("连不上 {}：检查网络或代理。", name)
         "tls" => trn("和 {} 的安全连接没有建立。", name)
         "url" => tr("接口地址要以 https:// 开头。")
+        "large" | "memory" => trn("{} 返回的内容太大。", name)
         _ => trn("网络错误：没有连上 {}。", name)
       },
     )
+  }
+  if status != 200 {
+    log("translate: \{p} answered \{status}: \{str_slice_bytes(body, 0, if body.length() > 200 { 200 } else { body.length() })}")
   }
   let named = fn(zh : String) { str_replace_all(trn(zh, name), "{n}", status.to_string()) }
   if status == 401 || status == 403 {
@@ -275,17 +302,84 @@ fn tr_read_answer(p : String, status : Int, err : String, body : String) -> TrAn
   }
 }
 
+fn tr_split_answer(answer : String, n : Int) -> Array[String] {
+  let got : Array[String] = []
+  for l in answer.split("\n") {
+    let t = trim_ws(l)
+    if t != "" {
+      got.push(t)
+    }
+  }
+  if got.length() == n || n <= 0 {
+    return got
+  }
+  let out : Array[String] = []
+  if got.length() > n {
+    for k in 0..<(n - 1) {
+      out.push(got[k])
+    }
+    let sb = StringBuilder::new()
+    for k in (n - 1)..<got.length() {
+      if k > n - 1 {
+        sb.write_char(' ')
+      }
+      sb.write_string(got[k])
+    }
+    out.push(sb.to_string())
+  } else {
+    for g in got {
+      out.push(g)
+    }
+    while out.length() < n {
+      out.push("")
+    }
+  }
+  out
+}
+
+/// The numbered lines of a model's answer ("3. ...") put back in their places; lines it lost stay empty. None where
+/// it numbered none of them.
+fn tr_numbered_answer(answer : String, n : Int) -> Option[Array[String]] {
+  let out : Array[String] = []
+  for _ in 0..<n {
+    out.push("")
+  }
+  let mut found = 0
+  for raw in answer.split("\n") {
+    let l = trim_ws(raw)
+    let cs = str_chars(l)
+    let mut i = 0
+    let mut num = 0
+    while i < cs.length() && cs[i].to_int() >= 0x30 && cs[i].to_int() <= 0x39 && i < 6 {
+      num = num * 10 + (cs[i].to_int() - 0x30)
+      i += 1
+    }
+    if i == 0 || i >= cs.length() {
+      continue
+    }
+    let sep = cs[i].to_int()
+    if sep != 0x2E && sep != 0xFF0E && sep != 0x3001 && sep != 0x29 && sep != 0x3A && sep != 0xFF1A {
+      continue
+    }
+    if num < 1 || num > n {
+      continue
+    }
+    out[num - 1] = trim_ws(chars_to_string(cs, i + 1, cs.length()))
+    found += 1
+  }
+  if found == 0 { None } else { Some(out) }
+}
+
+// ---- requests ----
+
 let tr_id : signals::Ref[Int] = signals::ref_new(0)
 
 let tr_waiting : Map[Int, (String, (TrAnswer) -> Unit)] = Map::new()
 
-fn translate_text(text : String, target : String, done : (TrAnswer) -> Unit) -> Int {
+fn tr_http(text : String, target : String, done : (TrAnswer) -> Unit) -> Unit {
   let s = settings.untracked()
   match tr_request_for(s, text, target) {
-    Err(why) => {
-      done(TrFailed(why))
-      0
-    }
+    Err(why) => done(TrFailed(why))
     Ok(r) => {
       tr_id.v += 1
       let id = tr_id.v
@@ -294,9 +388,7 @@ fn translate_text(text : String, target : String, done : (TrAnswer) -> Unit) -> 
       if ps_http(id, r.verb, r.url, r.headers, r.body, r.timeout) == 0 {
         tr_waiting.remove(id)
         done(TrFailed(tr("接口地址要以 https:// 开头。")))
-        return 0
       }
-      id
     }
   }
 }
@@ -313,6 +405,67 @@ fn http_told(o : json::JsonObject, body : Option[Bytes]) -> Unit {
   }
   log("translate \{id}: status \{status} '\{err}', \{text.length()} bytes")
   done(tr_read_answer(p, status, err, text))
+}
+
+/// `lines` translated, in pieces of at most tr_chunk_most characters one after another; each piece's answer put back
+/// line for line.
+fn tr_lines_translated(
+  lines : Array[String],
+  target : String,
+  done : (Result[Array[String], String]) -> Unit,
+) -> Unit {
+  let pieces : Array[(Int, Int)] = []
+  let mut start = 0
+  let mut size = 0
+  for i, l in lines {
+    let n = str_chars(l).length() + 1
+    if i > start && size + n > tr_chunk_most {
+      pieces.push((start, i))
+      start = i
+      size = 0
+    }
+    size += n
+  }
+  if start < lines.length() {
+    pieces.push((start, lines.length()))
+  }
+  let out : Array[String] = []
+  let llm = settings.untracked().tr_provider != "google"
+  let step : signals::Ref[(Int) -> Unit] = signals::ref_new(fn(_) { () })
+  step.v = fn(k : Int) {
+    if k >= pieces.length() {
+      done(Ok(out))
+      return
+    }
+    let (a, b) = pieces[k]
+    let sb = StringBuilder::new()
+    for i in a..<b {
+      if i > a {
+        sb.write_char('\n')
+      }
+      sb.write_string(lines[i])
+    }
+    tr_http(sb.to_string(), target, fn(ans) {
+      match ans {
+        TrFailed(why) => done(Err(why))
+        TrDone(text) => {
+          let parts = if llm {
+            match tr_numbered_answer(text, b - a) {
+              Some(v) => v
+              None => tr_split_answer(text, b - a)
+            }
+          } else {
+            tr_split_answer(text, b - a)
+          }
+          for i in 0..<(b - a) {
+            out.push(if i < parts.length() { parts[i] } else { "" })
+          }
+          (step.v)(k + 1)
+        }
+      }
+    })
+  }
+  (step.v)(0)
 }
 
 // ---- the picture's words as blocks ----
@@ -371,7 +524,6 @@ fn tr_join(a : String, b : String) -> String {
 fn tr_blocks(words : Array[OcrWord], px_w : Double, px_h : Double) -> Array[TrBlock] {
   let lines = tr_lines(words)
   let out : Array[TrBlock] = []
-  let aspect = if px_w > 0.0 { px_h / px_w } else { 1.0 }
   let mut i = 0
   while i < lines.length() {
     let first = lines[i]
@@ -392,7 +544,7 @@ fn tr_blocks(words : Array[OcrWord], px_w : Double, px_h : Double) -> Array[TrBl
       let gap = l.y0 - prev.y1
       let same_size = h <= avg * 1.3 && h >= avg / 1.3
       let near = gap >= -avg * 0.3 && gap <= avg * 0.75
-      let left = (l.x0 - x0).abs() * aspect <= avg * 1.6 * 1.0
+      let left = (l.x0 - x0).abs() * px_w <= avg * px_h * 1.6
       let overlap = dmin(l.x1, x1) - dmax(l.x0, x0) > 0.0
       if !(same_size && near && left && overlap) {
         break
@@ -412,91 +564,7 @@ fn tr_blocks(words : Array[OcrWord], px_w : Double, px_h : Double) -> Array[TrBl
     } else {
       lh
     }
-    out.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0, lh: size, src: text, text: "", bg: 0xFFFFFFFFL, ink: 0x111111FFL })
-  }
-  out
-}
-
-fn tr_split_answer(answer : String, n : Int) -> Array[String] {
-  let got : Array[String] = []
-  for l in answer.split("\n") {
-    let t = trim_ws(l)
-    if t != "" {
-      got.push(t)
-    }
-  }
-  if got.length() == n || n <= 0 {
-    return got
-  }
-  let out : Array[String] = []
-  if got.length() > n {
-    for k in 0..<(n - 1) {
-      out.push(got[k])
-    }
-    let sb = StringBuilder::new()
-    for k in (n - 1)..<got.length() {
-      if k > n - 1 {
-        sb.write_char(' ')
-      }
-      sb.write_string(got[k])
-    }
-    out.push(sb.to_string())
-  } else {
-    for g in got {
-      out.push(g)
-    }
-    while out.length() < n {
-      out.push("")
-    }
-  }
-  out
-}
-
-fn tr_colors(blocks : Array[TrBlock], picture : Bytes) -> Array[TrBlock] {
-  guard picture_rgba(picture) is Some((w, h, px)) else { return blocks }
-  if w <= 0 || h <= 0 {
-    return blocks
-  }
-  let out : Array[TrBlock] = []
-  for b in blocks {
-    let pad = dmax(2.0, b.lh * h.to_double() * 0.2)
-    let bx0 = clampi((b.x * w.to_double() - pad).to_int(), 0, w - 1)
-    let by0 = clampi((b.y * h.to_double() - pad).to_int(), 0, h - 1)
-    let bx1 = clampi(((b.x + b.w) * w.to_double() + pad).to_int(), 0, w - 1)
-    let by1 = clampi(((b.y + b.h) * h.to_double() + pad).to_int(), 0, h - 1)
-    let mut r = 0
-    let mut g = 0
-    let mut bl = 0
-    let mut n = 0
-    let take = fn(x : Int, y : Int) {
-      let o = (y * w + x) * 4
-      r += px[o].to_int()
-      g += px[o + 1].to_int()
-      bl += px[o + 2].to_int()
-      n += 1
-    }
-    let step = 2
-    let mut x = bx0
-    while x <= bx1 {
-      take(x, by0)
-      take(x, by1)
-      x += step
-    }
-    let mut y = by0
-    while y <= by1 {
-      take(bx0, y)
-      take(bx1, y)
-      y += step
-    }
-    if n == 0 {
-      out.push(b)
-      continue
-    }
-    let (rr, gg, bb) = (r / n, g / n, bl / n)
-    let bg = (rr.to_int64() << 24) | (gg.to_int64() << 16) | (bb.to_int64() << 8) | 0xFFL
-    let lum = 0.299 * rr.to_double() + 0.587 * gg.to_double() + 0.114 * bb.to_double()
-    let ink = if lum > 140.0 { 0x141414FFL } else { 0xF5F5F5FFL }
-    out.push(TrBlock::{ ..b, bg: bg, ink: ink })
+    out.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0, lh: size, src: text, text: "" })
   }
   out
 }
@@ -515,51 +583,108 @@ fn tr_same(a : String, b : String) -> Bool {
   b == "" || squeeze(a) == squeeze(b)
 }
 
-fn tr_fit_size(text : String, w : Double, most_w : Double, h : Double, lh : Double) -> (Double, Double, Double) {
-  let w1 = dmax(ui::measure_text_width(text, 100.0) / 100.0, 0.3)
-  let breaks = text.split("\n").length().to_double()
-  let s0 = clamp(lh, 7.0, 72.0)
-  let least = dmax(7.0, s0 * 0.8)
-  let lines_at = fn(s : Double, width : Double) { dmax(breaks, (w1 * s * 1.15 / dmax(width, 1.0)).ceil()) }
-  let mut s = s0
-  while s >= least {
-    if lines_at(s, w) * s * 1.3 <= h + 1.0 {
-      return (s, w, h)
-    }
-    s -= 0.5
-  }
-  let s = least
-  let need = w1 * s * 1.15 + 4.0
-  if breaks <= 1.0 && need <= most_w && s * 1.3 <= h + 1.0 {
-    return (s, dmax(w, need), h)
-  }
-  let wide = dmax(w, dmin(most_w, need))
-  (s, wide, dmax(h, lines_at(s, wide) * s * 1.3))
+fn tr_one_line(s : String) -> String {
+  str_replace_all(str_replace_all(str_replace_all(s, "\r", " "), "\n", " "), "\t", " ")
 }
+
+/// What the native drawing is told: one row per block, "x y w h size draw text" (tabs), positions as shares of the
+/// picture; a block whose translation is its own words is not drawn, only laid out for selecting.
+fn tr_spec(blocks : Array[TrBlock]) -> String {
+  let sb = StringBuilder::new()
+  for b in blocks {
+    let same = tr_same(b.src, b.text)
+    sb.write_string("\{b.x}\t\{b.y}\t\{b.w}\t\{b.h}\t\{b.lh}\t\{if same { 0 } else { 1 }}\t")
+    sb.write_string(tr_one_line(if same { b.src } else { b.text }))
+    sb.write_char('\n')
+  }
+  sb.to_string()
+}
+
+fn tr_parse_words(raw : String) -> Array[OcrWord] {
+  let out : Array[OcrWord] = []
+  for row in raw.split("\n") {
+    let parts : Array[String] = row.split("\t")
+    if parts.length() < 8 {
+      continue
+    }
+    let sb = StringBuilder::new()
+    for i in 7..<parts.length() {
+      if i > 7 {
+        sb.write_char('\t')
+      }
+      sb.write_string(parts[i])
+    }
+    let text = sb.to_string()
+    if text == "" {
+      continue
+    }
+    let x = clamp(parse_double_or(parts[3], 0.0), 0.0, 1.0)
+    let y = clamp(parse_double_or(parts[4], 0.0), 0.0, 1.0)
+    out.push(OcrWord::{
+      line: parse_int_or(parts[0], 0),
+      para: parse_int_or(parts[1], 0),
+      space: parts[2] != "0",
+      x,
+      y,
+      w: clamp(parse_double_or(parts[5], 0.0), 0.0, 1.0 - x),
+      h: clamp(parse_double_or(parts[6], 0.0), 0.0, 1.0 - y),
+      text,
+    })
+  }
+  out
+}
+
+let tr_words_got : Map[Int, Array[OcrWord]] = Map::new()
+
+fn tr_words_told(o : json::JsonObject, bytes : Option[Bytes]) -> Unit {
+  let req = jnum(o, "id", -1.0).to_int()
+  if tr_drawing.get(req).is_none() {
+    return
+  }
+  tr_words_got[req] = match bytes {
+    Some(b) => tr_parse_words(text_of(b))
+    None => []
+  }
+}
+
+fn tr_full_text(blocks : Array[TrBlock]) -> String {
+  let sb = StringBuilder::new()
+  for i, b in blocks {
+    if i > 0 {
+      sb.write_char('\n')
+    }
+    sb.write_string(if b.text != "" { b.text } else { b.src })
+  }
+  sb.to_string()
+}
+
+// ---- a pin's translation ----
+
+let tr_drawing : Map[Int, (Int, Array[TrBlock])] = Map::new()
 
 fn pin_tr_text(p : Pin) -> String {
   match p.tr.untracked() {
-    TrReady(bs) => {
-      let sb = StringBuilder::new()
-      for i, b in bs {
-        if i > 0 {
-          sb.write_char('\n')
-        }
-        sb.write_string(if b.text != "" { b.text } else { b.src })
-      }
-      sb.to_string()
-    }
+    TrReady(s) => s.full
     _ => ""
+  }
+}
+
+fn pin_tr_forget(p : Pin) -> Unit {
+  match p.tr.untracked() {
+    TrReady(s) => ui::forget_image(s.key)
+    _ => ()
   }
 }
 
 fn pin_tr_clear(p : Pin) -> Unit {
   p.tr_req.v = 0
   p.tr_wanted.v = false
-  tr_layouts.remove(p.wid.v)
+  pin_tr_forget(p)
   signals::start_batch()
   p.tr_on.set(false)
   p.tr.set(TrIdle)
+  p.ocr_sel.set(None)
+  p.ocr_hover.set(-1)
   signals::end_batch()
 }
 
@@ -592,20 +717,21 @@ fn pin_translate(p : Pin) -> Unit {
   if !p.ocr_on.untracked() {
     pin_start_ocr(p)
   }
-  let blocks = tr_blocks(words, p.w.to_double(), p.h.to_double())
+  let pic = shown_picture(p)
+  let (pw, ph) = match pixels::image_size(pic) {
+    Some(v) => v
+    None => (p.w, p.h)
+  }
+  let blocks = tr_blocks(words, pw.to_double(), ph.to_double())
   if blocks.length() == 0 {
     p.tr.set(TrError(tr("没有可以翻译的文字")))
     return
   }
-  let sb = StringBuilder::new()
-  for i, b in blocks {
-    if i > 0 {
-      sb.write_char('\n')
-    }
-    sb.write_string(b.src)
+  let lines : Array[String] = []
+  for b in blocks {
+    lines.push(tr_one_line(b.src))
   }
-  let text = sb.to_string()
-  let target = tr_target_for(text)
+  let target = tr_target_for(lines.join("\n"))
   signals::start_batch()
   p.tr.set(TrWorking)
   p.tr_on.set(true)
@@ -613,38 +739,75 @@ fn pin_translate(p : Pin) -> Unit {
   p.ocr_hover.set(-1)
   signals::end_batch()
   let wid = p.wid.v
-  let req = tr_id.v + 1
+  tr_id.v += 1
+  let req = tr_id.v
   p.tr_req.v = req
-  let made = translate_text(text, target, fn(a) {
+  tr_lines_translated(lines, target, fn(got) {
     guard pin_of_wid(wid) is Some((_, q)) && q.tr_req.v == req else { return }
-    match a {
-      TrDone(answer) => {
-        let parts = tr_split_answer(answer, blocks.length())
+    match got {
+      Ok(parts) => {
         let filled : Array[TrBlock] = []
         for i, b in blocks {
           filled.push({ ..b, text: if i < parts.length() { parts[i] } else { "" } })
         }
-        signals::start_batch()
-        q.ocr_sel.set(None)
-        q.ocr_hover.set(-1)
-        q.tr.set(TrReady(tr_colors(filled, shown_picture(q))))
-        signals::end_batch()
+        tr_drawing[req] = (wid, filled)
+        if ps_tr_render(req, pic, tr_spec(filled), if str_has_prefix(target, "zh") { 1 } else { 0 }) == 0 {
+          tr_drawing.remove(req)
+          pin_tr_failed(q, tr("译文没画出来。"))
+        }
       }
-      TrFailed(why) => {
-        signals::start_batch()
-        q.tr.set(TrError(why))
-        q.tr_on.set(false)
-        signals::end_batch()
-        toast(why)
-      }
+      Err(why) => pin_tr_failed(q, why)
     }
   })
-  if made == 0 && p.tr_req.v == req {
-    p.tr_req.v = 0
+}
+
+fn pin_tr_failed(p : Pin, why : String) -> Unit {
+  p.tr_req.v = 0
+  signals::start_batch()
+  p.tr.set(TrError(why))
+  p.tr_on.set(false)
+  signals::end_batch()
+  toast(why)
+}
+
+fn tr_pic_told(o : json::JsonObject, bytes : Option[Bytes]) -> Unit {
+  let req = jnum(o, "id", -1.0).to_int()
+  guard tr_drawing.get(req) is Some((wid, blocks)) else { return }
+  tr_drawing.remove(req)
+  guard pin_of_wid(wid) is Some((_, p)) && p.tr_req.v == req else { return }
+  let words = match tr_words_got.get(req) {
+    Some(v) => v
+    None => []
   }
+  tr_words_got.remove(req)
+  let pic = match bytes {
+    Some(v) if jnum(o, "ok", 0.0) != 0.0 && v.length() > 0 => v
+    _ => {
+      log("translate \{req}: drawing failed '\{jstr(o, "why", "")}'")
+      pin_tr_failed(p, tr("译文没画出来。"))
+      return
+    }
+  }
+  let key = "tr:\{wid}:\{req}"
+  ui::add_image(key, pic)
+  pin_tr_forget(p)
+  p.tr_req.v = 0
+  signals::start_batch()
+  p.ocr_sel.set(None)
+  p.ocr_hover.set(-1)
+  p.tr.set(TrReady(TrShown::{ blocks: blocks, key: key, words: words, full: tr_full_text(blocks) }))
+  signals::end_batch()
+  log("translate \{req}: drawn, \{words.length()} words")
 }
 
 fn pin_toggle_translate(p : Pin) -> Unit {
+  match p.tr.untracked() {
+    TrWorking => {
+      pin_tr_clear(p)
+      return
+    }
+    _ => ()
+  }
   signals::start_batch()
   p.ocr_sel.set(None)
   p.ocr_hover.set(-1)
@@ -660,270 +823,45 @@ fn pin_toggle_translate(p : Pin) -> Unit {
   }
 }
 
-let tr_pool : Int = 96
-
-let tr_line_pool : Int = 320
-
-struct TrPlace {
-  block : TrBlock
-  x : Double
-  y : Double
-  w : Double
-  h : Double
-}
-
-struct TrLineOut {
-  text : String
-  x : Double
-  y : Double
-  size : Double
-  ink : Int64
-}
-
-struct TrLayout {
-  blocks : Array[TrBlock]
-  zx : Double
-  zy : Double
-  k : Double
-  places : Array[TrPlace]
-  lines : Array[TrLineOut]
-  words : Array[OcrWord]
-}
-
-let tr_layouts : Map[Int, TrLayout] = Map::new()
-
-fn tr_tokens(text : String) -> Array[(String, Bool)] {
-  let out : Array[(String, Bool)] = []
-  let sb = StringBuilder::new()
-  let mut word = false
-  let mut space = false
-  let flush = fn() {
-    if word {
-      out.push((sb.to_string(), space))
-      sb.reset()
-      word = false
-      space = false
-    }
-  }
-  for c in str_chars(text) {
-    let n = c.to_int()
-    if n == 0x20 || n == 0x09 || n == 0x0A || n == 0x0D || n == 0x3000 || n == 0xA0 {
-      flush()
-      if out.length() > 0 {
-        space = true
-      }
-    } else if is_unspaced(n) {
-      flush()
-      out.push((c.to_string(), space))
-      space = false
-    } else {
-      sb.write_char(c)
-      word = true
-    }
-  }
-  flush()
-  out
-}
-
-fn tr_wrap(tokens : Array[(String, Bool)], size : Double, most : Double) -> Array[Array[Int]] {
-  let lines : Array[Array[Int]] = []
-  let mut cur : Array[Int] = []
-  let mut text = ""
-  for i, t in tokens {
-    let (w, sp) = t
-    let next = if cur.length() > 0 && sp { text + " " + w } else { text + w }
-    if cur.length() > 0 && ui::measure_text_width(next, size, weight=500) > most {
-      lines.push(cur)
-      cur = [i]
-      text = w
-    } else {
-      cur.push(i)
-      text = next
-    }
-  }
-  if cur.length() > 0 {
-    lines.push(cur)
-  }
-  lines
-}
-
-fn tr_layout_build(bs : Array[TrBlock], pw : Double, ph : Double, zx : Double, zy : Double, k : Double) -> TrLayout {
-  let vw = dmax(1.0, pw * zx / k)
-  let vh = dmax(1.0, ph * zy / k)
-  let places : Array[TrPlace] = []
-  let lines : Array[TrLineOut] = []
-  let words : Array[OcrWord] = []
-  let mut line_n = 0
-  for bi, b in bs {
-    if places.length() >= tr_pool {
-      break
-    }
-    let same = tr_same(b.src, b.text)
-    let pad = clamp(b.lh * vh * 0.12, 1.0, 4.0)
-    let x = dmax(0.0, b.x * vw - pad)
-    let y = dmax(0.0, b.y * vh - pad)
-    let w = dmin(vw - x, b.w * vw + pad * 2.0)
-    let h = b.h * vh + pad * 2.0
-    let shown = if same { b.src } else { b.text }
-    let (size, fit_w, fit_h) = if same {
-      (clamp(b.lh * vh, 7.0, 72.0), w - 2.0, h)
-    } else {
-      tr_fit_size(b.text, w - 2.0, vw - x - 2.0, h, b.lh * vh)
-    }
-    let tokens = tr_tokens(shown)
-    let wrapped = tr_wrap(tokens, size, if same { fit_w + size } else { fit_w })
-    let line_h = size * 1.3
-    let box_h = dmax(fit_h, wrapped.length().to_double() * line_h + 2.0)
-    if !same {
-      places.push(TrPlace::{ block: b, x, y, w: fit_w + 2.0, h: box_h })
-    }
-    let top = y + (box_h - wrapped.length().to_double() * line_h) / 2.0
-    for li, idxs in wrapped {
-      let ly = top + li.to_double() * line_h
-      let sb = StringBuilder::new()
-      for j, ti in idxs {
-        let (tw, sp) = tokens[ti]
-        let before = sb.to_string()
-        let lead = if j > 0 && sp { " " } else { "" }
-        let wx = x + 1.0 + ui::measure_text_width(before + lead, size, weight=500)
-        let ww = ui::measure_text_width(tw, size, weight=500)
-        sb.write_string(lead)
-        sb.write_string(tw)
-        if lines.length() < tr_line_pool {
-          words.push(OcrWord::{
-            line: line_n,
-            para: bi,
-            space: sp,
-            x: wx / vw,
-            y: ly / vh,
-            w: ww / vw,
-            h: line_h / vh,
-            text: tw,
-          })
-        }
-      }
-      if !same && lines.length() < tr_line_pool {
-        lines.push(TrLineOut::{ text: sb.to_string(), x: x + 1.0, y: ly, size, ink: b.ink })
-      }
-      line_n += 1
-    }
-  }
-  { blocks: bs, zx, zy, k, places, lines, words }
-}
-
-fn tr_layout(p : Pin) -> Option[TrLayout] {
-  guard p.tr.untracked() is TrReady(bs) else { return None }
-  let zx = p.zx.untracked()
-  let zy = p.zy.untracked()
-  let r = numbers_of(text_of(ps_window_rect(p.wid.v)))
-  let k = if r.length() >= 5 && r[4] > 0.0 { r[4] / 96.0 } else { 1.0 }
-  match tr_layouts.get(p.wid.v) {
-    Some(l) if physical_equal(l.blocks, bs) && l.zx == zx && l.zy == zy && l.k == k => return Some(l)
-    _ => ()
-  }
-  let l = tr_layout_build(bs, p.w.to_double(), p.h.to_double(), zx, zy, k)
-  tr_layouts[p.wid.v] = l
-  Some(l)
-}
-
-fn tr_layer(root : view::View, p : Pin) -> Unit {
-  let laid : signals::Computed[Option[TrLayout]] = signals::computed_ref(fn(_) {
-    if !p.tr_on.get() {
-      return None
-    }
+/// The picture the pin shows: the translated one while the translation is on.
+fn pin_shown_key(p : Pin) -> String {
+  if p.tr_on.get() {
     match p.tr.get() {
-      TrReady(_) => {
-        let _ = p.zx.get()
-        let _ = p.zy.get()
-        tr_layout(p)
-      }
-      _ => None
-    }
-  })
-  let place = fn(i : Int) -> Option[TrPlace] {
-    match laid.get() {
-      Some(l) if i < l.places.length() => Some(l.places[i])
-      _ => None
+      TrReady(s) => return s.key
+      _ => ()
     }
   }
-  let line = fn(i : Int) -> Option[TrLineOut] {
-    match laid.get() {
-      Some(l) if i < l.lines.length() => Some(l.lines[i])
-      _ => None
-    }
-  }
-  root.show(fn() { laid.get().is_some() }, fn(layer) {
-    let _ = layer.over(view::Live::Is(true)).presses(view::Live::Is(false))
-    for i in 0..<tr_pool {
-      let _ = layer.box(fn(b) {
-        let _ = b
-        .over(view::Live::Is(true))
-        .presses(view::Live::Is(false))
-        .laid_nowhere(view::Live::By(fn() { place(i).is_none() }))
-        .offset(view::Live::By(fn() {
-          match place(i) {
-            Some(q) => (q.x, q.y)
-            None => (0.0, 0.0)
-          }
-        }))
-        .width(view::Live::By(fn() { Some(match place(i) { Some(q) => q.w; None => 0.0 }) }))
-        .height(view::Live::By(fn() { Some(match place(i) { Some(q) => q.h; None => 0.0 }) }))
-        .radius(view::Live::Is(3.0))
-        .ground(view::Live::By(fn() {
-          match place(i) {
-            Some(q) => q.block.bg
-            None => 0L
-          }
-        }))
-      })
-    }
-    for i in 0..<tr_line_pool {
-      let _ = layer.box(fn(t) {
-        let _ = t
-        .over(view::Live::Is(true))
-        .presses(view::Live::Is(false))
-        .laid_nowhere(view::Live::By(fn() { line(i).is_none() }))
-        .offset(view::Live::By(fn() {
-          match line(i) {
-            Some(q) => (q.x, q.y)
-            None => (0.0, 0.0)
-          }
-        }))
-        .lines_up(view::Live::Is(Some(view::Along::Middle)))
-        .height(view::Live::By(fn() { Some(match line(i) { Some(q) => q.size * 1.3; None => 0.0 }) }))
-        .words(view::Live::By(fn() {
-          match line(i) {
-            Some(q) => q.text
-            None => ""
-          }
-        }))
-        .words_look(view::Live::By(fn() {
-          let size = match line(i) {
-            Some(q) => q.size
-            None => 12.0
-          }
-          view::WordsLook::{ ..view::words_plain, size, weight: 500, line: (size * 1.3).round(), wrap: false }
-        }))
-        .ink(view::Live::By(fn() {
-          match line(i) {
-            Some(q) => q.ink
-            None => 0L
-          }
-        }))
-      })
-    }
-  })
+  p.key.get()
 }
+
+// ---- settings ----
+
+let tr_save_gen : signals::Ref[Int] = signals::ref_new(0)
 
 fn translate_page(p : view::View) -> Unit {
   let key_field : ui::Field = ui::Field::new()
   let base_field : ui::Field = ui::Field::new()
   let model_field : ui::Field = ui::Field::new()
-  let s0 = settings.untracked()
-  key_field.set(s0.tr_key)
-  base_field.set(s0.tr_base)
-  model_field.set(s0.tr_model)
+  let fill = fn() {
+    let s = settings.untracked()
+    key_field.set(tr_key_of(s, s.tr_provider))
+    base_field.set(s.tr_base)
+    model_field.set(tr_model_of(s, s.tr_provider))
+  }
+  fill()
   let provider = fn() { settings.get().tr_provider }
+  p.reacts(fn() { settings.get().tr_provider }, at_start=false, fn(_) { fill() })
+  // (typed in without being written at each key: kept, then written once the typing stops)
+  let quietly = fn(f : (Settings) -> Settings) {
+    settings.set(f(settings.untracked()))
+    tr_save_gen.v += 1
+    let g = tr_save_gen.v
+    let _ = p.at_moment(p.cause_at() + 700.0, fn() {
+      if g == tr_save_gen.v {
+        save_settings()
+      }
+    }, later=true)
+  }
   let input = fn(r : view::View, f : ui::Field, hint : () -> String, secret : Bool, set : (String) -> Unit) {
     let _ = r.box(fn(wrap) {
       let _ = wrap
@@ -971,19 +909,33 @@ fn translate_page(p : view::View) -> Unit {
         input(r, key_field, fn() {
           let env = tr_key_env(provider())
           if trim_ws(ui::env(env)) != "" { trn("留空则用环境变量 {}", env) } else { "sk-…" }
-        }, true, fn(t) { change_settings(fn(s) { Settings::{ ..s, tr_key: t } }) })
+        }, true, fn(t) {
+          quietly(fn(s) {
+            if s.tr_provider == "deepseek" {
+              Settings::{ ..s, tr_key_deepseek: t }
+            } else {
+              Settings::{ ..s, tr_key_openai: t }
+            }
+          })
+        })
       }, note=fn() { tr("只存在本机的设置文件里") }, note_ink=fn() { set_muted })
       let _ = more.box(fn(oa) {
         let _ = oa.laid_nowhere(view::Live::By(fn() { provider() != "openai" }))
         set_row(oa, "接口地址", fn(r) {
           input(r, base_field, fn() { tr_default_base("openai") }, false, fn(t) {
-            change_settings(fn(s) { Settings::{ ..s, tr_base: t } })
+            quietly(fn(s) { Settings::{ ..s, tr_base: t } })
           })
         })
       })
       set_row(more, "模型", fn(r) {
         input(r, model_field, fn() { tr_default_model(provider()) }, false, fn(t) {
-          change_settings(fn(s) { Settings::{ ..s, tr_model: t } })
+          quietly(fn(s) {
+            if s.tr_provider == "deepseek" {
+              Settings::{ ..s, tr_model_deepseek: t }
+            } else {
+              Settings::{ ..s, tr_model_openai: t }
+            }
+          })
         })
       })
     })
@@ -1004,6 +956,7 @@ test "translation requests and answers" {
   assert_eq(l.url, "https://api.deepseek.com/v1/chat/completions")
   assert_true(str_contains(l.body, "\"thinking\":{\"type\":\"disabled\"}"))
   assert_true(str_contains(l.body, "exactly 2 lines"))
+  assert_true(str_contains(l.body, "1. Hi\\n2. there"))
   assert_true(str_contains(l.headers, "Bearer sk-x"))
   match parse_google("[[[\"你好\",\"Hello\",null],[\"世界\",\" world\",null]],null,\"en\"]") {
     TrDone(t) => assert_eq(t, "你好世界")
@@ -1015,21 +968,11 @@ test "translation requests and answers" {
   }
   assert_true(tr_read_answer("openai", 401, "", "") is TrFailed(_))
   assert_true(tr_read_answer("google", 0, "timeout", "") is TrFailed(_))
-}
-
-test "translated words wrap into selectable lines" {
-  let toks = tr_tokens("Hello big world 你好")
-  assert_eq(toks.length(), 5)
-  assert_true(toks[1].1 && toks[3].1 && !toks[0].1 && !toks[4].1)
-  let b : TrBlock = { x: 0.1, y: 0.1, w: 0.3, h: 0.1, lh: 0.04, src: "x", text: "one two three four five six seven", bg: 0xFFFFFFFFL, ink: 0x000000FFL }
-  let l = tr_layout_build([b], 400.0, 400.0, 1.0, 1.0, 1.0)
-  assert_eq(l.places.length(), 1)
-  assert_eq(l.words.length(), 7)
-  assert_true(l.lines.length() >= 1)
-  assert_eq(ocr_text_range(l.words, 0, 6), "one two three four five six seven")
-  for w in l.words {
-    assert_true(w.para == 0 && w.x >= 0.0 && w.x + w.w <= 1.0)
+  match tr_numbered_answer("2. 二\n1. 一\n4. 多余", 3) {
+    Some(v) => assert_true(v[0] == "一" && v[1] == "二" && v[2] == "")
+    None => assert_true(false)
   }
+  assert_true(tr_numbered_answer("没有编号", 2) is None)
 }
 
 test "translation blocks from OCR lines" {
@@ -1041,6 +984,9 @@ test "translation blocks from OCR lines" {
   assert_eq(bs[0].src, "The quick brown fox jumps.")
   assert_eq(bs[1].src, "Title")
   assert_eq(bs[2].src, "你好")
+  // (a tall picture: lines a little apart sideways, in pixels, still one paragraph)
+  let tall = "0\t0\t0.100\t0.100\t0.50\t0.0125\tone line of a\n1\t0\t0.115\t0.115\t0.50\t0.0125\tparagraph here\n"
+  assert_eq(tr_blocks(ocr_parse_boxes(tall), 400.0, 1600.0).length(), 1)
   assert_eq(tr_join("inter-", "national"), "international")
   assert_eq(tr_join("你好", "世界"), "你好世界")
   let parts = tr_split_answer("一\n\n二\n三\n四", 3)
@@ -1049,4 +995,9 @@ test "translation blocks from OCR lines" {
   let fewer = tr_split_answer("一", 2)
   assert_eq(fewer.length(), 2)
   assert_eq(fewer[1], "")
+  let spec = tr_spec([{ x: 0.1, y: 0.2, w: 0.3, h: 0.1, lh: 0.04, src: "a\tb", text: "甲\n乙" }])
+  assert_true(str_contains(spec, "\t1\t甲 乙\n"))
+  let back = tr_parse_words("0\t2\t1\t0.1\t0.2\t0.05\t0.03\tword\nbad row\n")
+  assert_eq(back.length(), 1)
+  assert_true(back[0].para == 2 && back[0].space && back[0].text == "word")
 }

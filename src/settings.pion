@@ -21,9 +21,11 @@ struct Settings {
   sound : Bool
   auto_update : Bool
   tr_provider : String
-  tr_key : String
+  tr_key_deepseek : String
+  tr_key_openai : String
   tr_base : String
-  tr_model : String
+  tr_model_deepseek : String
+  tr_model_openai : String
 }
 
 let key_choices : Array[(String, Int, Int)] = if hostapi::platform() == 0 {
@@ -137,9 +139,11 @@ fn default_settings() -> Settings {
     language: 0,
     auto_update: false,
     tr_provider: "google",
-    tr_key: "",
+    tr_key_deepseek: "",
+    tr_key_openai: "",
     tr_base: "",
-    tr_model: "",
+    tr_model_deepseek: "",
+    tr_model_openai: "",
   }
 }
 
@@ -158,9 +162,11 @@ let settings : signals::Signal[Settings] = signals::signal_by(Settings::{
   language: 0,
   auto_update: false,
   tr_provider: "google",
-  tr_key: "",
+  tr_key_deepseek: "",
+  tr_key_openai: "",
   tr_base: "",
-  tr_model: "",
+  tr_model_deepseek: "",
+  tr_model_openai: "",
 }, same=fn(a, b) { a == b })
 
 let capture_key_ok : signals::Signal[Bool] = signals::signal(true)
@@ -253,9 +259,11 @@ fn load_settings() -> Unit {
           "openai" => "openai"
           _ => "google"
         },
-        tr_key: jstr(o, "tr_key", ""),
+        tr_key_deepseek: jstr(o, "tr_key_deepseek", ""),
+        tr_key_openai: jstr(o, "tr_key_openai", ""),
         tr_base: jstr(o, "tr_base", ""),
-        tr_model: jstr(o, "tr_model", ""),
+        tr_model_deepseek: jstr(o, "tr_model_deepseek", ""),
+        tr_model_openai: jstr(o, "tr_model_openai", ""),
       }
     }
     _ => d
@@ -309,9 +317,11 @@ fn save_settings() -> Unit {
   o["auto_update"] = json_bool(s.auto_update)
   o["language"] = json_str(["system", "zh", "en"][s.language])
   o["tr_provider"] = json_str(s.tr_provider)
-  o["tr_key"] = json_str(s.tr_key)
+  o["tr_key_deepseek"] = json_str(s.tr_key_deepseek)
+  o["tr_key_openai"] = json_str(s.tr_key_openai)
   o["tr_base"] = json_str(s.tr_base)
-  o["tr_model"] = json_str(s.tr_model)
+  o["tr_model_deepseek"] = json_str(s.tr_model_deepseek)
+  o["tr_model_openai"] = json_str(s.tr_model_openai)
   o["rec_fps"] = json_num(rec_fps.untracked().to_double())
   o["rec_cursor"] = json_bool(rec_cursor.untracked())
   o["rec_audio"] = json_bool(rec_audio.untracked())

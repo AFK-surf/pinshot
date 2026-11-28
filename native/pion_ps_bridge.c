@@ -33,6 +33,7 @@ extern int32_t ps_install_cli(moonbit_bytes_t version);
 extern void ps_install_sync_meta(moonbit_bytes_t version);
 extern int32_t ps_swap_exe(moonbit_bytes_t path, moonbit_bytes_t sha256);
 extern void ps_open_url(moonbit_bytes_t url);
+extern int32_t ps_tr_render(int32_t id, moonbit_bytes_t pic, moonbit_bytes_t spec, int32_t zh);
 extern int32_t ps_http(int32_t id, moonbit_bytes_t verb, moonbit_bytes_t url, moonbit_bytes_t headers, moonbit_bytes_t body,
                        int32_t timeout_ms);
 
@@ -207,6 +208,14 @@ void pion_ps_open_url(const uint8_t *u, int64_t ul) {
   moonbit_bytes_t bu = mb_from(u, ul);
   ps_open_url(bu);
   moonbit_decref(bu);
+}
+
+int32_t pion_ps_tr_render(int32_t id, const uint8_t *p, int64_t pl, const uint8_t *s, int64_t sl, int32_t zh) {
+  moonbit_bytes_t bp = mb_from(p, pl), bs = mb_from(s, sl);
+  int32_t r = ps_tr_render(id, bp, bs, zh);
+  moonbit_decref(bp);
+  moonbit_decref(bs);
+  return r;
 }
 
 int32_t pion_ps_http(

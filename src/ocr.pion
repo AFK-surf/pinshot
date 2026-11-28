@@ -283,6 +283,9 @@ fn pin_retry_ocr(p : Pin) -> Unit {
 fn pin_exit_ocr(p : Pin) -> Unit {
   p.ocr_selecting.v = false
   p.tr_wanted.v = false
+  if p.tr.untracked() is TrWorking {
+    pin_tr_clear(p)
+  }
   signals::start_batch()
   p.tr_on.set(false)
   p.ocr_on.set(false)
@@ -686,7 +689,9 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         .presses(view::Live::Is(true))
         .cursor(view::Live::Is(Some(view::Cursor::Hand)))
         .laid_nowhere(view::Live::By(fn() {
-          let wide = p.w.to_double() * p.zx.get() >= 320.0
+          let r = numbers_of(text_of(ps_window_rect(p.wid.v)))
+          let k = if r.length() >= 5 && r[4] > 0.0 { r[4] / 96.0 } else { 1.0 }
+          let wide = p.w.to_double() * p.zx.get() / k >= 320.0
           match pin_sel_state_get(p) {
             Ready(ws, _) => !wide || ws.length() == 0
             _ => true
@@ -779,9 +784,9 @@ fn tr_shown_now(p : Pin) -> Bool {
 
 fn pin_sel_state(p : Pin) -> PinOcr {
   if p.tr_on.untracked() {
-    match tr_layout(p) {
-      Some(l) => return PinOcr::Ready(l.words, pin_tr_text(p))
-      None => ()
+    match p.tr.untracked() {
+      TrReady(s) => return PinOcr::Ready(s.words, s.full)
+      _ => ()
     }
   }
   p.ocr.untracked()
@@ -790,11 +795,7 @@ fn pin_sel_state(p : Pin) -> PinOcr {
 fn pin_sel_state_get(p : Pin) -> PinOcr {
   if p.tr_on.get() {
     match p.tr.get() {
-      TrReady(_) => {
-        let _ = p.zx.get()
-        let _ = p.zy.get()
-        return pin_sel_state(p)
-      }
+      TrReady(s) => return PinOcr::Ready(s.words, s.full)
       _ => ()
     }
   }
