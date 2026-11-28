@@ -13,18 +13,37 @@ on:
       - 'pion.toml'
       - 'scripts/build.ps1'
       - '.github/workflows/windows.yml'
+  # (and once merged: a pull request reads only its own caches and master's, so master keeps the toolchain and the
+  # pionc cache warm for the next pull request and tag)
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'native/**'
+      - 'assets/**'
+      - 'pion.toml'
+      - 'scripts/build.ps1'
+      - '.github/workflows/windows.yml'
 permissions:
   contents: read
 jobs:
   package:
     # (Visual Studio 2022's headers and libraries, as the releases made by hand were built with)
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 3
     steps:
+      - name: Record job start
+        shell: bash
+        run: |
+          echo "JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+          # (pionc's content-addressed cache; the runner context is not available to a job's env)
+          echo "PION_CACHE_DIR=${{ runner.temp }}\pion-cas" >> "$GITHUB_ENV"
+
       - name: Checkout PinShot
         uses: actions/checkout@v4
         with:
           path: pinshot
+          persist-credentials: false
 
       # (the three pins are macos.yml's: one compiler and one Invar for both platforms)
       - name: Checkout invar
@@ -33,6 +52,7 @@ jobs:
           repository: AFK-surf/invar
           ref: 8d5834e468585656d5094d9d40f3443c18c49063
           path: invar
+          persist-credentials: false
 
       - name: Checkout pion-packages
         uses: actions/checkout@v4
@@ -40,6 +60,7 @@ jobs:
           repository: AFK-surf/pion-packages
           ref: 8014f92596624ab01af599b03851c7d3ad1f9701
           path: pion-packages
+          persist-credentials: false
 
       - name: Checkout pion
         uses: actions/checkout@v4
@@ -47,6 +68,7 @@ jobs:
           repository: AFK-surf/pion
           ref: 868866e53b8530c9e198fc743a76619b6a1ab362
           path: pion
+          persist-credentials: false
 
       - name: Cache pion toolchain
         id: pion-cache
@@ -57,22 +79,37 @@ jobs:
             pion/out/qbe.exe
           key: pion-windows-x86_64-868866e53b8530c9e198fc743a76619b6a1ab362
 
+      # (pionc's content-addressed cache: what an unchanged package compiled to is taken from it, not compiled again)
+      - name: Cache pionc objects
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\pion-cas
+          key: pion-cas-windows-868866e53b8530c9e198fc743a76619b6a1ab362-${{ hashFiles('pinshot/pion.toml', 'pinshot/src/**', 'pinshot/native/**', 'pinshot/assets/**') }}
+          restore-keys: |
+            pion-cas-windows-868866e53b8530c9e198fc743a76619b6a1ab362-
+
+      # (only when the toolchain is not cached: gcc for qbe, the runtime and the seed; Python is left out, see below)
       - name: Set up MSYS2 (pionc's bootstrap)
         if: steps.pion-cache.outputs.cache-hit != 'true'
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: false
+          cache: true
           install: >-
             mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-python
             gzip
             diffutils
 
+      # (build-release.sh and build-qbe.sh call python3 only to read the clock in milliseconds for their timings: GNU
+      # date does that, and saves installing Python and its dependencies into MSYS2)
       - name: Bootstrap pionc
         if: steps.pion-cache.outputs.cache-hit != 'true'
         shell: msys2 {0}
-        run: sh pion/scripts/build-release.sh
+        run: |
+          printf '#!/bin/sh\nexec date +%%s%%3N\n' > /usr/bin/python3
+          chmod +x /usr/bin/python3
+          sh pion/scripts/build-release.sh
 
       # (WebView2's header and static loader, which Invar's Windows host is built with)
       - name: Fetch the WebView2 SDK
@@ -95,3 +132,13 @@ jobs:
           name: PinShot-windows
           path: pinshot/out/Release/pinshot.exe
           if-no-files-found: error
+
+      - name: Check 60s duration target
+        if: always()
+        shell: bash
+        run: |
+          ELAPSED=$(( $(date +%s) - JOB_START_EPOCH ))
+          echo "Job windows-package duration: ${ELAPSED}s"
+          if [ "$ELAPSED" -gt 60 ]; then
+            echo "::warning title=CI duration > 60s::windows-package took ${ELAPSED}s (target <= 60s, hard timeout 180s)"
+          fi

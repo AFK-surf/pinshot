@@ -4,16 +4,48 @@ name: macOS package
 on:
   workflow_dispatch:
   workflow_call:
+  # (a change to what the macOS build is made of, built before it is merged; signed and notarized only for a tag or
+  # a run by hand)
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'native/**'
+      - 'assets/**'
+      - 'packaging/macos/**'
+      - 'pion.toml'
+      - 'scripts/build-mac.sh'
+      - '.github/workflows/macos.yml'
+  # (and once merged: a pull request reads only its own caches and master's, so master keeps the toolchain and the
+  # pionc cache warm for the next pull request and tag)
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'native/**'
+      - 'assets/**'
+      - 'packaging/macos/**'
+      - 'pion.toml'
+      - 'scripts/build-mac.sh'
+      - '.github/workflows/macos.yml'
 permissions:
   contents: read
 jobs:
   package:
     runs-on: macos-15
+    # (PR and master CI stay under a 3-minute hard cap; release/dispatch runs also wait on Apple's remote notarytool)
+    timeout-minutes: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && 15 || 3 }}
     steps:
+      - name: Record job start
+        run: |
+          echo "JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+          # (pionc's content-addressed cache; the runner context is not available to a job's env)
+          echo "PION_CACHE_DIR=${{ runner.temp }}/pion-cas" >> "$GITHUB_ENV"
+
       - name: Checkout PinShot
         uses: actions/checkout@v4
         with:
           path: pinshot
+          persist-credentials: false
 
       - name: Checkout invar
         uses: actions/checkout@v4
@@ -21,6 +53,7 @@ jobs:
           repository: AFK-surf/invar
           ref: 8d5834e468585656d5094d9d40f3443c18c49063
           path: invar
+          persist-credentials: false
 
       - name: Checkout pion-packages
         uses: actions/checkout@v4
@@ -28,6 +61,7 @@ jobs:
           repository: AFK-surf/pion-packages
           ref: 8014f92596624ab01af599b03851c7d3ad1f9701
           path: pion-packages
+          persist-credentials: false
 
       - name: Checkout pion
         uses: actions/checkout@v4
@@ -35,6 +69,7 @@ jobs:
           repository: AFK-surf/pion
           ref: 868866e53b8530c9e198fc743a76619b6a1ab362
           path: pion
+          persist-credentials: false
 
       - name: Cache pion toolchain
         id: pion-cache
@@ -45,6 +80,15 @@ jobs:
             pion/out/qbe
             pion/out/libpionrt.a
           key: pion-macos-arm64-868866e53b8530c9e198fc743a76619b6a1ab362
+
+      # (pionc's content-addressed cache: what an unchanged package compiled to is taken from it, not compiled again)
+      - name: Cache pionc objects
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pion-cas
+          key: pion-cas-macos-arm64-868866e53b8530c9e198fc743a76619b6a1ab362-${{ hashFiles('pinshot/pion.toml', 'pinshot/src/**', 'pinshot/native/**', 'pinshot/assets/**') }}
+          restore-keys: |
+            pion-cas-macos-arm64-868866e53b8530c9e198fc743a76619b6a1ab362-
 
       - name: Bootstrap pionc2
         if: steps.pion-cache.outputs.cache-hit != 'true'
@@ -73,6 +117,7 @@ jobs:
           PION_RT_LIB="$PION_RT_CLI_LIB" PION_CACHE_DIR="$TMP_DIR/cas_s2" "$OUT_DIR/pionc1" build -o "$OUT_DIR/pionc2" "$COMPILER_DIR/src/core" "$COMPILER_DIR/src/cli/main.pion"
 
       - name: Build PinShot.app
+        timeout-minutes: 3
         env:
           PIONC: ${{ github.workspace }}/pion/out/pionc2
           PION_QBE: ${{ github.workspace }}/pion/out/qbe
@@ -82,6 +127,7 @@ jobs:
       # (AFK AI's Developer ID, the keychain AFK-surf/monoid signs still.fail with: a fork's run, without the secrets,
       # fails here rather than put out an ad hoc build)
       - name: Sign and notarize PinShot.app
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
         env:
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_1: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_1 }}
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_2: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_2 }}
@@ -95,3 +141,12 @@ jobs:
             pinshot/out/build/PinShot-mac.dmg
             pinshot/out/build/PinShot-mac.zip
           if-no-files-found: error
+
+      - name: Check 60s duration target
+        if: always()
+        run: |
+          ELAPSED=$(( $(date +%s) - JOB_START_EPOCH ))
+          echo "Job macos-package duration: ${ELAPSED}s"
+          if [ "$ELAPSED" -gt 60 ]; then
+            echo "::warning title=CI duration > 60s::macos-package took ${ELAPSED}s (target <= 60s, hard timeout 180s)"
+          fi
