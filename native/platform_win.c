@@ -718,7 +718,7 @@ static HANDLE one_run;
 static HPOWERNOTIFY power_note;
 static int wts_note;
 
-enum { HK_CAPTURE = 1, HK_PIN_CLIP = 2, HK_PINS = 3, HK_MOST = 4 };
+enum { HK_CAPTURE = 1, HK_PIN_CLIP = 2, HK_PINS = 3, HK_RESTORE = 4, HK_MOST = 5 };
 static int hk_on[HK_MOST];
 
 static HICON own_icon(int size) {
@@ -848,6 +848,7 @@ static LRESULT CALLBACK tray_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       }
       else if (wp == HK_PIN_CLIP) ps_tell("{\"do\":\"pin-clipboard\"}");
       else if (wp == HK_PINS) ps_tell("{\"do\":\"pins\"}");
+      else if (wp == HK_RESTORE) ps_tell("{\"do\":\"pin-restore\"}");
       return 0;
     case WM_PS_AGAIN:
       if (wp == 1) ps_tell("{\"do\":\"menu\",\"item\":\"settings\"}");

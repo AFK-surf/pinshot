@@ -225,15 +225,15 @@ static OSStatus hitKey(EventHandlerCallRef next, EventRef event, void *user) {
   if (key.id == 1)
     ps_capture_ask();
   else
-    ps_post(@{@"do" : key.id == 2 ? @"pin-clipboard" : @"pins"});
+    ps_post(@{@"do" : key.id == 2 ? @"pin-clipboard" : key.id == 4 ? @"pin-restore" : @"pins"});
   return noErr;
 }
 int ps_hotkey(int which, int mods, int vk) {
   if (testing())
     return 1;
-  static EventHotKeyRef keys[4];
+  static EventHotKeyRef keys[5];
   static EventHandlerRef handler;
-  if (which < 1 || which > 3)
+  if (which < 1 || which > 4)
     return 0;
   if (keys[which]) {
     UnregisterEventHotKey(keys[which]);
