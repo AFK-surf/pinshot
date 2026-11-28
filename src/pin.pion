@@ -41,6 +41,7 @@ struct Pin {
   ocr_click_at : signals::Ref[Double]
   ocr_click_word : signals::Ref[Int]
   ocr_clicks : signals::Ref[Int]
+  bar_wid : signals::Ref[Int]
   source : String
   tr_on : signals::Signal[Bool]
   tr : signals::Signal[PinTr]
@@ -165,6 +166,7 @@ fn open_pin(
     ocr_click_at: signals::ref_new(-10000.0),
     ocr_click_word: signals::ref_new(-1),
     ocr_clicks: signals::ref_new(0),
+    bar_wid: signals::ref_new(0),
     source,
     tr_on: signals::signal(false),
     tr: signals::signal_ref(TrIdle),
@@ -243,6 +245,11 @@ fn close_pin(wid : Int) -> Unit {
 
 fn pin_gone(wid : Int) -> Unit {
   guard pin_of_wid(wid) is Some((what, p)) else { return }
+  if p.bar_wid.v > 0 {
+    let bar = p.bar_wid.v
+    p.bar_wid.v = 0
+    close_window(bar)
+  }
   pin_ocr_clear_pending(p)
   pin_tr_forget(p)
   pins.remove(what)
@@ -1023,7 +1030,7 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
       .presses(view::Live::Is(false))
       .lines_up(view::Live::Is(Some(view::Along::End)))
       .lies_along(view::Live::Is(view::Lies::End))
-      .padding(view::Live::By(fn() { if p.ocr_on.get() { (6.0, 6.0, 6.0, 40.0) } else { (6.0, 6.0, 6.0, 6.0) } }))
+      .padding(view::Live::Is((6.0, 6.0, 6.0, 6.0)))
       let _ = o.box(fn(l) {
         let _ = l
         .height(view::Live::Is(Some(20.0)))
@@ -1046,7 +1053,7 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
         })
       })
     })
-    ocr_floating_bar(root, p)
+    root.reacts(fn() { if p.ocr_on.get() { ocr_bar_width(p) } else { -1.0 } }, fn(w) { ocr_bar_sync(p, what, w) })
     pin_actions(root, p)
   }
 }

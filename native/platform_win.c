@@ -1136,9 +1136,61 @@ moonbit_bytes_t ps_key_name(int32_t vk) {
   return ps_utf8_bytes(name);
 }
 
+// A window kept beside another (a pin's text bar beside the pin): below it, its right edge on the other's; above
+// it where the screen ends below; inside its foot where neither has room. Moved, shown and hidden with it.
+static void follow_place(HWND child) {
+  HWND parent = (HWND)GetPropW(child, L"PinShot.FollowOf");
+  if (!parent || !IsWindow(parent)) return;
+  int w = (int)(INT_PTR)GetPropW(child, L"PinShot.FollowW"), hh = (int)(INT_PTR)GetPropW(child, L"PinShot.FollowH");
+  RECT pr;
+  if (!GetWindowRect(parent, &pr)) return;
+  UINT dpi = GetDpiForWindow(parent);
+  if (!dpi) dpi = 96;
+  int cw = MulDiv(w, (int)dpi, 96), ch = MulDiv(hh, (int)dpi, 96), gap = MulDiv(2, (int)dpi, 96);
+  HMONITOR m = MonitorFromRect(&pr, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = {sizeof mi};
+  GetMonitorInfoW(m, &mi);
+  RECT a = mi.rcWork;
+  int x = pr.right - cw;
+  if (x + cw > a.right) x = a.right - cw;
+  if (x < a.left) x = a.left;
+  int y = pr.bottom + gap;
+  if (y + ch > a.bottom) y = pr.top - gap - ch;
+  if (y < a.top) y = pr.bottom - ch;
+  BOOL shown = IsWindowVisible(parent);
+  SetWindowPos(child, NULL, x, y, cw, ch, SWP_NOACTIVATE | SWP_NOZORDER | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+}
+
+void mb_render_set_clear(int wid, int on);
+
+void ps_follow(int32_t child_wid, int32_t parent_wid, int32_t w, int32_t h) {
+  HWND child = own_window(child_wid);
+  if (!child) return;
+  mb_render_set_clear(child_wid, 1);
+  HWND parent = parent_wid > 0 ? own_window(parent_wid) : NULL;
+  HWND was = (HWND)GetPropW(child, L"PinShot.FollowOf");
+  if (was && was != parent) RemovePropW(was, L"PinShot.Follower");
+  if (!parent) {
+    RemovePropW(child, L"PinShot.FollowOf");
+    return;
+  }
+  SetPropW(child, L"PinShot.FollowOf", parent);
+  SetPropW(child, L"PinShot.FollowW", (HANDLE)(INT_PTR)w);
+  SetPropW(child, L"PinShot.FollowH", (HANDLE)(INT_PTR)h);
+  SetPropW(parent, L"PinShot.Follower", child);
+  // (owned by it: above it in the order of windows, whatever it is raised or lowered to)
+  SetWindowLongPtrW(child, GWLP_HWNDPARENT, (LONG_PTR)parent);
+  follow_place(child);
+}
+
 static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR wid) {
   (void)id;
   switch (msg) {
+    case WM_WINDOWPOSCHANGED: {
+      HWND f = (HWND)GetPropW(h, L"PinShot.Follower");
+      if (f && IsWindow(f) && (HWND)GetPropW(f, L"PinShot.FollowOf") == h) follow_place(f);
+      break;
+    }
     case WM_QUERYENDSESSION:
       return TRUE;
     case WM_ENDSESSION:

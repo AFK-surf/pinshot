@@ -53,6 +53,8 @@ pub fn main(_world : World) -> Int {
       rec_window
     } else if what == "rec_fps" {
       rec_fps_window
+    } else if str_has_prefix(what, "bar:") {
+      ocr_bar_window(str_slice_bytes(what, 4, what.length()))
     } else {
       pin_window(wid, what)
     }
@@ -89,6 +91,12 @@ pub fn main(_world : World) -> Int {
       rec_fps_open.set(false)
     }
     pin_gone(wid)
+    for k in pins.keys() {
+      match pins.get(k) {
+        Some(q) if q.bar_wid.v == wid => q.bar_wid.v = 0
+        _ => ()
+      }
+    }
   })
   apply_keys()
   start_updates(updated, installed=installed)

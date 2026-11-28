@@ -511,7 +511,89 @@ fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
   }
 }
 
-fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
+let ocr_bar_pad : Double = 2.0
+
+/// The text bar's width, in points, as it is now (its buttons as they show): its window is made as wide.
+fn ocr_bar_width(p : Pin) -> Double {
+  let m = fn(s : String, size : Double) { ui::measure_text_width(tr(s), size, weight=500) }
+  let parts : Array[Double] = []
+  let state = p.ocr.get()
+  let working = p.tr.get() is TrWorking
+  let ready = state is Ready(_, _)
+  let words = match state {
+    Ready(ws, _) => ws.length() > 0
+    _ => false
+  }
+  if !ready || working {
+    let label = match (state, p.tr.get()) {
+      (Reading, _) => "识别中…"
+      (Failed(why), _) => ocr_failed_short(why)
+      _ => "翻译中…"
+    }
+    parts.push(m(label, 11.5) + 10.0)
+  }
+  if state is Failed(_) {
+    parts.push(m("重试", 12.0) + 20.0)
+  }
+  if words && !working {
+    parts.push(dmax(m("翻译", 12.0), m("原文", 12.0)) + 18.0)
+  }
+  if ready {
+    let mut widest = 0.0
+    for s in ["复制全部", "复制选中", "复制译文"] {
+      widest = dmax(widest, m(s, 12.0))
+    }
+    widest = dmax(widest, m("已复制", 12.0) + m("✓ ", 12.0))
+    parts.push(widest + 20.0)
+  }
+  if words {
+    parts.push(m("全选", 12.0) + 18.0)
+  }
+  parts.push(28.0)
+  let mut w = 8.0 + 2.0 + 4.0 * (parts.length() - 1).to_double()
+  for x in parts {
+    w += x
+  }
+  w.ceil()
+}
+
+/// The text bar's window kept beside pin `p` while its words are shown (made, sized to the bar, closed).
+fn ocr_bar_sync(p : Pin, what : String, w : Double) -> Unit {
+  if w < 0.0 {
+    if p.bar_wid.v > 0 {
+      let wid = p.bar_wid.v
+      p.bar_wid.v = 0
+      ps_follow(wid, 0, 0, 0)
+      close_window(wid)
+    }
+    return
+  }
+  if p.bar_wid.v == 0 {
+    ps_next_win_clear()
+    let wid = ui::window_open_here("bar:" + what)
+    if wid <= 0 {
+      return
+    }
+    p.bar_wid.v = wid
+    let _ = ps_own(wid, 2)
+  }
+  let side = ocr_bar_pad * 2.0
+  ps_follow(p.bar_wid.v, p.wid.v, (w + side).to_int(), (36.0 + side).to_int())
+}
+
+fn ocr_bar_window(what : String) -> (view::View) -> Unit {
+  fn(root) {
+    match pins.get(what) {
+      Some(p) => {
+        root.tree.hand_over_presses(false)
+        ocr_floating_bar(root, p, pad=ocr_bar_pad)
+      }
+      None => ()
+    }
+  }
+}
+
+fn ocr_floating_bar(root : view::View, p : Pin, pad~ : Double = 6.0) -> Unit {
   let close_vec : pixels::Vector = {
     w: 12.0,
     h: 12.0,
@@ -522,7 +604,7 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
     .over(view::Live::Is(true))
     .lines_up(view::Live::Is(Some(view::Along::End)))
     .lies_along(view::Live::Is(view::Lies::End))
-    .padding(view::Live::Is((6.0, 6.0, 6.0, 6.0)))
+    .padding(view::Live::Is((pad, pad, pad, pad)))
     .laid_nowhere(view::Live::By(fn() { !p.ocr_on.get() }))
     let _ = o.box(fn(bar) {
       let _ = bar
@@ -689,11 +771,8 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         .presses(view::Live::Is(true))
         .cursor(view::Live::Is(Some(view::Cursor::Hand)))
         .laid_nowhere(view::Live::By(fn() {
-          let r = numbers_of(text_of(ps_window_rect(p.wid.v)))
-          let k = if r.length() >= 5 && r[4] > 0.0 { r[4] / 96.0 } else { 1.0 }
-          let wide = p.w.to_double() * p.zx.get() / k >= 320.0
           match pin_sel_state_get(p) {
-            Ready(ws, _) => !wide || ws.length() == 0
+            Ready(ws, _) => ws.length() == 0
             _ => true
           }
         }))

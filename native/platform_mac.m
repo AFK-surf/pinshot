@@ -473,6 +473,22 @@ void ps_toast_place(int wid, int width, int height) {
 }
 void ps_opacity(int wid, int alpha) { mb_app_window_of(wid).alphaValue = alpha / 255.0; }
 void ps_let_close(int wid) {}
+void ps_follow(int32_t child_wid, int32_t parent_wid, int32_t w, int32_t h) {
+  NSWindow *c = mb_app_window_of(child_wid);
+  if (!c) return;
+  if (c.parentWindow) [c.parentWindow removeChildWindow:c];
+  NSWindow *p = parent_wid > 0 ? mb_app_window_of(parent_wid) : nil;
+  if (!p) return;
+  NSRect pf = p.frame;
+  NSRect a = (p.screen ?: NSScreen.mainScreen).visibleFrame;
+  CGFloat x = MAX(NSMinX(a), MIN(NSMaxX(pf) - w, NSMaxX(a) - w));
+  CGFloat y = NSMinY(pf) - 2 - h;
+  if (y < NSMinY(a)) y = NSMaxY(pf) + 2;
+  if (y + h > NSMaxY(a)) y = NSMinY(pf);
+  [c setFrame:NSMakeRect(x, y, w, h) display:YES];
+  // (a child window: moved with the pin, above it)
+  [p addChildWindow:c ordered:NSWindowAbove];
+}
 moonbit_bytes_t ps_window_label(int32_t x, int32_t y) {
   (void)x, (void)y;
   CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
