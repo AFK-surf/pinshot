@@ -47,6 +47,7 @@ fn make_en_words() -> Map[String, String] {
   m["关闭 Esc"] = "Close Esc"
   m["复制 Enter"] = "Copy Enter"
   m["提取文字"] = "Extract text"
+  m["提取文字 / 翻译"] = "Extract text / translate"
   m["提取文字 Ctrl+O"] = "Extract text Ctrl+O"
   m["长截图 Ctrl+L"] = "Scrolling screenshot Ctrl+L"
   m["录屏 Ctrl+R"] = "Record area Ctrl+R"

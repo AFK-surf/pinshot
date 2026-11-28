@@ -358,7 +358,7 @@ fn toolbar(stage : view::View) -> Unit {
           done_before.v.length() == 0
         }, keys=fn() { "Ctrl+Z" })
         bar_rule_node(bar)
-        tool_button(bar, "ocr", "提取文字", fn() { false }, ocr_out, keys=fn() { "Ctrl+O" })
+        tool_button(bar, "ocr", "提取文字 / 翻译", fn() { false }, ocr_out, keys=fn() { "Ctrl+O" })
         if long_shot_here() {
           tool_button(bar, "long", "长截图", fn() { false }, long_out, keys=fn() { "Ctrl+L" })
         }
