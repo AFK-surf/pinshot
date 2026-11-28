@@ -149,6 +149,10 @@ fn told(json : String, bytes : Option[Bytes]) -> Unit {
         n("top"),
       )
     }
+    "long-png" => {
+      let n = fn(k : String) { jnum(o, k, 0.0).to_int() }
+      long_png_told(n("id"), n("w"), n("h"), n("ok") != 0, bytes)
+    }
     "rec" => {
       let n = fn(k : String) { jnum(o, k, 0.0) }
       let s = fn(k : String) { jstr(o, k, "") }

@@ -201,6 +201,7 @@ extern "C" fn ps_long_end() -> Unit = "ps_long_end"
 extern "C" fn c_ps_long_info() -> Ptr = "ps_long_info"
 extern "C" fn c_ps_long_preview(w : Int, h : Int, from_row : Int) -> Ptr = "ps_long_preview"
 extern "C" fn c_ps_long_png() -> Ptr = "ps_long_png"
+extern "C" fn ps_long_export(req_id : Int) -> Int = "ps_long_export"
 extern "C" fn ps_long_preview_free() -> Unit = "ps_long_preview_free"
 extern "C" fn ps_long_exclude(wid : Int) -> Unit = "ps_long_exclude"
 

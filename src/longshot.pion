@@ -62,6 +62,21 @@ let long_preview_at : signals::Ref[Double] = signals::ref_new(-10000.0)
 
 let long_preview_due : signals::Ref[Bool] = signals::ref_new(false)
 
+let long_preview_dirty : signals::Ref[Bool] = signals::ref_new(false)
+
+enum LongExport {
+  None
+  Copy
+  Save(String)
+  Pin
+}
+
+let long_exporting : signals::Signal[Bool] = signals::signal(false)
+
+let long_export_req : signals::Ref[Int] = signals::ref_new(0)
+
+let long_export_kind : signals::Ref[LongExport] = signals::ref_new(LongExport::None)
+
 let long_panel_w : Double = 316.0
 
 let long_pad : Double = 14.0
@@ -138,15 +153,22 @@ fn long_out() -> Unit {
   }
   let k = mon_scale.untracked()
   let part : Rect = Rect::{ x: m.x + r.x, y: m.y + r.y, w: r.w, h: r.h }
-  close_capture()
-  if ps_long_begin(part.x, part.y, part.w, part.h) == 0 {
+  if part.w < 16 || part.h < 72 {
     toast(tr("选区太小，不能长截图"))
+    return
+  }
+  close_capture()
+  let begun = ps_long_begin(part.x, part.y, part.w, part.h)
+  if begun <= 0 {
+    toast(if begun == -1 { tr("没有录屏权限，无法长截图") } else { tr("选区太小，不能长截图") })
     return
   }
   ps_capture_open(1)
   long_part.v = part
   long_scale.v = k
   long_mon.v = work
+  long_export_req.v += 1
+  long_export_kind.v = LongExport::None
   signals::start_batch()
   long_h.set(0)
   long_lost.set(false)
@@ -156,6 +178,7 @@ fn long_out() -> Unit {
   long_dir.set(0)
   long_live_at.set(0)
   long_stopped.set(false)
+  long_exporting.set(false)
   long_scroll.set(0)
   long_follow.set(true)
   long_panning.set(false)
@@ -164,6 +187,7 @@ fn long_out() -> Unit {
   long_pending.set(("", 0, 0))
   signals::end_batch()
   long_preview_due.v = false
+  long_preview_dirty.v = false
   let mh = work.h.to_double() / k
   long_box_h.v = clamp(mh - 56.0 - long_halo_t - long_halo_b - long_chrome_h(), 220.0, 560.0)
   ps_next_win_clear_active()
@@ -261,6 +285,7 @@ fn long_told(
 fn long_clear_preview_images() -> Unit {
   let (shown, _, _) = long_preview.untracked()
   let (waiting, _, _) = long_pending.untracked()
+  long_preview_dirty.v = false
   signals::start_batch()
   long_preview.set(("", 0, 0))
   long_pending.set(("", 0, 0))
@@ -306,7 +331,7 @@ fn long_jump_live() -> Unit {
 }
 
 fn long_toggle_pause() -> Unit {
-  if long_wid.v == 0 || long_stopped.untracked() || long_full.untracked() {
+  if long_wid.v == 0 || long_stopped.untracked() || long_full.untracked() || long_exporting.untracked() {
     return
   }
   let next = !long_paused.untracked()
@@ -322,7 +347,7 @@ fn long_disarm_reset() -> Unit {
 }
 
 fn long_request_reset() -> Unit {
-  if long_wid.v == 0 || long_h.untracked() == 0 {
+  if long_wid.v == 0 || long_h.untracked() == 0 || long_exporting.untracked() {
     return
   }
   if long_pics.untracked() <= 1 || long_confirm_reset.untracked() {
@@ -347,7 +372,7 @@ fn long_request_reset() -> Unit {
 }
 
 fn long_reset() -> Unit {
-  if long_wid.v == 0 {
+  if long_wid.v == 0 || long_exporting.untracked() {
     return
   }
   long_disarm_reset()
@@ -391,7 +416,18 @@ fn long_preview_soon(min_ms : Double) -> Unit {
 }
 
 fn long_preview_make() -> Unit {
-  long_preview_at.v = ps_now_ms()
+  let now = ps_now_ms()
+  let (waiting, _, _) = long_pending.untracked()
+  if waiting != "" {
+    if now - long_preview_at.v < 1000.0 {
+      long_preview_dirty.v = true
+      return
+    }
+    ui::forget_image(waiting)
+    long_pending.set(("", 0, 0))
+  }
+  long_preview_dirty.v = false
+  long_preview_at.v = now
   let k = long_scale.v
   let from_row = long_scroll.untracked()
   let b = ps_long_preview(
@@ -408,10 +444,6 @@ fn long_preview_make() -> Unit {
   long_preview_n.v += 1
   let key = "mem:long/\{long_preview_n.v}"
   ui::add_image(key, b)
-  let (waiting, _, _) = long_pending.untracked()
-  if waiting != "" {
-    ui::forget_image(waiting)
-  }
   long_pending.set((key, pw, ph))
   match long_root.v {
     Some(r) => r.image_ask(key, (if pw > ph { pw } else { ph }).to_double())
@@ -432,61 +464,110 @@ fn long_preview_shown(key : String) -> Unit {
   if shown != "" {
     ui::forget_image(shown)
   }
+  if long_preview_dirty.v {
+    long_preview_dirty.v = false
+    if long_wid.v != 0 && long_h.untracked() > 0 {
+      long_preview_make()
+    }
+  }
 }
 
 fn le32(b : Bytes, at : Int) -> Int {
   b[at].to_int() | (b[at + 1].to_int() << 8) | (b[at + 2].to_int() << 16) | (b[at + 3].to_int() << 24)
 }
 
-fn long_png() -> Option[Bytes] {
-  ps_long_stop()
-  long_stopped.set(true)
-  let png = ps_long_png()
-  if png.length() == 0 {
-    None
+fn long_pin_placement(part_y : Int, mon_y : Int, mon_h : Int, h : Int, scale : Double) -> (Int, Double) {
+  let gap = (24.0 * scale).round().to_int()
+  let avail = if mon_h > gap * 2 { mon_h - gap * 2 } else { mon_h }
+  let y = if h > avail {
+    mon_y + gap
   } else {
-    Some(pixels::png_with_dpi(png, export_dpi(long_scale.v)))
+    clampi(part_y, mon_y + gap, mon_y + mon_h - gap - h)
+  }
+  let room = dmax(1.0, (mon_y + mon_h - gap - y).to_double())
+  let z_fit = if h.to_double() > room { room / h.to_double() } else { 1.0 }
+  (y, clamp(z_fit, 0.1, 1.0))
+}
+
+fn long_start_export(kind : LongExport) -> Unit {
+  if long_wid.v == 0 || long_h.untracked() == 0 || long_exporting.untracked() {
+    return
+  }
+  long_export_req.v += 1
+  let req = long_export_req.v
+  long_export_kind.v = kind
+  signals::start_batch()
+  long_exporting.set(true)
+  long_stopped.set(true)
+  signals::end_batch()
+  if ps_long_export(req) == 0 {
+    long_export_kind.v = LongExport::None
+    long_exporting.set(false)
+    long_close()
   }
 }
 
-fn long_size() -> (Int, Int) {
-  let n = numbers_of(text_of(ps_long_info()))
-  if n.length() >= 2 {
-    (n[0].to_int(), n[1].to_int())
-  } else {
-    (0, 0)
+fn long_png_told(id : Int, w : Int, h : Int, ok : Bool, bytes : Option[Bytes]) -> Unit {
+  if id != long_export_req.v || long_wid.v == 0 {
+    return
+  }
+  let kind = long_export_kind.v
+  long_export_kind.v = LongExport::None
+  long_exporting.set(false)
+  let raw = match bytes {
+    Some(b) if ok && b.length() > 0 => b
+    _ => {
+      long_close()
+      return
+    }
+  }
+  let png = pixels::png_with_dpi(raw, export_dpi(long_scale.v))
+  match kind {
+    Copy => {
+      shutter()
+      let test_to = ui::env("PINSHOT_TEST_COPY")
+      if test_to != "" {
+        let _ = ps_write_file(cstr(test_to), png)
+      } else {
+        hostapi::clipboard_set_image(png)
+      }
+      log("long: copied \{w}x\{h}, \{png.length()} bytes")
+      if settings.untracked().keep_copies {
+        write_picture_file(file_in(settings.untracked().save_dir, file_name()), png)
+      }
+      long_close()
+    }
+    Save(path) => {
+      write_picture_file(path, png)
+      shutter()
+      log("long: saved \{path}")
+      long_close()
+    }
+    Pin => {
+      let p = long_part.v
+      let m = long_mon.v
+      let (y, z) = long_pin_placement(p.y, m.y, m.h, h, long_scale.v)
+      shutter()
+      long_close()
+      open_pin(png, p.x, y, w, h, zoom=z)
+    }
+    None => ()
   }
 }
 
 fn long_copy() -> Unit {
-  if long_h.untracked() == 0 {
-    return
-  }
-  let (w, h) = long_size()
-  guard long_png() is Some(png) else {
-    long_close()
-    return
-  }
-  shutter()
-  let test_to = ui::env("PINSHOT_TEST_COPY")
-  if test_to != "" {
-    let _ = ps_write_file(cstr(test_to), png)
-  } else {
-    hostapi::clipboard_set_image(png)
-  }
-  log("long: copied \{w}x\{h}, \{png.length()} bytes")
-  if settings.untracked().keep_copies {
-    write_picture_file(file_in(settings.untracked().save_dir, file_name()), png)
-  }
-  long_close()
+  long_start_export(LongExport::Copy)
 }
 
 fn long_save() -> Unit {
-  if long_h.untracked() == 0 {
+  if long_wid.v == 0 || long_h.untracked() == 0 || long_exporting.untracked() {
     return
   }
-  ps_long_stop()
-  long_stopped.set(true)
+  let was_paused = long_paused.untracked()
+  let was_stopped = long_stopped.untracked()
+  if !was_paused && !was_stopped {
+    ps_long_pause(1)
+  }
   let s = settings.untracked()
   let path = if s.ask_where {
     text_of(ps_save_dialog(long_wid.v, cstr(s.save_dir), cstr(file_name())))
@@ -494,41 +575,25 @@ fn long_save() -> Unit {
     file_in(s.save_dir, file_name())
   }
   if path == "" {
+    if !was_paused && !was_stopped && long_wid.v != 0 {
+      ps_long_pause(0)
+    }
     return
   }
-  guard long_png() is Some(png) else {
-    long_close()
-    return
-  }
-  write_picture_file(path, png)
-  shutter()
-  log("long: saved \{path}")
-  long_close()
+  long_start_export(LongExport::Save(path))
 }
 
 fn long_pin() -> Unit {
-  if long_h.untracked() == 0 {
-    return
-  }
-  let (w, h) = long_size()
-  guard long_png() is Some(png) else {
-    long_close()
-    return
-  }
-  let p = long_part.v
-  let m = long_mon.v
-  let y = clampi(p.y, m.y, m.y + m.h * 3 / 4)
-  let room = (m.bottom() - y).to_double()
-  let z = if h.to_double() > room { room / h.to_double() } else { 1.0 }
-  shutter()
-  long_close()
-  open_pin(png, p.x, y, w, h, zoom=z)
+  long_start_export(LongExport::Pin)
 }
 
 fn long_close() -> Unit {
   if long_wid.v == 0 {
     return
   }
+  long_export_req.v += 1
+  long_export_kind.v = LongExport::None
+  long_exporting.set(false)
   ps_long_end()
   ps_capture_open(0)
   let wid = long_wid.v
@@ -538,6 +603,9 @@ fn long_close() -> Unit {
 }
 
 fn long_gone() -> Unit {
+  long_export_req.v += 1
+  long_export_kind.v = LongExport::None
+  long_exporting.set(false)
   if long_wid.v != 0 {
     long_wid.v = 0
     ps_long_end()
@@ -552,12 +620,14 @@ fn long_gone() -> Unit {
 }
 
 fn long_state() -> (String, Int64, Bool) {
-  if long_stopped.get() {
+  if long_exporting.get() {
+    (tr("正在生成图片…"), 0x2F9BFFFFL, false)
+  } else if long_stopped.get() {
     (tr("已停止截取"), 0xAEB3BCFFL, false)
   } else if long_full.get() {
     (tr("已到最大高度，可复制或保存"), 0xF5A524FFL, true)
   } else if long_paused.get() {
-    (tr("已暂停拼接 · 按空格继续"), 0xAEB3BCFFL, false)
+    (tr("已暂停拼接"), 0xAEB3BCFFL, false)
   } else if long_lost.get() {
     (tr("没接上，往回滚一点即可续接"), 0xF5A524FFL, true)
   } else {
@@ -712,7 +782,7 @@ fn long_window(root : view::View) -> Unit {
         fn() { if long_paused.get() { tr("继续") } else { tr("暂停") } },
         fn() { tr("暂停 / 继续 Space") },
         fn() { long_paused.get() },
-        fn() { long_stopped.get() || long_full.get() },
+        fn() { long_stopped.get() || long_full.get() || long_exporting.get() },
         long_toggle_pause,
       )
       long_pill_button(
@@ -721,7 +791,7 @@ fn long_window(root : view::View) -> Unit {
         fn() { if long_confirm_reset.get() { tr("确认重来") } else { tr("重来") } },
         fn() { key_hint(tr("重新开始 Ctrl+R")) },
         fn() { false },
-        fn() { long_h.get() == 0 },
+        fn() { long_h.get() == 0 || long_exporting.get() },
         long_request_reset,
         danger=fn() { long_confirm_reset.get() },
       )
@@ -738,8 +808,8 @@ fn long_window(root : view::View) -> Unit {
     let _ = page.box(fn(bar) {
       let _ = bar.row(view::Live::Is(true)).gap(view::Live::Is(bar_gap)).width(view::Live::Is(Some(long_box_w()))).lines_up(view::Live::Is(Some(view::Along::Middle)))
       tool_button(bar, "close", "取消", fn() { false }, long_close, tips=long_tips, keys=fn() { "Esc" })
-      tool_button(bar, "pin", "贴到屏幕", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 }, tips=long_tips, keys=fn() { "Ctrl+T" })
-      tool_button(bar, "save", "保存截图", fn() { false }, long_save, dim=fn() { long_h.get() == 0 }, tips=long_tips, keys=fn() { "Ctrl+S" })
+      tool_button(bar, "pin", "贴到屏幕", fn() { false }, long_pin, dim=fn() { long_h.get() == 0 || long_exporting.get() }, tips=long_tips, keys=fn() { "Ctrl+T" })
+      tool_button(bar, "save", "保存截图", fn() { false }, long_save, dim=fn() { long_h.get() == 0 || long_exporting.get() }, tips=long_tips, keys=fn() { "Ctrl+S" })
       let _ = bar.box(fn(g) { let _ = g.grow(view::Live::Is(1.0)) })
       long_copy_button(bar)
     })
@@ -1101,7 +1171,7 @@ fn long_pill_button(
 
 fn long_copy_button(bar : view::View) -> Unit {
   let _ = bar.box(fn(b) {
-    let live = fn() { long_h.get() > 0 }
+    let live = fn() { long_h.get() > 0 && !long_exporting.get() }
     let hov = smooth_hover(b, live=live)
     tactile_press(b, live=live)
     let _ = b
@@ -1112,11 +1182,11 @@ fn long_copy_button(bar : view::View) -> Unit {
     .radius(view::Live::Is(9.0))
     .lines_up(view::Live::Is(Some(view::Along::Middle)))
     .presses(view::Live::Is(true))
-    .cursor(view::Live::By(fn() { if long_h.get() == 0 { None } else { Some(view::Cursor::Hand) } }))
+    .cursor(view::Live::By(fn() { if !live() { None } else { Some(view::Cursor::Hand) } }))
     .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("复制 Enter"))) }))
-    .on_press(fn() { if long_h.untracked() > 0 { long_copy() } })
+    .on_press(fn() { if long_h.untracked() > 0 && !long_exporting.untracked() { long_copy() } })
     .ground(view::Live::By(fn() {
-      if long_h.get() == 0 {
+      if !live() {
         0x1472E055L
       } else if b.pressed() {
         0x0E5EC0FFL

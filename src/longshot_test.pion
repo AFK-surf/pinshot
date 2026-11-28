@@ -1,0 +1,16 @@
+test "longshot: long_pin_placement fits monitor height and respects min zoom 0.1" {
+  let (y1, z1) = long_pin_placement(200, 0, 1080, 600, 1.0)
+  if y1 != 200 || (z1 - 1.0).abs() > 0.001 {
+    panic("short pin changed unexpectedly: y=\{y1}, z=\{z1}")
+  }
+
+  let (y2, z2) = long_pin_placement(700, 0, 1080, 2000, 1.0)
+  if y2 != 24 || (z2 - 1032.0 / 2000.0).abs() > 0.001 {
+    panic("tall pin did not use full monitor height: y=\{y2}, z=\{z2}")
+  }
+
+  let (y3, z3) = long_pin_placement(400, 0, 2160, 30000, 2.0)
+  if y3 != 48 || (z3 - 0.1).abs() > 0.001 {
+    panic("ultra-tall pin should clamp zoom to 0.1: y=\{y3}, z=\{z3}")
+  }
+}

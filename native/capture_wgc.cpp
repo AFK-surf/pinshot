@@ -327,7 +327,54 @@ static int long_holds;
 static ComPtr<ID3D11Texture2D> kept_staging;
 static ComPtr<ID3D11Texture2D> kept_out;
 static ComPtr<ID3D11UnorderedAccessView> kept_uav;
+
+struct HdrWork {
+  ID3D11Device *dev;
+  int tw, th;
+  ComPtr<ID3D11Texture2D> tile_tex, mask_tex, tile_stg, mask_stg, peak_tex, pmask_tex;
+  ComPtr<ID3D11UnorderedAccessView> tile_uav, mask_uav, flag_uav;
+  ComPtr<ID3D11ShaderResourceView> peak_srv, pmask_srv;
+  ComPtr<ID3D11Buffer> flag_buf, flag_stg;
+  float *peak_buf;
+  uint64_t *mask_buf;
+};
+static HdrWork hdr_work;
+
+static void hdr_work_reset(void) {
+  hdr_work.dev = NULL;
+  hdr_work.tw = hdr_work.th = 0;
+  hdr_work.tile_tex.Reset();
+  hdr_work.mask_tex.Reset();
+  hdr_work.tile_stg.Reset();
+  hdr_work.mask_stg.Reset();
+  hdr_work.peak_tex.Reset();
+  hdr_work.pmask_tex.Reset();
+  hdr_work.tile_uav.Reset();
+  hdr_work.mask_uav.Reset();
+  hdr_work.flag_uav.Reset();
+  hdr_work.peak_srv.Reset();
+  hdr_work.pmask_srv.Reset();
+  hdr_work.flag_buf.Reset();
+  hdr_work.flag_stg.Reset();
+  free(hdr_work.peak_buf);
+  free(hdr_work.mask_buf);
+  hdr_work.peak_buf = NULL;
+  hdr_work.mask_buf = NULL;
+}
+
+static ComPtr<IDXGIOutputDuplication> dd_long_dupl;
+static HMONITOR dd_long_mon;
+static int dd_long_w, dd_long_h, dd_long_got, dd_long_misses;
+
+static void dd_long_reset(void) {
+  dd_long_dupl.Reset();
+  dd_long_mon = NULL;
+  dd_long_w = dd_long_h = dd_long_got = dd_long_misses = 0;
+}
+
 static void kept_let_go(void) {
+  dd_long_reset();
+  hdr_work_reset();
   kept_staging.Reset();
   kept_out.Reset();
   kept_uav.Reset();
@@ -921,6 +968,7 @@ extern "C" int ps_wgc_borderless_ok(void) {
 static void wgc_dev_teardown(void) {
   for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
   nmons = 0;
+  if (hdr_work.dev == dev.Get()) hdr_work_reset();
   if (kept_staging) {
     ComPtr<ID3D11Device> kdev;
     kept_staging->GetDevice(&kdev);
@@ -1364,13 +1412,46 @@ static int hdr_convert_gpu(ID3D11Device *d, ID3D11DeviceContext *c,
     ComPtr<ID3D11UnorderedAccessView> tile_uav, mask_uav, flag_uav;
     ComPtr<ID3D11Buffer> flag_buf, flag_stg;
 
-    if (SUCCEEDED(d->CreateTexture2D(&td, NULL, &tile_tex)) &&
-        SUCCEEDED(d->CreateUnorderedAccessView(tile_tex.Get(), NULL, &tile_uav)) &&
-        SUCCEEDED(d->CreateTexture2D(&md, NULL, &mask_tex)) &&
-        SUCCEEDED(d->CreateUnorderedAccessView(mask_tex.Get(), NULL, &mask_uav)) &&
-        SUCCEEDED(d->CreateBuffer(&fbd, &finit, &flag_buf)) &&
-        SUCCEEDED(d->CreateUnorderedAccessView(flag_buf.Get(), NULL, &flag_uav)) &&
-        SUCCEEDED(d->CreateBuffer(&fsd, NULL, &flag_stg))) {
+    int ok_base = 0;
+    if (long_holds) {
+      if (hdr_work.dev != d || hdr_work.tw != tw || hdr_work.th != th) {
+        hdr_work_reset();
+        if (SUCCEEDED(d->CreateTexture2D(&td, NULL, &hdr_work.tile_tex)) &&
+            SUCCEEDED(d->CreateUnorderedAccessView(hdr_work.tile_tex.Get(), NULL, &hdr_work.tile_uav)) &&
+            SUCCEEDED(d->CreateTexture2D(&md, NULL, &hdr_work.mask_tex)) &&
+            SUCCEEDED(d->CreateUnorderedAccessView(hdr_work.mask_tex.Get(), NULL, &hdr_work.mask_uav)) &&
+            SUCCEEDED(d->CreateBuffer(&fbd, &finit, &hdr_work.flag_buf)) &&
+            SUCCEEDED(d->CreateUnorderedAccessView(hdr_work.flag_buf.Get(), NULL, &hdr_work.flag_uav)) &&
+            SUCCEEDED(d->CreateBuffer(&fsd, NULL, &hdr_work.flag_stg))) {
+          hdr_work.dev = d;
+          hdr_work.tw = tw;
+          hdr_work.th = th;
+        } else {
+          hdr_work_reset();
+        }
+      }
+      if (hdr_work.dev == d) {
+        tile_tex = hdr_work.tile_tex;
+        tile_uav = hdr_work.tile_uav;
+        mask_tex = hdr_work.mask_tex;
+        mask_uav = hdr_work.mask_uav;
+        flag_buf = hdr_work.flag_buf;
+        flag_uav = hdr_work.flag_uav;
+        flag_stg = hdr_work.flag_stg;
+        c->UpdateSubresource(flag_buf.Get(), 0, NULL, &zero, 0, 0);
+        ok_base = 1;
+      }
+    } else {
+      ok_base = SUCCEEDED(d->CreateTexture2D(&td, NULL, &tile_tex)) &&
+                SUCCEEDED(d->CreateUnorderedAccessView(tile_tex.Get(), NULL, &tile_uav)) &&
+                SUCCEEDED(d->CreateTexture2D(&md, NULL, &mask_tex)) &&
+                SUCCEEDED(d->CreateUnorderedAccessView(mask_tex.Get(), NULL, &mask_uav)) &&
+                SUCCEEDED(d->CreateBuffer(&fbd, &finit, &flag_buf)) &&
+                SUCCEEDED(d->CreateUnorderedAccessView(flag_buf.Get(), NULL, &flag_uav)) &&
+                SUCCEEDED(d->CreateBuffer(&fsd, NULL, &flag_stg));
+    }
+
+    if (ok_base) {
       D3D11_MAPPED_SUBRESOURCE tkp;
       if (SUCCEEDED(c->Map(tile_k, 0, D3D11_MAP_WRITE_DISCARD, 0, &tkp))) {
         struct { float inv_white; uint32_t ox, oy, rw, rh, p0, p1, p2; } tk = {
@@ -1407,37 +1488,75 @@ static int hdr_convert_gpu(ID3D11Device *d, ID3D11DeviceContext *c,
           D3D11_TEXTURE2D_DESC msd = sd;
           msd.Format = DXGI_FORMAT_R32G32_UINT;
           ComPtr<ID3D11Texture2D> tile_stg, mask_stg;
-          if (SUCCEEDED(d->CreateTexture2D(&sd, NULL, &tile_stg)) &&
-              SUCCEEDED(d->CreateTexture2D(&msd, NULL, &mask_stg))) {
+          if (long_holds && hdr_work.dev == d) {
+            if (!hdr_work.tile_stg) d->CreateTexture2D(&sd, NULL, &hdr_work.tile_stg);
+            if (!hdr_work.mask_stg) d->CreateTexture2D(&msd, NULL, &hdr_work.mask_stg);
+            tile_stg = hdr_work.tile_stg;
+            mask_stg = hdr_work.mask_stg;
+          } else {
+            d->CreateTexture2D(&sd, NULL, &tile_stg);
+            d->CreateTexture2D(&msd, NULL, &mask_stg);
+          }
+          if (tile_stg && mask_stg) {
             c->CopyResource(tile_stg.Get(), tile_tex.Get());
             c->CopyResource(mask_stg.Get(), mask_tex.Get());
             D3D11_MAPPED_SUBRESOURCE tmp, mmp;
             if (SUCCEEDED(c->Map(tile_stg.Get(), 0, D3D11_MAP_READ, 0, &tmp))) {
               if (SUCCEEDED(c->Map(mask_stg.Get(), 0, D3D11_MAP_READ, 0, &mmp))) {
-                float *peak_buf = (float *)malloc((size_t)tw * (size_t)th * sizeof(float));
-                uint64_t *mask_buf = (uint64_t *)malloc((size_t)tw * (size_t)th * sizeof(uint64_t));
+                float *peak_buf = NULL;
+                uint64_t *mask_buf = NULL;
+                int owned_bufs = 0;
+                if (long_holds && hdr_work.dev == d) {
+                  if (!hdr_work.peak_buf) hdr_work.peak_buf = (float *)malloc((size_t)tw * (size_t)th * sizeof(float));
+                  if (!hdr_work.mask_buf) hdr_work.mask_buf = (uint64_t *)malloc((size_t)tw * (size_t)th * sizeof(uint64_t));
+                  peak_buf = hdr_work.peak_buf;
+                  mask_buf = hdr_work.mask_buf;
+                } else {
+                  peak_buf = (float *)malloc((size_t)tw * (size_t)th * sizeof(float));
+                  mask_buf = (uint64_t *)malloc((size_t)tw * (size_t)th * sizeof(uint64_t));
+                  owned_bufs = 1;
+                }
                 if (peak_buf && mask_buf) {
                   if (hdr_build_peak_map((const float *)tmp.pData, (int)(tmp.RowPitch / sizeof(float)),
                                          (const uint64_t *)mmp.pData, (int)(mmp.RowPitch / sizeof(uint64_t)),
                                          tw, th, rw, rh, peak_buf, mask_buf)) {
                     D3D11_TEXTURE2D_DESC pd = td;
-                    pd.Usage = D3D11_USAGE_IMMUTABLE;
                     pd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                    D3D11_SUBRESOURCE_DATA pinit = {peak_buf, (UINT)(tw * sizeof(float)), 0};
                     D3D11_TEXTURE2D_DESC pmd = pd;
                     pmd.Format = DXGI_FORMAT_R32G32_UINT;
-                    D3D11_SUBRESOURCE_DATA pminit = {mask_buf, (UINT)(tw * sizeof(uint64_t)), 0};
-                    ComPtr<ID3D11Texture2D> peak_tex, pmask_tex;
-                    if (SUCCEEDED(d->CreateTexture2D(&pd, &pinit, &peak_tex)) &&
-                        SUCCEEDED(d->CreateShaderResourceView(peak_tex.Get(), NULL, &peak_srv)) &&
-                        SUCCEEDED(d->CreateTexture2D(&pmd, &pminit, &pmask_tex)) &&
-                        SUCCEEDED(d->CreateShaderResourceView(pmask_tex.Get(), NULL, &pmask_srv))) {
-                      has_hdr = 1;
+                    if (long_holds && hdr_work.dev == d) {
+                      pd.Usage = D3D11_USAGE_DEFAULT;
+                      pmd.Usage = D3D11_USAGE_DEFAULT;
+                      if (!hdr_work.peak_tex && SUCCEEDED(d->CreateTexture2D(&pd, NULL, &hdr_work.peak_tex)))
+                        d->CreateShaderResourceView(hdr_work.peak_tex.Get(), NULL, &hdr_work.peak_srv);
+                      if (!hdr_work.pmask_tex && SUCCEEDED(d->CreateTexture2D(&pmd, NULL, &hdr_work.pmask_tex)))
+                        d->CreateShaderResourceView(hdr_work.pmask_tex.Get(), NULL, &hdr_work.pmask_srv);
+                      if (hdr_work.peak_tex && hdr_work.peak_srv && hdr_work.pmask_tex && hdr_work.pmask_srv) {
+                        c->UpdateSubresource(hdr_work.peak_tex.Get(), 0, NULL, peak_buf, (UINT)(tw * sizeof(float)), 0);
+                        c->UpdateSubresource(hdr_work.pmask_tex.Get(), 0, NULL, mask_buf, (UINT)(tw * sizeof(uint64_t)), 0);
+                        peak_srv = hdr_work.peak_srv;
+                        pmask_srv = hdr_work.pmask_srv;
+                        has_hdr = 1;
+                      }
+                    } else {
+                      pd.Usage = D3D11_USAGE_IMMUTABLE;
+                      pmd.Usage = D3D11_USAGE_IMMUTABLE;
+                      D3D11_SUBRESOURCE_DATA pinit = {peak_buf, (UINT)(tw * sizeof(float)), 0};
+                      D3D11_SUBRESOURCE_DATA pminit = {mask_buf, (UINT)(tw * sizeof(uint64_t)), 0};
+                      ComPtr<ID3D11Texture2D> peak_tex, pmask_tex;
+                      if (SUCCEEDED(d->CreateTexture2D(&pd, &pinit, &peak_tex)) &&
+                          SUCCEEDED(d->CreateShaderResourceView(peak_tex.Get(), NULL, &peak_srv)) &&
+                          SUCCEEDED(d->CreateTexture2D(&pmd, &pminit, &pmask_tex)) &&
+                          SUCCEEDED(d->CreateShaderResourceView(pmask_tex.Get(), NULL, &pmask_srv))) {
+                        has_hdr = 1;
+                      }
                     }
                   }
                 }
-                free(peak_buf);
-                free(mask_buf);
+                if (owned_bufs) {
+                  free(peak_buf);
+                  free(mask_buf);
+                }
                 c->Unmap(mask_stg.Get(), 0);
               }
               c->Unmap(tile_stg.Get(), 0);
@@ -1679,6 +1798,428 @@ static void *dd_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh,
 extern "C" void *ps_wgc_take_dd(HMONITOR mon, int w, int h, uint8_t **bits, int *pitch) {
   take_used_dd = 0;
   return dd_take(mon, w, h, 0, 0, w, h, bits, pitch);
+}
+
+static int dd_long_ensure(HMONITOR mon, int w, int h) {
+  if (dd_disabled() || dd_ok == 0) return 0;
+  if (dd_long_dupl && dd_long_mon == mon && dd_long_w == w && dd_long_h == h &&
+      dd_dev && dd_dev->GetDeviceRemovedReason() == S_OK) {
+    return 1;
+  }
+  dd_long_reset();
+  ComPtr<IDXGIAdapter1> adap;
+  ComPtr<IDXGIOutput> out;
+  if (!dd_find_output(mon, adap, out) || !dd_ensure_dev(adap.Get())) {
+    dd_ok = 0;
+    return 0;
+  }
+  if (!dd_make_dupl(out.Get(), dd_long_dupl)) {
+    if (last_hr == E_ACCESSDENIED || last_hr == DXGI_ERROR_UNSUPPORTED) dd_ok = 0;
+    if (!keep_sessions && !long_holds) dd_teardown();
+    return 0;
+  }
+  dd_ok = 1;
+  dd_long_mon = mon;
+  dd_long_w = w;
+  dd_long_h = h;
+  dd_long_got = 0;
+  dd_long_misses = 0;
+  return 1;
+}
+
+extern "C" int ps_wgc_long_prime(HMONITOR mon, int w, int h) {
+  return dd_long_ensure(mon, w, h);
+}
+
+static int dd_long_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int need_first,
+                        uint8_t **bits, int *pitch, void **out_taken) {
+  *out_taken = NULL;
+  if (!dd_long_ensure(mon, w, h)) return -1;
+  LARGE_INTEGER t0, t1, f;
+  QueryPerformanceCounter(&t0);
+  QueryPerformanceFrequency(&f);
+  ComPtr<IDXGIResource> res;
+  DXGI_OUTDUPL_FRAME_INFO fi = {};
+  HRESULT hr = DXGI_ERROR_WAIT_TIMEOUT;
+  if (need_first && !dd_long_got) {
+    LARGE_INTEGER t_acq;
+    QueryPerformanceCounter(&t_acq);
+    const double budget = 40.0;
+    for (;;) {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      double left = budget - (now.QuadPart - t_acq.QuadPart) * 1000.0 / (double)f.QuadPart;
+      if (left <= 0.0) {
+        hr = DXGI_ERROR_WAIT_TIMEOUT;
+        break;
+      }
+      UINT wait_ms = left < 1.0 ? 1u : (UINT)left;
+      hr = dd_long_dupl->AcquireNextFrame(wait_ms, &fi, &res);
+      if (FAILED(hr) || !res) break;
+      if (fi.LastPresentTime.QuadPart != 0) break;
+      res.Reset();
+      dd_long_dupl->ReleaseFrame();
+      hr = DXGI_ERROR_WAIT_TIMEOUT;
+    }
+  } else {
+    hr = dd_long_dupl->AcquireNextFrame(0, &fi, &res);
+    if (SUCCEEDED(hr) && res && fi.LastPresentTime.QuadPart == 0) {
+      res.Reset();
+      dd_long_dupl->ReleaseFrame();
+      return 0;
+    }
+  }
+  if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+    if (need_first && !dd_long_got) {
+      dd_long_misses++;
+      if (dd_long_misses >= 4) {
+        dd_long_reset();
+        return -1;
+      }
+    }
+    return 0;
+  }
+  if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) {
+    dd_long_reset();
+    return 0;
+  }
+  if (FAILED(hr) || !res) {
+    last_hr = hr;
+    dd_long_reset();
+    return -1;
+  }
+  ComPtr<ID3D11Texture2D> tex;
+  if (FAILED(res.As(&tex)) || !tex) {
+    res.Reset();
+    dd_long_dupl->ReleaseFrame();
+    return -1;
+  }
+  D3D11_TEXTURE2D_DESC td = {};
+  tex->GetDesc(&td);
+  if ((int)td.Width != w || (int)td.Height != h) {
+    tex.Reset();
+    res.Reset();
+    dd_long_dupl->ReleaseFrame();
+    dd_long_reset();
+    return -1;
+  }
+  dd_long_got = 1;
+  dd_long_misses = 0;
+  int whole = rx == 0 && ry == 0 && rw == w && rh == h;
+  int is_fp16 = (td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+  float white = 1.0f;
+  int color_mode = is_fp16 ? mon_hdr(mon, &white) : PS_COLOR_SDR;
+  said_half = 0;
+  ComPtr<ID3D11Texture2D> src_for_copy = tex;
+  D3D11_TEXTURE2D_DESC copy_desc = td;
+  if (is_fp16) {
+    if (!dd_srgb || !dd_srgb_k) {
+      tex.Reset();
+      res.Reset();
+      dd_long_dupl->ReleaseFrame();
+      return -1;
+    }
+    ComPtr<ID3D11ShaderResourceView> srv;
+    ComPtr<ID3D11Texture2D> half;
+    uint32_t ox = (uint32_t)rx, oy = (uint32_t)ry;
+    if (FAILED(dd_dev->CreateShaderResourceView(tex.Get(), NULL, &srv))) {
+      D3D11_TEXTURE2D_DESC hd = td;
+      hd.Width = (UINT)rw;
+      hd.Height = (UINT)rh;
+      hd.Usage = D3D11_USAGE_DEFAULT;
+      hd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      hd.CPUAccessFlags = 0;
+      hd.MiscFlags = 0;
+      hd.MipLevels = hd.ArraySize = 1;
+      said_half = 1;
+      if (FAILED(dd_dev->CreateTexture2D(&hd, NULL, &half))) {
+        tex.Reset();
+        res.Reset();
+        dd_long_dupl->ReleaseFrame();
+        return -1;
+      }
+      if (whole) dd_ctx->CopyResource(half.Get(), tex.Get());
+      else {
+        D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
+        dd_ctx->CopySubresourceRegion(half.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
+      }
+      ox = oy = 0;
+      if (FAILED(dd_dev->CreateShaderResourceView(half.Get(), NULL, &srv))) {
+        tex.Reset();
+        res.Reset();
+        dd_long_dupl->ReleaseFrame();
+        return -1;
+      }
+    }
+    D3D11_TEXTURE2D_DESC od = td;
+    od.Width = (UINT)rw;
+    od.Height = (UINT)rh;
+    od.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    od.Usage = D3D11_USAGE_DEFAULT;
+    od.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+    od.CPUAccessFlags = 0;
+    od.MiscFlags = 0;
+    od.MipLevels = od.ArraySize = 1;
+    ComPtr<ID3D11Texture2D> uav_tex;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    if (long_holds && kept_out) {
+      D3D11_TEXTURE2D_DESC kd;
+      kept_out->GetDesc(&kd);
+      ComPtr<ID3D11Device> kdev;
+      kept_out->GetDevice(&kdev);
+      if (kdev.Get() == dd_dev.Get() && kd.Width == od.Width && kd.Height == od.Height && kd.Format == od.Format)
+        uav_tex = kept_out, uav = kept_uav;
+    }
+    if (!uav_tex && (FAILED(dd_dev->CreateTexture2D(&od, NULL, &uav_tex)) ||
+                     FAILED(dd_dev->CreateUnorderedAccessView(uav_tex.Get(), NULL, &uav)))) {
+      tex.Reset();
+      res.Reset();
+      dd_long_dupl->ReleaseFrame();
+      return -1;
+    }
+    if (!hdr_convert_gpu(dd_dev.Get(), dd_ctx.Get(), dd_tile_max.Get(), dd_tile_k.Get(),
+                         dd_srgb.Get(), dd_srgb_k.Get(), srv.Get(), uav.Get(), white, ox, oy, rw, rh,
+                         color_mode == PS_COLOR_HDR ? 1 : 0)) {
+      tex.Reset();
+      res.Reset();
+      dd_long_dupl->ReleaseFrame();
+      return -1;
+    }
+    if (long_holds) kept_out = uav_tex, kept_uav = uav;
+    src_for_copy = uav_tex;
+    copy_desc = od;
+    whole = 1;
+  }
+  copy_desc.Usage = D3D11_USAGE_STAGING;
+  copy_desc.BindFlags = 0;
+  copy_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  copy_desc.MiscFlags = 0;
+  copy_desc.MipLevels = copy_desc.ArraySize = 1;
+  copy_desc.Width = (UINT)rw;
+  copy_desc.Height = (UINT)rh;
+  ComPtr<ID3D11Texture2D> staging;
+  if (long_holds && kept_staging) {
+    D3D11_TEXTURE2D_DESC kd;
+    kept_staging->GetDesc(&kd);
+    ComPtr<ID3D11Device> kdev;
+    kept_staging->GetDevice(&kdev);
+    if (kdev.Get() == dd_dev.Get() && kd.Width == copy_desc.Width && kd.Height == copy_desc.Height &&
+        kd.Format == copy_desc.Format)
+      staging = kept_staging;
+    kept_staging.Reset();
+  }
+  if (!staging && FAILED(dd_dev->CreateTexture2D(&copy_desc, NULL, &staging))) {
+    tex.Reset();
+    res.Reset();
+    dd_long_dupl->ReleaseFrame();
+    return -1;
+  }
+  if (whole) dd_ctx->CopyResource(staging.Get(), src_for_copy.Get());
+  else {
+    D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
+    dd_ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, src_for_copy.Get(), 0, &box);
+  }
+  src_for_copy.Reset();
+  tex.Reset();
+  res.Reset();
+  dd_long_dupl->ReleaseFrame();
+  D3D11_MAPPED_SUBRESOURCE mp;
+  if (FAILED(dd_ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mp))) return -1;
+  *bits = (uint8_t *)mp.pData;
+  *pitch = (int)mp.RowPitch;
+  take_white = (color_mode == PS_COLOR_HDR) ? white : (is_fp16 ? 1.0 : 0.0);
+  take_age = 0.0;
+  take_fresh = 0;
+  take_used_dd = 1;
+  QueryPerformanceCounter(&t1);
+  take_ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+  *out_taken = staging.Detach();
+  return 1;
+}
+
+extern "C" int ps_wgc_long_take_dd(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int need_first,
+                                   uint8_t **bits, int *pitch, void **out_taken) {
+  if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 || rx + rw > w || ry + rh > h) return -1;
+  return dd_long_take(mon, w, h, rx, ry, rw, rh, need_first, bits, pitch, out_taken);
+}
+
+static int wgc_long_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int need_first,
+                         uint64_t *seq, uint8_t **bits, int *pitch, void **out_taken) {
+  *out_taken = NULL;
+  LARGE_INTEGER t0, t1, f;
+  QueryPerformanceCounter(&t0);
+  QueryPerformanceFrequency(&f);
+  if (ready > 0 && dev->GetDeviceRemovedReason() != S_OK) {
+    device_lost();
+    return -1;
+  }
+  if (!ps_wgc_ready() || !borderless_allowed()) return -1;
+  Mon *m = NULL;
+  for (int i = 0; i < nmons; i++)
+    if (mons[i].mon == mon) m = &mons[i];
+  if (!m) {
+    if (!keep_sessions || dd_ok == 1) {
+      for (int i = 0; i < nmons; i++) mon_stop(&mons[i]);
+      nmons = 1;
+      m = &mons[0];
+      m->mon = mon, m->w = w, m->h = h;
+    } else if (nmons < MONS_MOST) {
+      m = &mons[nmons++];
+      m->mon = mon, m->w = w, m->h = h;
+    }
+  }
+  if (!m) return -1;
+  float white = 1.0f;
+  int hdr = (to_srgb && to_srgb_k) ? mon_hdr(mon, &white) : PS_COLOR_SDR;
+  if ((m->pool && hdr != m->hdr) || m->w != w || m->h != h) {
+    mon_stop(m);
+    m->mon = mon, m->w = w, m->h = h;
+  }
+  ComPtr<WGC::IDirect3D11CaptureFrame> fr;
+  uint64_t cur_seq = 0;
+  LONGLONG at = 0;
+  EnterCriticalSection(&frame_lock);
+  fr = m->last;
+  cur_seq = (uint64_t)m->frames;
+  at = m->last_at;
+  LeaveCriticalSection(&frame_lock);
+  double age = fr ? (t0.QuadPart - at) / (double)f.QuadPart : 1e9;
+  if (!fr || !m->pool || (need_first && age > FRAME_TRUSTED_S)) {
+    fr.Reset();
+    mon_stop(m);
+    ResetEvent(frame_came);
+    if (!mon_start(m, mon, w, h, hdr)) {
+      m->mon = mon, m->w = w, m->h = h;
+      return -1;
+    }
+    LARGE_INTEGER started;
+    QueryPerformanceCounter(&started);
+    for (;;) {
+      EnterCriticalSection(&frame_lock);
+      fr = m->last;
+      cur_seq = (uint64_t)m->frames;
+      LeaveCriticalSection(&frame_lock);
+      if (fr) break;
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      double left = FIRST_FRAME_MS - (now.QuadPart - started.QuadPart) * 1000.0 / (double)f.QuadPart;
+      if (left <= 0) return -1;
+      WaitForSingleObject(frame_came, (DWORD)left + 1);
+    }
+  } else if (!need_first && seq && *seq != 0 && cur_seq == *seq) {
+    return 0;
+  }
+  ComPtr<WD3D::IDirect3DSurface> surface;
+  ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> access;
+  ComPtr<ID3D11Texture2D> tex;
+  if (FAILED(fr->get_Surface(&surface)) || FAILED(surface.As(&access)) ||
+      FAILED(access->GetInterface(IID_PPV_ARGS(&tex)))) {
+    return -1;
+  }
+  D3D11_TEXTURE2D_DESC td;
+  tex->GetDesc(&td);
+  if ((int)td.Width != w || (int)td.Height != h) return -1;
+  int whole = rx == 0 && ry == 0 && rw == w && rh == h;
+  said_half = 0;
+  if (m->hdr) {
+    ComPtr<ID3D11ShaderResourceView> srv;
+    ComPtr<ID3D11Texture2D> half;
+    uint32_t ox = (uint32_t)rx, oy = (uint32_t)ry;
+    if (FAILED(dev->CreateShaderResourceView(tex.Get(), NULL, &srv))) {
+      D3D11_TEXTURE2D_DESC hd = td;
+      hd.Width = (UINT)rw;
+      hd.Height = (UINT)rh;
+      hd.Usage = D3D11_USAGE_DEFAULT;
+      hd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      hd.CPUAccessFlags = 0;
+      hd.MiscFlags = 0;
+      hd.MipLevels = hd.ArraySize = 1;
+      said_half = 1;
+      if (FAILED(dev->CreateTexture2D(&hd, NULL, &half))) return -1;
+      if (whole) ctx->CopyResource(half.Get(), tex.Get());
+      else {
+        D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
+        ctx->CopySubresourceRegion(half.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
+      }
+      ox = oy = 0;
+      if (FAILED(dev->CreateShaderResourceView(half.Get(), NULL, &srv))) return -1;
+    }
+    D3D11_TEXTURE2D_DESC od = td;
+    od.Width = (UINT)rw;
+    od.Height = (UINT)rh;
+    od.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    od.Usage = D3D11_USAGE_DEFAULT;
+    od.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+    od.CPUAccessFlags = 0;
+    od.MiscFlags = 0;
+    od.MipLevels = od.ArraySize = 1;
+    ComPtr<ID3D11Texture2D> out;
+    ComPtr<ID3D11UnorderedAccessView> uav;
+    if (long_holds && kept_out) {
+      D3D11_TEXTURE2D_DESC kd;
+      kept_out->GetDesc(&kd);
+      ComPtr<ID3D11Device> kdev;
+      kept_out->GetDevice(&kdev);
+      if (kdev.Get() == dev.Get() && kd.Width == od.Width && kd.Height == od.Height && kd.Format == od.Format)
+        out = kept_out, uav = kept_uav;
+    }
+    if (!out && (FAILED(dev->CreateTexture2D(&od, NULL, &out)) ||
+                 FAILED(dev->CreateUnorderedAccessView(out.Get(), NULL, &uav)))) {
+      return -1;
+    }
+    if (!hdr_convert_gpu(dev.Get(), ctx.Get(), to_tile_max.Get(), to_tile_k.Get(),
+                         to_srgb.Get(), to_srgb_k.Get(), srv.Get(), uav.Get(), white, ox, oy, rw, rh,
+                         m->hdr == PS_COLOR_HDR ? 1 : 0)) {
+      return -1;
+    }
+    if (long_holds) kept_out = out, kept_uav = uav;
+    tex = out;
+    td = od;
+    whole = 1;
+  }
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  td.MiscFlags = 0;
+  td.MipLevels = td.ArraySize = 1;
+  td.Width = (UINT)rw;
+  td.Height = (UINT)rh;
+  ComPtr<ID3D11Texture2D> staging;
+  if (long_holds && kept_staging) {
+    D3D11_TEXTURE2D_DESC kd;
+    kept_staging->GetDesc(&kd);
+    ComPtr<ID3D11Device> kdev;
+    kept_staging->GetDevice(&kdev);
+    if (kdev.Get() == dev.Get() && kd.Width == td.Width && kd.Height == td.Height && kd.Format == td.Format)
+      staging = kept_staging;
+    kept_staging.Reset();
+  }
+  if (!staging && FAILED(dev->CreateTexture2D(&td, NULL, &staging))) return -1;
+  if (whole) ctx->CopyResource(staging.Get(), tex.Get());
+  else {
+    D3D11_BOX box = {(UINT)rx, (UINT)ry, 0, (UINT)(rx + rw), (UINT)(ry + rh), 1};
+    ctx->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, tex.Get(), 0, &box);
+  }
+  D3D11_MAPPED_SUBRESOURCE mp;
+  if (FAILED(ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mp))) return -1;
+  if (seq) *seq = cur_seq;
+  take_white = (m->hdr == PS_COLOR_HDR) ? white : (m->hdr > 0 ? 1.0 : 0.0);
+  *bits = (uint8_t *)mp.pData;
+  *pitch = (int)mp.RowPitch;
+  QueryPerformanceCounter(&t1);
+  take_ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+  *out_taken = staging.Detach();
+  return 1;
+}
+
+extern "C" int ps_wgc_long_take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int need_first,
+                                uint64_t *seq, uint8_t **bits, int *pitch, void **out_taken) {
+  if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 || rx + rw > w || ry + rh > h) return -1;
+  if (!dd_disabled() && dd_ok != 0) {
+    int rc = dd_long_take(mon, w, h, rx, ry, rw, rh, need_first, bits, pitch, out_taken);
+    if (rc >= 0) return rc;
+  }
+  return wgc_long_take(mon, w, h, rx, ry, rw, rh, need_first, seq, bits, pitch, out_taken);
 }
 
 static void *take(HMONITOR mon, int w, int h, int rx, int ry, int rw, int rh, int any_age, uint8_t **bits, int *pitch) {
@@ -1976,7 +2517,7 @@ typedef struct {
   double take_ms;
   double white;
   int32_t said_half;
-  int32_t pad;
+  int32_t need_first;
 } WgcShmHeader;
 
 static int wgc_long_cli(LPWSTR *argv, int argc) {
@@ -2015,6 +2556,8 @@ static int wgc_long_cli(LPWSTR *argv, int argc) {
   if (hdr && req && rsp && stop) {
     keep_sessions = 0;
     long_holds = 1;
+    dd_ok = 0;
+    uint64_t seq = 0;
     POINT pt = {mx + mw / 2, my + mh / 2};
     HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     HANDLE waits[3] = {stop, req, parent};
@@ -2028,8 +2571,9 @@ static int wgc_long_cli(LPWSTR *argv, int argc) {
         hdr->pitch = rw * 4;
         uint8_t *bits = NULL;
         int pitch = 0;
-        void *taken = ps_wgc_take_part(mon, mw, mh, rx, ry, rw, rh, &bits, &pitch);
-        if (taken && bits && pitch >= rw * 4) {
+        void *taken = NULL;
+        int rc = ps_wgc_long_take(mon, mw, mh, rx, ry, rw, rh, hdr->need_first, &seq, &bits, &pitch, &taken);
+        if (rc == 1 && taken && bits && pitch >= rw * 4) {
           uint8_t *dst = (uint8_t *)hdr + sizeof(WgcShmHeader);
           size_t row = (size_t)rw * 4;
           if (pitch == (int)row) {
@@ -2042,6 +2586,9 @@ static int wgc_long_cli(LPWSTR *argv, int argc) {
           hdr->said_half = said_half;
           MemoryBarrier();
           hdr->ok = 1;
+        } else if (rc == 0) {
+          MemoryBarrier();
+          hdr->ok = 2;
         }
         SetEvent(rsp);
         if (taken) ps_wgc_release(taken);
