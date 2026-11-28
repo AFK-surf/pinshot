@@ -463,22 +463,20 @@ fn mean_cache_clear() -> Unit {
   blur_images.clear()
 }
 
-// A blur mark is drawn as a picture of its cells' means, one pixel a cell, scaled up smoothly by the renderer: as
-// vector rects (one layer per colour, thousands of them) it was rasterized again on every move of a drag.
+// A blur mark is drawn as a picture of the cells' means, one pixel a cell, scaled up smoothly by the renderer and cut
+// to the mark: as vector rects (one layer per colour, thousands of them) it was rasterized again on every move of a
+// drag. One picture of the whole screen a capture (made the first time it is wanted), so a drag only moves the cut.
 struct BlurGrid {
   key : String
   r : Rect
   cell : Int
-  sample : Int
-  gx0 : Int
-  gy0 : Int
   gw : Int
   gh : Int
 }
 
 let blur_images : Map[String, Bool] = Map::new()
 
-fn blur_geom(m : Mark, k : Double) -> Option[BlurGrid] {
+fn blur_grid(m : Mark, k : Double) -> Option[BlurGrid] {
   let (x0, y0) = m.pts[0]
   let (x1, y1) = m.pts[m.pts.length() - 1]
   guard rect_between(x0.round().to_int(), y0.round().to_int(), x1.round().to_int(), y1.round().to_int()).within(
@@ -489,25 +487,18 @@ fn blur_geom(m : Mark, k : Double) -> Option[BlurGrid] {
   }
   let cell = dmax(2.0, (3.0 * k).round()).to_int()
   let sample = dmax(6.0, (mosaic_pt(m.size) * 2.2 * k).round()).to_int()
-  let gx0 = r.x / cell
-  let gy0 = r.y / cell
-  let gw = (r.right() + cell - 1) / cell - gx0
-  let gh = (r.bottom() + cell - 1) / cell - gy0
+  let gw = (mon.v.w + cell - 1) / cell
+  let gh = (mon.v.h + cell - 1) / cell
   if gw <= 0 || gh <= 0 {
     return None
   }
-  let key = "mem:blur/\{frozen_key.untracked()}/\{cell}/\{sample}/\{gx0}/\{gy0}/\{gw}/\{gh}"
-  Some(BlurGrid::{ key, r, cell, sample, gx0, gy0, gw, gh })
-}
-
-fn blur_grid(m : Mark, k : Double) -> Option[BlurGrid] {
-  guard blur_geom(m, k) is Some(g) else { return None }
-  let (key, cell, sample, gx0, gy0, gw, gh) = (g.key, g.cell, g.sample, g.gx0, g.gy0, g.gw, g.gh)
+  let key = "mem:blur/\{frozen_key.untracked()}/\{cell}/\{sample}"
   if !blur_images.contains(key) {
+    let t0 = ps_now_ms()
     let px = Array::make(gw * gh * 4, (0x00 as Byte))
     for j in 0..<gh {
       for i in 0..<gw {
-        let c = cell_mean(gx0 + i, gy0 + j, cell, sample)
+        let c = cell_mean(i, j, cell, sample)
         let at = (j * gw + i) * 4
         px[at] = ((c >> 16) & 0xFF).to_byte()
         px[at + 1] = ((c >> 8) & 0xFF).to_byte()
@@ -515,46 +506,11 @@ fn blur_grid(m : Mark, k : Double) -> Option[BlurGrid] {
         px[at + 3] = (0xff as Byte)
       }
     }
-    blur_images_trim(key)
     ui::add_image(key, shown_bytes(gw, gh, bytes_from_arr(px)))
     blur_images[key] = true
+    log("blur picture \{gw}x\{gh} in \{num(ps_now_ms() - t0)} ms")
   }
-  Some(g)
-}
-
-// (a drag makes a picture each move: past a few, those no mark or draft shows go; one wanted again is made again)
-fn blur_images_trim(adding : String) -> Unit {
-  if blur_images.length() < 8 {
-    return
-  }
-  let k = mon_scale.untracked()
-  let used : Map[String, Bool] = Map::new()
-  used[adding] = true
-  let note = fn(m : Mark) {
-    if m.tool == Blur {
-      match blur_geom(m, k) {
-        Some(g) => used[g.key] = true
-        None => ()
-      }
-    }
-  }
-  for m in marks.untracked() {
-    note(m)
-  }
-  match draft.untracked() {
-    Some(m) => note(m)
-    None => ()
-  }
-  let gone : Array[String] = []
-  for key in blur_images.keys() {
-    if !used.contains(key) {
-      gone.push(key)
-    }
-  }
-  for key in gone {
-    ui::forget_image(key)
-    blur_images.remove(key)
-  }
+  Some(BlurGrid::{ key, r, cell, gw, gh })
 }
 
 fn cell_mean(gx : Int, gy : Int, cell : Int, sample : Int) -> Int {
