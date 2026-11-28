@@ -131,7 +131,7 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.
     sizing: signals::ref_new(None),
     ocr_on: signals::signal(false),
     ocr: signals::signal_ref(Idle),
-    ocr_sel: signals::signal_by(None, fn(a, b) {
+    ocr_sel: signals::signal_by(None, same=fn(a, b) {
       match (a, b) {
         (None, None) => true
         (Some((x0, y0)), Some((x1, y1))) => x0 == x1 && y0 == y1

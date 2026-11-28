@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AFK-surf/invar
-          ref: e838c54f3a923794cd6731cabe5468a47798793a
+          ref: 8d5834e468585656d5094d9d40f3443c18c49063
           path: invar
 
       - name: Checkout pion-packages
@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AFK-surf/pion
-          ref: aa55758fb3db593eca12195cec495eaf8a65e329
+          ref: 868866e53b8530c9e198fc743a76619b6a1ab362
           path: pion
 
       - name: Cache pion toolchain
@@ -44,7 +44,7 @@ jobs:
             pion/out/pionc2
             pion/out/qbe
             pion/out/libpionrt.a
-          key: pion-macos-arm64-aa55758fb3db593eca12195cec495eaf8a65e329
+          key: pion-macos-arm64-868866e53b8530c9e198fc743a76619b6a1ab362
 
       - name: Bootstrap pionc2
         if: steps.pion-cache.outputs.cache-hit != 'true'

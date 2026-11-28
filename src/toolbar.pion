@@ -22,11 +22,11 @@ let bar_rule : Double = 7.0
 
 let bar_gap : Double = 3.0
 
-let shape_tool : signals::Signal[Tool] = signals::signal_by(Box, fn(a, b) { a == b })
+let shape_tool : signals::Signal[Tool] = signals::signal_by(Box, same=fn(a, b) { a == b })
 
-let line_tool : signals::Signal[Tool] = signals::signal_by(Arrow, fn(a, b) { a == b })
+let line_tool : signals::Signal[Tool] = signals::signal_by(Arrow, same=fn(a, b) { a == b })
 
-let mosaic_tool : signals::Signal[Tool] = signals::signal_by(Mosaic, fn(a, b) { a == b })
+let mosaic_tool : signals::Signal[Tool] = signals::signal_by(Mosaic, same=fn(a, b) { a == b })
 
 fn is_shape_tool(t : Tool) -> Bool {
   match t {

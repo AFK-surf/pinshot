@@ -109,7 +109,7 @@ let clear_part_now : signals::Computed[Option[Rect]] = signals::computed_by(
       None => window_under()
     }
   },
-  fn(a, b) {
+  same=fn(a, b) {
     match (a, b) {
       (None, None) => true
       (Some(x), Some(y)) => x == y
@@ -268,7 +268,7 @@ let overlay_confirm_discard : signals::Signal[String] = signals::signal("")
 
 let overlay_discard_at : signals::Signal[Option[(Double, Double)]] = signals::signal_by(
   None,
-  fn(a, b) {
+  same=fn(a, b) {
     match (a, b) {
       (None, None) => true
       (Some((ax, ay)), Some((bx, by))) => ax == bx && ay == by
@@ -392,6 +392,12 @@ fn overlay_window(root : view::View) -> Unit {
   })
 }
 
+impl Eq for Mark {
+  fn equal(a : Mark, b : Mark) -> Bool {
+    same_mark(a, b)
+  }
+}
+
 fn same_mark(a : Mark, b : Mark) -> Bool {
   if a.id != b.id || a.tool != b.tool || a.color != b.color || a.size != b.size || a.n != b.n || a.words != b.words || a.pts.length() != b.pts.length() {
     return false
@@ -409,7 +415,7 @@ fn marks_layer(parent : view::View, editing~ : Bool) -> Unit {
   let _ = parent.box(fn(layer) {
     let _ = layer.over(view::Live::Is(true))
     let _ = layer.box(fn(f) { let _ = f.over(view::Live::Is(true)).presses(view::Live::Is(false)).picture(view::Live::By(focus_picture)) })
-    layer.each_eq(same_mark, fn() { marks.get() }, fn(m) { m.id }, fn(row, m) {
+    layer.each(fn() { marks.get() }, fn(m) { m.id }, fn(row, m) {
       let _ = row.over(view::Live::Is(true)).presses(view::Live::Is(false))
       mark_node(row, signals::untracked(fn() { m.get() }))
     }, at_once=true)

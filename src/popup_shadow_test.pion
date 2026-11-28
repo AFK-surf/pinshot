@@ -90,7 +90,8 @@ test "overlay: discard confirm pill wraps content width and anchors to cursor (r
     panic("overlay right discard pill not anchored above cursor: (\{rx}, \{ry}) size=\{pw}x\{ph}")
   }
   let right_alpha = match overlay_discard_pill.v {
-    Some(dc) => dc.tree.nodes[dc.at].look.alpha
+    Some(dc) => match dc.tree.drawn_of(dc.id()) { Some(d) => d.alpha
+      None => -1.0 }
     None => -1.0
   }
   if right_alpha < 0.99 {
@@ -122,7 +123,8 @@ test "overlay: discard confirm pill wraps content width and anchors to cursor (r
     panic("overlay esc discard pill not centered in selection: (\{ex}, \{ey}) size=\{ew}x\{eh} want_center=(\{want_cx}, \{want_cy})")
   }
   let esc_alpha = match overlay_discard_pill.v {
-    Some(dc) => dc.tree.nodes[dc.at].look.alpha
+    Some(dc) => match dc.tree.drawn_of(dc.id()) { Some(d) => d.alpha
+      None => -1.0 }
     None => -1.0
   }
   if esc_alpha < 0.99 {

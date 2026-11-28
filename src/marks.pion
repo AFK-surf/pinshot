@@ -40,7 +40,7 @@ let done_before : signals::Ref[Array[Array[Mark]]] = signals::ref_new([])
 
 let mark_ids : signals::Ref[Int] = signals::ref_new(0)
 
-let tool : signals::Signal[Tool] = signals::signal_by(Move, fn(a, b) { a == b })
+let tool : signals::Signal[Tool] = signals::signal_by(Move, same=fn(a, b) { a == b })
 
 let colors : Array[Int64] = [0xD84A2FFFL, 0xFFB020FFL, 0x2ECC71FFL, 0x2F80EDFFL, 0xFFFFFFFFL, 0x111214FFL]
 
@@ -645,7 +645,7 @@ test "mark hit" {
   assert_true(moved.pts[1].0 == 110.0 && moved.pts[1].1 == 5.0)
 }
 
-let selected : signals::Signal[Option[Int]] = signals::signal_by(None, fn(a, b) {
+let selected : signals::Signal[Option[Int]] = signals::signal_by(None, same=fn(a, b) {
   match (a, b) {
     (None, None) => true
     (Some(x), Some(y)) => x == y

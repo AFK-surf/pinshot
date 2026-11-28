@@ -44,9 +44,9 @@ let long_pan_start : signals::Ref[(Double, Int)] = signals::ref_new((0.0, 0))
 
 let long_scrub_grab : signals::Ref[Double] = signals::ref_new(0.0)
 
-let long_preview : signals::Signal[(String, Int, Int)] = signals::signal_by(("", 0, 0), fn(a, b) { a.0 == b.0 && a.1 == b.1 && a.2 == b.2 })
+let long_preview : signals::Signal[(String, Int, Int)] = signals::signal_by(("", 0, 0), same=fn(a, b) { a.0 == b.0 && a.1 == b.1 && a.2 == b.2 })
 
-let long_pending : signals::Signal[(String, Int, Int)] = signals::signal_by(("", 0, 0), fn(a, b) { a.0 == b.0 && a.1 == b.1 && a.2 == b.2 })
+let long_pending : signals::Signal[(String, Int, Int)] = signals::signal_by(("", 0, 0), same=fn(a, b) { a.0 == b.0 && a.1 == b.1 && a.2 == b.2 })
 
 let long_root : signals::Ref[Option[view::View]] = signals::ref_new(None)
 
