@@ -229,6 +229,47 @@ static HRESULT engine_found(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcr
   return SUCCEEDED(hr) && engine ? S_OK : S_FALSE;
 }
 
+// An English engine, where one is installed and `engine` is not one: a picture of English read by a Chinese engine
+// splits and mangles its words ("1,549 posts" as "1, 549 p OST"), so English is read again by an English one.
+static bool english_engine(ComPtr<OCR::IOcrEngineStatics> &st, ComPtr<OCR::IOcrEngine> &engine, ComPtr<OCR::IOcrEngine> &en) {
+  ComPtr<WG::ILanguage> cur;
+  HString ct;
+  if (SUCCEEDED(engine->get_RecognizerLanguage(&cur)) && cur && SUCCEEDED(cur->get_LanguageTag(ct.GetAddressOf()))) {
+    UINT32 n = 0;
+    const wchar_t *c = WindowsGetStringRawBuffer(ct.Get(), &n);
+    if (c && n >= 2 && _wcsnicmp(c, L"en", 2) == 0) return false;
+  }
+  ComPtr<WFC::IVectorView<WG::Language *>> langs;
+  if (FAILED(st->get_AvailableRecognizerLanguages(&langs))) return false;
+  UINT32 n = 0;
+  langs->get_Size(&n);
+  for (UINT32 i = 0; i < n; i++) {
+    ComPtr<WG::ILanguage> lang;
+    HString tag;
+    if (FAILED(langs->GetAt(i, &lang)) || FAILED(lang->get_LanguageTag(tag.GetAddressOf()))) continue;
+    UINT32 tl = 0;
+    const wchar_t *t = WindowsGetStringRawBuffer(tag.Get(), &tl);
+    if (t && tl >= 2 && _wcsnicmp(t, L"en", 2) == 0 && (tl == 2 || t[2] == L'-'))
+      if (SUCCEEDED(st->TryCreateFromLanguage(lang.Get(), &en)) && en) return true;
+  }
+  return false;
+}
+
+// Whether what `res` read is mostly Latin letters (few CJK ones among them).
+static bool mostly_latin(OCR::IOcrResult *res) {
+  HString t;
+  if (FAILED(res->get_Text(t.GetAddressOf()))) return false;
+  UINT32 n = 0;
+  const wchar_t *s = WindowsGetStringRawBuffer(t.Get(), &n);
+  int latin = 0, cjk = 0;
+  for (UINT32 i = 0; s && i < n; i++) {
+    wchar_t c = s[i];
+    if ((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z')) latin++;
+    else if ((c >= 0x3040 && c <= 0x30FF) || (c >= 0x3400 && c <= 0x9FFF) || (c >= 0xAC00 && c <= 0xD7AF)) cjk++;
+  }
+  return latin >= 8 && cjk * 12 < latin;
+}
+
 struct OcrOut {
   std::string text;
   std::string boxes;
@@ -278,6 +319,18 @@ static void ocr_run(const uint8_t *png, int len, OcrOut *o, bool want_boxes) {
   ComPtr<OCR::IOcrResult> res;
   HRESULT rhr = engine->RecognizeAsync(bmp.Get(), &op);
   HRESULT whr = SUCCEEDED(rhr) ? ocr_wait(op.Get(), res.GetAddressOf()) : rhr;
+  ComPtr<OCR::IOcrEngine> en;
+  if (SUCCEEDED(whr) && res && mostly_latin(res.Get()) && english_engine(st, engine, en)) {
+    ComPtr<WF::IAsyncOperation<OCR::OcrResult *>> op2;
+    ComPtr<OCR::IOcrResult> res2;
+    if (SUCCEEDED(en->RecognizeAsync(bmp.Get(), &op2)) && SUCCEEDED(ocr_wait(op2.Get(), res2.GetAddressOf())) && res2) {
+      res = res2;
+      ComPtr<WG::ILanguage> lang;
+      HString tag;
+      if (SUCCEEDED(en->get_RecognizerLanguage(&lang)) && lang && SUCCEEDED(lang->get_LanguageTag(tag.GetAddressOf())))
+        o->lang = utf8_of(tag.Get());
+    }
+  }
   ComPtr<WF::IClosable> bc;
   if (bmp && SUCCEEDED(bmp.As(&bc))) bc->Close();
   bmp.Reset();

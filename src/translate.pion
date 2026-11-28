@@ -151,15 +151,31 @@ fn google_request(text : String, target : String) -> TrRequest {
   }
 }
 
-fn llm_prompt(target : String, lines : Int) -> String {
-  "You are a translation engine. The user's message is text read by OCR from a screenshot: \{lines} numbered lines " +
+fn llm_prompt(target : String, lines : Int, source~ : String = "") -> String {
+  let parts = source.split("\t")
+  let app = if parts.length() > 0 { trim_ws(parts[0]) } else { "" }
+  let title = if parts.length() > 1 { trim_ws(parts[1]) } else { "" }
+  let whence = if app == "" && title == "" {
+    ""
+  } else {
+    "The screenshot was taken of " +
+    (if app != "" { "the program " + app } else { "a window" }) +
+    (if title != "" { " titled \"" + tr_short(title, 120) + "\"" } else { "" }) +
+    "; use that, and all the lines together, as context for names and terms. "
+  }
+  whence + "You are a translation engine. The user's message is text read by OCR from a screenshot: \{lines} numbered lines " +
   "(\"1. ...\"), each one block of the picture (a paragraph, a label, a name, a message). Translate each line on its " +
   "own into \{tr_lang_en(target)} and answer with exactly \{lines} lines, each starting with the same number and a " +
   "period, in the same order, never joining or splitting lines. Leave code, commands, paths, identifiers, numbers and " +
   "URLs as they are; a line with nothing to translate is given back as it is. Output only the numbered translations."
 }
 
-fn llm_request(base : String, model : String, key : String, text : String, target : String) -> TrRequest {
+fn tr_short(s : String, most : Int) -> String {
+  let cs = str_chars(s)
+  if cs.length() <= most { s } else { chars_to_string(cs, 0, most) + "…" }
+}
+
+fn llm_request(base : String, model : String, key : String, text : String, target : String, source~ : String = "") -> TrRequest {
   let thinking = if str_contains(base, "deepseek.com") { "\"thinking\":{\"type\":\"disabled\"}," } else { "" }
   let q = fn(s : String) { json_stringify(json::Json::Str(s)) }
   let lines = text.split("\n")
@@ -171,7 +187,7 @@ fn llm_request(base : String, model : String, key : String, text : String, targe
     numbered.write_string("\{i + 1}. " + l)
   }
   let body = "{\"model\":\{q(model)},\{thinking}\"stream\":false,\"messages\":[" +
-    "{\"role\":\"system\",\"content\":\{q(llm_prompt(target, lines.length()))}}," +
+    "{\"role\":\"system\",\"content\":\{q(llm_prompt(target, lines.length(), source~))}}," +
     "{\"role\":\"user\",\"content\":\{q(numbered.to_string())}}]}"
   let mut url = trim_ws(base)
   while str_has_suffix(url, "/") {
@@ -195,7 +211,7 @@ fn tr_api_key(s : Settings) -> String {
   }
 }
 
-fn tr_request_for(s : Settings, text : String, target : String) -> Result[TrRequest, String] {
+fn tr_request_for(s : Settings, text : String, target : String, source~ : String = "") -> Result[TrRequest, String] {
   let p = s.tr_provider
   if p == "google" {
     return Ok(google_request(text, target))
@@ -206,7 +222,7 @@ fn tr_request_for(s : Settings, text : String, target : String) -> Result[TrRequ
   }
   let base = if p == "openai" && trim_ws(s.tr_base) != "" { s.tr_base } else { tr_default_base(p) }
   let model = if trim_ws(tr_model_of(s, p)) != "" { trim_ws(tr_model_of(s, p)) } else { tr_default_model(p) }
-  Ok(llm_request(base, model, key, text, target))
+  Ok(llm_request(base, model, key, text, target, source~))
 }
 
 fn parse_google(body : String) -> TrAnswer {
@@ -377,9 +393,9 @@ let tr_id : signals::Ref[Int] = signals::ref_new(0)
 
 let tr_waiting : Map[Int, (String, (TrAnswer) -> Unit)] = Map::new()
 
-fn tr_http(text : String, target : String, done : (TrAnswer) -> Unit) -> Unit {
+fn tr_http(text : String, target : String, done : (TrAnswer) -> Unit, source~ : String = "") -> Unit {
   let s = settings.untracked()
-  match tr_request_for(s, text, target) {
+  match tr_request_for(s, text, target, source~) {
     Err(why) => done(TrFailed(why))
     Ok(r) => {
       tr_id.v += 1
@@ -415,6 +431,7 @@ fn tr_lines_translated(
   target : String,
   alive : () -> Bool,
   done : (Result[Array[String], String]) -> Unit,
+  source~ : String = "",
 ) -> Unit {
   let pieces : Array[(Int, Int)] = []
   let mut start = 0
@@ -450,7 +467,7 @@ fn tr_lines_translated(
       }
       sb.write_string(lines[i])
     }
-    tr_http(sb.to_string(), target, fn(ans) {
+    tr_http(sb.to_string(), target, source~, fn(ans) {
       match ans {
         TrFailed(why) => done(Err(why))
         TrDone(text) => {
@@ -480,7 +497,28 @@ struct TrLine {
   y0 : Double
   x1 : Double
   y1 : Double
+  /// The median height of its words' boxes: the size its letters were set at, not swayed by an avatar or an icon
+  /// read as a letter beside them.
+  mh : Double
   text : String
+}
+
+fn median_of(v : Array[Double]) -> Double {
+  if v.length() == 0 {
+    return 0.0
+  }
+  let s : Array[Double] = []
+  for x in v {
+    s.push(x)
+    let mut at = s.length() - 1
+    while at > 0 && s[at - 1] > s[at] {
+      let t = s[at - 1]
+      s[at - 1] = s[at]
+      s[at] = t
+      at -= 1
+    }
+  }
+  s[s.length() / 2]
 }
 
 fn tr_lines(words : Array[OcrWord]) -> Array[TrLine] {
@@ -493,15 +531,17 @@ fn tr_lines(words : Array[OcrWord]) -> Array[TrLine] {
     let mut y0 = 1.0
     let mut x1 = 0.0
     let mut y1 = 0.0
+    let hs : Array[Double] = []
     while i < words.length() && words[i].line == line {
       let w = words[i]
       x0 = dmin(x0, w.x)
       y0 = dmin(y0, w.y)
       x1 = dmax(x1, w.x + w.w)
       y1 = dmax(y1, w.y + w.h)
+      hs.push(w.h)
       i += 1
     }
-    out.push(TrLine::{ x0: x0, y0: y0, x1: x1, y1: y1, text: ocr_text_range(words, start, i - 1) })
+    out.push(TrLine::{ x0: x0, y0: y0, x1: x1, y1: y1, mh: median_of(hs), text: ocr_text_range(words, start, i - 1) })
   }
   out
 }
@@ -537,14 +577,13 @@ fn tr_blocks(words : Array[OcrWord], px_w : Double, px_h : Double) -> Array[TrBl
     let mut x1 = first.x1
     let mut y1 = first.y1
     let mut text = first.text
-    let lh = first.y1 - first.y0
-    let mut lh_sum = lh
+    let mut lh_sum = first.mh
     let mut n = 1
     let mut prev = first
     i += 1
     while i < lines.length() {
       let l = lines[i]
-      let h = l.y1 - l.y0
+      let h = l.mh
       let avg = lh_sum / n.to_double()
       let gap = l.y0 - prev.y1
       let same_size = h <= avg * 1.3 && h >= avg / 1.3
@@ -564,14 +603,30 @@ fn tr_blocks(words : Array[OcrWord], px_w : Double, px_h : Double) -> Array[TrBl
       prev = l
       i += 1
     }
-    let size = if n > 1 {
-      dmax((prev.y0 - first.y0) / (n - 1).to_double() * 0.72, lh_sum / n.to_double() * 0.9)
-    } else {
-      lh
-    }
+    // (an OCR box is a word's ink, top of its capitals to the foot of its descenders: about three quarters of the
+    // size Latin letters were set at, all of it for Chinese)
+    let em = if han_share(text) >= 0.5 { 1.05 } else { 1.3 }
+    let set = lh_sum / n.to_double() * em
+    let size = if n > 1 { dmin(set, (prev.y0 - first.y0) / (n - 1).to_double() * 0.85) } else { set }
     out.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0, lh: size, src: text, text: "" })
   }
   out
+}
+
+/// A block left as it is: three capitals or digits at most (an avatar's initials, a badge), which a service would
+/// otherwise "translate" into a word.
+fn tr_keep(src : String) -> Bool {
+  let cs = str_chars(trim_ws(src))
+  if cs.length() == 0 || cs.length() > 3 {
+    return false
+  }
+  for c in cs {
+    let n = c.to_int()
+    if !((n >= 0x41 && n <= 0x5A) || (n >= 0x30 && n <= 0x39)) {
+      return false
+    }
+  }
+  true
 }
 
 fn tr_same(a : String, b : String) -> Bool {
@@ -748,13 +803,13 @@ fn pin_translate(p : Pin) -> Unit {
   let req = tr_id.v
   p.tr_req.v = req
   let alive = fn() { pin_of_wid(wid) is Some((_, q)) && q.tr_req.v == req }
-  tr_lines_translated(lines, target, alive, fn(got) {
+  tr_lines_translated(lines, target, alive, source=p.source, fn(got) {
     guard pin_of_wid(wid) is Some((_, q)) && q.tr_req.v == req else { return }
     match got {
       Ok(parts) => {
         let filled : Array[TrBlock] = []
         for i, b in blocks {
-          filled.push({ ..b, text: if i < parts.length() { parts[i] } else { "" } })
+          filled.push({ ..b, text: if tr_keep(b.src) { b.src } else if i < parts.length() { parts[i] } else { "" } })
         }
         tr_drawing[req] = (wid, filled)
         if ps_tr_render(req, pic, tr_spec(filled), if str_has_prefix(target, "zh") { 1 } else { 0 }) == 0 {

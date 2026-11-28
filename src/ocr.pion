@@ -399,7 +399,7 @@ fn ocr_out() -> Unit {
   picture_of_part(framed=false, fn(png) {
     exporting.v = ""
     match png {
-      Some(png) => open_pin(png, m.x + r.x, m.y + r.y, r.w, r.h, start_ocr=true)
+      Some(png) => open_pin(png, m.x + r.x, m.y + r.y, r.w, r.h, start_ocr=true, source=ps_window_label(m.x + r.x + r.w / 2, m.y + r.y + r.h / 2))
       None => ()
     }
     close_capture()

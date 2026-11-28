@@ -473,6 +473,22 @@ void ps_toast_place(int wid, int width, int height) {
 }
 void ps_opacity(int wid, int alpha) { mb_app_window_of(wid).alphaValue = alpha / 255.0; }
 void ps_let_close(int wid) {}
+moonbit_bytes_t ps_window_label(int32_t x, int32_t y) {
+  (void)x, (void)y;
+  CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+                                               kCGNullWindowID);
+  NSString *out = nil;
+  pid_t self = getpid();
+  for (NSDictionary *w in (__bridge NSArray *)list) {
+    if ([w[(id)kCGWindowOwnerPID] intValue] == self || [w[(id)kCGWindowLayer] intValue] != 0) continue;
+    NSString *owner = w[(id)kCGWindowOwnerName] ?: @"";
+    NSString *name = w[(id)kCGWindowName] ?: @"";
+    out = [NSString stringWithFormat:@"%@\t%@", owner, name];
+    break;
+  }
+  if (list) CFRelease(list);
+  return ps_string(out);
+}
 moonbit_bytes_t ps_window_rect(int wid) {
   NSWindow *w = mb_app_window_of(wid);
   NSScreen *s = w.screen ?: ps_mouse_screen();

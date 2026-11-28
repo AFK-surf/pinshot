@@ -1464,6 +1464,52 @@ void ps_opacity(int32_t wid, int32_t alpha) {
   SetLayeredWindowAttributes(h, 0, (BYTE)(alpha < 20 ? 20 : alpha), LWA_ALPHA);
 }
 
+// The program and title of the window (not PinShot's) at screen point x, y, as "program\ttitle": what a capture
+// there was taken of, said to a translation as where its words come from.
+typedef struct {
+  POINT at;
+  DWORD self;
+  HWND found;
+} LabelFind;
+
+static BOOL CALLBACK label_each(HWND h, LPARAM lp) {
+  LabelFind *f = (LabelFind *)lp;
+  DWORD pid = 0;
+  GetWindowThreadProcessId(h, &pid);
+  if (pid == f->self || !IsWindowVisible(h) || IsIconic(h)) return TRUE;
+  BOOL cloaked = FALSE;
+  if (SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked) return TRUE;
+  if (GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return TRUE;
+  RECT r;
+  if (!GetWindowRect(h, &r) || !PtInRect(&r, f->at)) return TRUE;
+  f->found = h;
+  return FALSE;
+}
+
+moonbit_bytes_t ps_window_label(int32_t x, int32_t y) {
+  LabelFind f = {{x, y}, GetCurrentProcessId(), NULL};
+  EnumWindows(label_each, (LPARAM)&f);
+  if (!f.found) return moonbit_make_bytes(0, 0);
+  wchar_t title[256] = {0}, exe[MAX_PATH] = {0};
+  GetWindowTextW(f.found, title, 255);
+  DWORD pid = 0;
+  GetWindowThreadProcessId(f.found, &pid);
+  HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (p) {
+    DWORD n = MAX_PATH;
+    if (!QueryFullProcessImageNameW(p, 0, exe, &n)) exe[0] = 0;
+    CloseHandle(p);
+  }
+  const wchar_t *base = wcsrchr(exe, L'\\');
+  base = base ? base + 1 : exe;
+  wchar_t both[400];
+  _snwprintf(both, 399, L"%ls\t%ls", base, title);
+  both[399] = 0;
+  for (wchar_t *c = both; *c; c++)
+    if (*c == L'\n' || *c == L'\r') *c = L' ';
+  return ps_utf8_bytes(both);
+}
+
 moonbit_bytes_t ps_window_rect(int32_t wid) {
   HWND h = own_window(wid);
   RECT r = {0};

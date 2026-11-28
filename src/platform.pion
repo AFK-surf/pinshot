@@ -179,6 +179,7 @@ extern "C" fn ps_win_revealed(wid : Int) -> Int = "ps_win_revealed"
 extern "C" fn ps_topmost(wid : Int, on : Int, front : Int) -> Unit = "ps_topmost"
 extern "C" fn ps_opacity(wid : Int, alpha : Int) -> Unit = "ps_opacity"
 extern "C" fn c_ps_window_rect(wid : Int) -> Ptr = "ps_window_rect"
+extern "C" fn c_ps_window_label(x : Int, y : Int) -> Ptr = "ps_window_label"
 extern "C" fn ps_shift_down() -> Int = "ps_shift_down"
 extern "C" fn ps_reduce_motion() -> Int = "ps_reduce_motion"
 extern "C" fn c_ps_pointer() -> Ptr = "ps_pointer"
@@ -258,6 +259,7 @@ fn ps_capture_take() -> Bytes { take_mb_bytes(c_ps_capture_take()) }
 fn ps_capture_crop_rgba(x : Int, y : Int, w : Int, h : Int) -> Bytes { take_mb_bytes(c_ps_capture_crop_rgba(x, y, w, h)) }
 fn ps_windows() -> Bytes { take_mb_bytes(c_ps_windows()) }
 fn ps_window_rect(wid : Int) -> Bytes { take_mb_bytes(c_ps_window_rect(wid)) }
+fn ps_window_label(x : Int, y : Int) -> String { text_of(take_mb_bytes(c_ps_window_label(x, y))) }
 fn ps_pointer() -> Bytes { take_mb_bytes(c_ps_pointer()) }
 fn ps_memory() -> Bytes { take_mb_bytes(c_ps_memory()) }
 fn ps_data_dir() -> Bytes { take_mb_bytes(c_ps_data_dir()) }
