@@ -1,0 +1,437 @@
+import "hostapi"
+import "motion"
+import "pixels"
+import "signals"
+import "ui"
+import "view"
+
+/// The capture's text: the part picked, read (and translated) where it is, held as a pin with no window yet; shown
+/// in its own window only when it is pinned.
+let cap_text : signals::Signal[Option[Pin]] = signals::signal_ref(None)
+
+/// A picture of the part asked for, to be read: the text shows once it comes.
+let cap_text_asked : signals::Ref[Bool] = signals::ref_new(false)
+
+fn cap_text_on() -> Bool {
+  cap_text.get().is_some()
+}
+
+/// The capture's text let go of: what is being read or translated for it no longer wanted.
+fn cap_text_drop() -> Unit {
+  cap_text_asked.v = false
+  guard cap_text.untracked() is Some(p) else { return }
+  cap_text.set(None)
+  pin_ocr_clear_pending(p)
+  pin_tr_clear(p)
+  ui::forget_image(p.key_first)
+}
+
+/// Text of the part picked: read where it is (Ctrl+O; again, back to marking it).
+fn ocr_out() -> Unit {
+  if cap_text.untracked().is_some() {
+    cap_text_drop()
+    return
+  }
+  if exporting.v != "" || cap_text_asked.v {
+    return
+  }
+  let r = match sel.untracked() {
+    Some(_v) => _v
+    None => { return }
+  }
+  drop_held()
+  signals::start_batch()
+  selected.set(None)
+  tool.set(Move)
+  signals::end_batch()
+  cap_text_asked.v = true
+  let m = mon.v
+  let source = ps_window_label(m.x + r.x + r.w / 2, m.y + r.y + r.h / 2)
+  picture_of_part(framed=false, fn(png) {
+    if !cap_text_asked.v || !capturing.untracked() {
+      return
+    }
+    cap_text_asked.v = false
+    guard png is Some(png) else { return }
+    let p = new_pin(png, r.w, r.h, start_ocr=true, source=source)
+    cap_text.set(Some(p))
+    pin_start_ocr(p, from_capture=true)
+    if ui::env("PINSHOT_TEST") != "" && ui::env("PINSHOT_TEST_TRANSLATE") != "" {
+      pin_translate(p)
+    }
+  })
+}
+
+/// The text chosen, or all of it, of the layer shown ("" none).
+fn pin_ocr_text_now(p : Pin) -> String {
+  match (pin_sel_state(p), p.ocr_sel.untracked()) {
+    (PinOcr::Ready(words, _), Some((a, b))) if words.length() > 0 => ocr_text_range(words, a, b)
+    (PinOcr::Ready(_, full), _) => full
+    _ => ""
+  }
+}
+
+/// The text copied, and the capture done with.
+fn cap_copy_text(p : Pin) -> Unit {
+  let text = pin_ocr_text_now(p)
+  if text == "" {
+    return
+  }
+  let test_to = ui::env("PINSHOT_TEST_COPY")
+  if test_to != "" {
+    let _ = ps_write_file(cstr(test_to + ".txt"), utf8_encode(text))
+  } else {
+    hostapi::clipboard_set(text)
+  }
+  log("capture text copied: \{str_chars(text).length()} chars")
+  close_capture()
+}
+
+/// The picture copied as it shows (translated, while the translation is shown), and the capture done with.
+fn cap_copy_picture(p : Pin) -> Unit {
+  if !tr_shown_now(p) {
+    cap_text_drop()
+    copy_out()
+    return
+  }
+  let png = pin_out_picture(p)
+  let test_to = ui::env("PINSHOT_TEST_COPY")
+  if test_to != "" {
+    let _ = ps_write_file(cstr(test_to), png)
+  } else {
+    hostapi::clipboard_set_image(png)
+  }
+  close_capture()
+}
+
+/// The capture's text shown as a pin where the part is, as it is (its layer, its reading and translation, carried on).
+fn cap_text_pin(p : Pin) -> Unit {
+  guard sel.untracked() is Some(r) else { return }
+  let m = mon.v
+  cap_text.set(None)
+  show_pin(p, m.x + r.x, m.y + r.y)
+  close_capture()
+}
+
+/// A capture key while the text is shown: its own meaning, or none (marking is put away until it is gone).
+fn cap_text_action(name : String, p : Pin) -> Unit {
+  match name {
+    "close" =>
+      if p.ocr_sel.untracked().is_some() {
+        p.ocr_sel.set(None)
+      } else {
+        cap_text_drop()
+      }
+    "copy" => cap_copy_text(p)
+    "pin" => cap_text_pin(p)
+    "ocr" => cap_text_drop()
+    "whole" =>
+      match pin_sel_state(p) {
+        PinOcr::Ready(ws, _) if ws.length() > 0 => p.ocr_sel.set(Some((0, ws.length() - 1)))
+        _ => ()
+      }
+    _ => ()
+  }
+}
+
+/// (`u`, `v`) of the part picked at `x`, `y` (pixels), and the part's size in points.
+fn cap_text_uv(r : Rect, x : Double, y : Double) -> (Double, Double, Double, Double) {
+  let k = mon_scale.untracked()
+  let w = dmax(1.0, r.w.to_double())
+  let h = dmax(1.0, r.h.to_double())
+  (clamp((x - r.x.to_double()) / w, 0.0, 1.0), clamp((y - r.y.to_double()) / h, 0.0, 1.0), w / k, h / k)
+}
+
+/// The pointer over the capture's text, at `x`, `y` (pixels): the word under it lit.
+fn cap_text_hover(p : Pin, x : Double, y : Double) -> Unit {
+  guard sel.untracked() is Some(r) else { return }
+  if !r.contains(x, y) {
+    p.ocr_hover.set(-1)
+    return
+  }
+  let (u, v, pw, ph) = cap_text_uv(r, x, y)
+  match pin_sel_state(p) {
+    Ready(ws, _) => p.ocr_hover.set(ocr_hit_word(ws, u, v, pw, ph))
+    _ => p.ocr_hover.set(-1)
+  }
+}
+
+/// A drag over the capture while its text is shown: words chosen, as on a pin.
+fn cap_text_drag(p : Pin, d : view::Drag, x : Double, y : Double) -> Unit {
+  guard sel.untracked() is Some(r) else { return }
+  let (u, v, pw, ph) = cap_text_uv(r, x, y)
+  match d.kind {
+    Down => {
+      p.ocr_selecting.v = false
+      if r.contains(x, y) {
+        let _ = ocr_sel_down(p, u, v, pw, ph, d.x, d.y)
+      } else {
+        p.ocr_sel.set(None)
+      }
+    }
+    Off => p.ocr_selecting.v = false
+    _ => if p.ocr_selecting.v { ocr_sel_drag(p, d, u, v) }
+  }
+}
+
+fn cap_text_cursor(p : Pin) -> view::Cursor {
+  let (x, y) = pointer_px.get()
+  match (sel.get(), pin_sel_state_get(p)) {
+    (Some(r), Ready(ws, _)) if ws.length() > 0 && r.contains(x, y) => view::Cursor::IBeam
+    _ => view::Cursor::Arrow
+  }
+}
+
+/// Over the part picked: the translation while it is shown, the words lit, chosen or washed over.
+fn cap_text_layer(stage : view::View) -> Unit {
+  let _ = stage.box(fn(o) {
+    let _ = o
+    .over(view::Live::Is(true))
+    .presses(view::Live::Is(false))
+    .lines_up(view::Live::Is(Some(view::Along::Start)))
+    .laid_nowhere(view::Live::By(fn() { !cap_text_on() }))
+    let _ = o.box(fn(b) {
+      let part = fn() {
+        match sel.get() {
+          Some(r) => r
+          None => Rect::{ x: 0, y: 0, w: 1, h: 1 }
+        }
+      }
+      let k = fn() { mon_scale.get() }
+      let _ = b
+      .width(view::Live::By(fn() { Some(part().w.to_double() / k()) }))
+      .height(view::Live::By(fn() { Some(part().h.to_double() / k()) }))
+      .shrink(view::Live::Is(0.0))
+      .offset(view::Live::By(fn() { (part().x.to_double() / k(), part().y.to_double() / k()) }))
+      .presses(view::Live::Is(false))
+      let _ = b.box(fn(i) {
+        let _ = i
+        .over(view::Live::Is(true))
+        .presses(view::Live::Is(false))
+        .image(view::Live::By(fn() {
+          match cap_text.get() {
+            Some(p) if tr_shown(p) => Some((pin_shown_key(p), "", clampi(if p.w > p.h { p.w } else { p.h }, 1, 16384)))
+            _ => None
+          }
+        }))
+      })
+      let _ = b.box(fn(l) {
+        let _ = l
+        .over(view::Live::Is(true))
+        .presses(view::Live::Is(false))
+        .picture(view::Live::By(fn() {
+          match cap_text.get() {
+            Some(p) => {
+              let (x, y) = pointer_px.get()
+              ocr_overlay_picture(p, part().contains(x, y))
+            }
+            None => None
+          }
+        }))
+      })
+    })
+  })
+}
+
+// ---- the capture's text bar ----
+
+/// The bar the capture's text is worked with, in the main bar's place: back to marking, which layer, copy the text,
+/// copy the picture, pin it, close.
+fn cap_text_bar(slot : view::View, p : Pin) -> Unit {
+  let back_vec : pixels::Vector = { w: 12.0, h: 12.0, layers: [stroke_layer("M7.5 2.5L4 6l3.5 3.5", 0x000000FFL, 1.6)] }
+  let close_vec : pixels::Vector = { w: 12.0, h: 12.0, layers: [stroke_layer("M3 3l6 6M9 3l-6 6", 0x000000FFL, 1.5)] }
+  let _ = slot.box(fn(bar) {
+    bar_panel(bar, bar_corner)
+    let _ = bar
+    .row(view::Live::Is(true))
+    .gap(view::Live::Is(bar_gap))
+    .height(view::Live::Is(Some(bar_height)))
+    .says(view::Live::Is(Some(view::said(view::Role::Toolbar, label=tr("文字")))))
+    let ghost = fn(b : view::View, act : () -> Unit, label : () -> String) {
+      let hov = smooth_hover(b, ms=100.0)
+      tactile_press(b, sink_px=1.0)
+      let _ = b
+      .height(view::Live::Is(Some(bar_button)))
+      .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+      .gap(view::Live::Is(5.0))
+      .row(view::Live::Is(true))
+      .radius(view::Live::Is(bar_btn_corner))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      .presses(view::Live::Is(true))
+      .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+      .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=label())) }))
+      .on_press(act)
+      .ground(view::Live::By(fn() { if b.pressed() { 0xFFFFFF2CL } else { mix_rgba(0L, 0xFFFFFF20L, hov()) } }))
+      hov
+    }
+    let words = fn(b : view::View, s : () -> String, ink : () -> Int64) {
+      let _ = b.box(fn(t) {
+        let _ = t
+        .words(view::Live::By(s), look=view::WordsLook::{ ..view::words_plain, size: 13.0, weight: 500, line: 17.0, wrap: false })
+        .ink(view::Live::By(ink))
+      })
+    }
+    let _ = bar.box(fn(b) {
+      let hov = ghost(b, cap_text_drop, fn() { tr("返回标注") })
+      let _ = b.box(fn(ic) {
+        let _ = ic
+        .width(view::Live::Is(Some(12.0)))
+        .height(view::Live::Is(Some(12.0)))
+        .picture(view::Live::Is(Some(back_vec)))
+        .tint(view::Live::By(fn() { mix_rgba(0xC8CDD8FFL, 0xFFFFFFFFL, hov()) }))
+      })
+      words(b, fn() { tr("标注") }, fn() { mix_rgba(0xC8CDD8FFL, 0xFFFFFFFFL, hov()) })
+    })
+    bar_rule_node(bar)
+    let _ = bar.box(fn(st) {
+      let _ = st
+      .padding(view::Live::Is((4.0, 0.0, 4.0, 0.0)))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .laid_nowhere(view::Live::By(fn() { !(p.ocr.get() is Failed(_)) }))
+      let _ = st.box(fn(t) {
+        let _ = t
+        .words(view::Live::By(fn() {
+          match p.ocr.get() {
+            Failed(why) => ocr_failed_short(why)
+            _ => ""
+          }
+        }), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 500, line: 16.0, wrap: false })
+        .ink(view::Live::Is(0xF2B8B5FFL))
+      })
+    })
+    let _ = bar.box(fn(b) {
+      let hov = ghost(b, fn() { pin_retry_ocr(p) }, fn() { tr("重试") })
+      let _ = b.laid_nowhere(view::Live::By(fn() { !(p.ocr.get() is Failed(_)) }))
+      words(b, fn() { tr("重试") }, fn() { mix_rgba(0xEDEEF0FFL, 0xFFFFFFFFL, hov()) })
+    })
+    tr_segment(bar, p, bar_button, while_reading=true)
+    let reading = fn() { p.ocr.get() is Reading || p.ocr.get() is Idle }
+    let _ = bar.box(fn(b) {
+      tactile_press(b, sink_px=1.0)
+      let label = fn() {
+        if reading() {
+          tr("识别中…")
+        } else if p.tr.get() is TrWorking {
+          tr("翻译中…")
+        } else if p.ocr_sel.get().is_some() {
+          tr("复制选中")
+        } else if tr_shown(p) {
+          tr("复制译文")
+        } else {
+          tr("复制文字")
+        }
+      }
+      let _ = b
+      .height(view::Live::Is(Some(bar_button)))
+      .padding(view::Live::Is((12.0, 0.0, 12.0, 0.0)))
+      .radius(view::Live::Is(bar_btn_corner))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      let busy = fn() { reading() || p.tr.get() is TrWorking }
+      let _ = b
+      .presses(view::Live::By(fn() { !busy() }))
+      .cursor(view::Live::By(fn() { if busy() { None } else { Some(view::Cursor::Hand) } }))
+      .laid_nowhere(view::Live::By(fn() { p.ocr.get() is Failed(_) }))
+      .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=label())) }))
+      .on_press(fn() { if !busy() { cap_copy_text(p) } })
+      .ground(view::Live::By(fn() {
+        if busy() {
+          0x1472E066L
+        } else if b.pressed() {
+          0x0E5EC0FFL
+        } else if b.pointed() {
+          0x1E80F0FFL
+        } else {
+          0x1472E0FFL
+        }
+      }))
+      words(b, label, fn() { if busy() { 0xFFFFFFB0L } else { 0xFFFFFFFFL } })
+    })
+    for item in [("复制图片", 0), ("贴到屏幕", 1)] {
+      let (name, which) = item
+      let _ = bar.box(fn(b) {
+        let act = fn() { if which == 0 { cap_copy_picture(p) } else { cap_text_pin(p) } }
+        let hov = ghost(b, act, fn() { tr(name) })
+        words(b, fn() { tr(name) }, fn() { mix_rgba(0xE4E6EAFFL, 0xFFFFFFFFL, hov()) })
+      })
+    }
+    let _ = bar.box(fn(b) {
+      let hov = ghost(b, close_capture, fn() { tr("关闭") })
+      let _ = b.padding(view::Live::Is((0.0, 0.0, 0.0, 0.0))).width(view::Live::Is(Some(bar_button)))
+      let _ = b.box(fn(ic) {
+        let _ = ic
+        .width(view::Live::Is(Some(12.5)))
+        .height(view::Live::Is(Some(12.5)))
+        .picture(view::Live::Is(Some(close_vec)))
+        .tint(view::Live::By(fn() { mix_rgba(0x9FA7B5FFL, 0xFFFFFFFFL, hov()) }))
+      })
+    })
+  })
+}
+
+/// The main bar and the text bar in one place, one giving way to the other: the one leaving fades and shrinks a little
+/// toward the right edge they share, the one coming grows into it.
+fn bar_swap(col : view::View, main : (view::View) -> Unit) -> Unit {
+  let _ = col.box(fn(swap) {
+    let tw = motion::NodeWay::new(if signals::untracked(cap_text_on) { 1.0 } else { 0.0 })
+    swap.reacts(cap_text_on, at_start=false, fn(on) {
+      tw.go(swap, if on { 1.0 } else { 0.0 }, motion_tween(if on { 190.0 } else { 160.0 }))
+    })
+    let _ = swap
+    .width(view::Live::By(fn() { Some(bar_width()) }))
+    .height(view::Live::Is(Some(bar_height)))
+    .shrink(view::Live::Is(0.0))
+    .lines_up(view::Live::Is(Some(view::Along::End)))
+    let _ = swap.box(fn(m) {
+      let _ = m
+      .alpha(view::Live::By(fn() { 1.0 - tw.shown(m) }))
+      .scale(view::Live::By(fn() { 1.0 - 0.04 * tw.shown(m) }))
+      .drawn_off(view::Live::By(fn() { (0.0, 5.0 * tw.shown(m)) }))
+      .laid_nowhere(view::Live::By(fn() { tw.shown(m) >= 0.999 }))
+      main(m)
+    })
+    swap.show(cap_text_on, leave=150.0 * motion_slow(), fn(slot) {
+      let pr = motion::presence_in(
+        slot,
+        motion_tween(210.0, ease=ui::Ease::Out),
+        exit=motion_tween(150.0, ease=ui::Ease::Leave),
+        carries=true,
+      )
+      let _ = slot
+      .over(view::Live::Is(true))
+      .lines_up(view::Live::Is(Some(view::Along::End)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      let _ = slot.box(fn(t) {
+        let _ = t
+        .alpha(view::Live::By(pr))
+        .scale(view::Live::By(fn() { 0.94 + 0.06 * pr() }))
+        .drawn_off(view::Live::By(fn() { (0.0, -5.0 * (1.0 - pr())) }))
+        match signals::untracked(fn() { cap_text.get() }) {
+          Some(p) => cap_text_bar(t, p)
+          None => ()
+        }
+      })
+    })
+  })
+}
+
+/// The translation's failure under (or over) the text bar, told whole.
+fn cap_text_error(col : view::View, up : () -> Bool, here_up : Bool) -> Unit {
+  col.show(fn() {
+    match cap_text.get() {
+      Some(p) => ocr_bar_error(p) != "" && up() == here_up
+      None => false
+    }
+  }, leave=115.0, fn(slot) {
+    let _ = slot.lines_up(view::Live::Is(Some(view::Along::End))).width(view::Live::By(fn() { Some(bar_width()) }))
+    enter_reveal(slot, dy=if here_up { 4.0 } else { -4.0 })
+    match signals::untracked(fn() { cap_text.get() }) {
+      Some(p) => ocr_error_box(slot, p, fn() { ocr_err_w }, fn() {
+        cap_text_pin(p)
+        open_settings(tab=3)
+      })
+      None => ()
+    }
+  })
+}

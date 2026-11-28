@@ -122,6 +122,7 @@ fn prepare_capture(
   wh~ : Int = 0,
 ) -> Unit {
   let was = frozen_key.untracked()
+  cap_text_drop()
   mon.v = Rect::{ x, y, w, h }
   mon_work.v = if ww > 0 && wh > 0 { Rect::{ x: wx, y: wy, w: ww, h: wh } } else { Rect::{ x: 0, y: 0, w, h } }
   signals::start_batch()
@@ -198,6 +199,7 @@ fn close_capture() -> Unit {
     }
   }
   let key = frozen_key.untracked()
+  cap_text_drop()
   signals::start_batch()
   overlay_disarm_discard()
   capturing.set(false)

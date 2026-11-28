@@ -222,13 +222,15 @@ fn toolbar(stage : view::View) -> Unit {
       .alpha(view::Live::By(fn() { bar_in.shown(col) }))
       .drawn_off(view::Live::By(fn() { (0.0, 4.0 * (1.0 - bar_in.shown(col))) }))
       .laid_nowhere(view::Live::By(fn() { !bar_shown() }))
-      col.show(fn() { is_up() && beauty_on.get() }, leave=115.0, fn(slot) {
+      col.show(fn() { is_up() && beauty_on.get() && !cap_text_on() }, leave=115.0, fn(slot) {
         dropdown_unfold(slot, style_height, beauty_row, upward=true)
       })
-      col.show(fn() { is_up() && styling() }, leave=115.0, fn(slot) {
+      col.show(fn() { is_up() && styling() && !cap_text_on() }, leave=115.0, fn(slot) {
         dropdown_unfold(slot, style_height, style_row, upward=true)
       })
-      let _ = col.box(fn(bar) {
+      cap_text_error(col, is_up, true)
+      bar_swap(col, fn(m) {
+      let _ = m.box(fn(bar) {
         toolbar_main_view.v = Some(bar)
         let _ = bar.owns(fn() { toolbar_main_view.v = None })
         bar_panel(bar, bar_corner)
@@ -370,10 +372,12 @@ fn toolbar(stage : view::View) -> Unit {
         tool_button(bar, "close", "关闭", fn() { false }, close_capture, keys=fn() { "Esc" })
         tool_button(bar, "check", "复制", fn() { false }, copy_out, strong=true, keys=confirm_key_label)
       })
-      col.show(fn() { !is_up() && styling() }, leave=115.0, fn(slot) {
+      })
+      cap_text_error(col, is_up, false)
+      col.show(fn() { !is_up() && styling() && !cap_text_on() }, leave=115.0, fn(slot) {
         dropdown_unfold(slot, style_height, style_row)
       })
-      col.show(fn() { !is_up() && beauty_on.get() }, leave=115.0, fn(slot) {
+      col.show(fn() { !is_up() && beauty_on.get() && !cap_text_on() }, leave=115.0, fn(slot) {
         dropdown_unfold(slot, style_height, beauty_row)
       })
     })

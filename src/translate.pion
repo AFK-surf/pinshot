@@ -782,7 +782,7 @@ fn tr_full_text(blocks : Array[TrBlock]) -> String {
 
 // ---- a pin's translation ----
 
-let tr_drawing : Map[Int, (Int, Array[TrBlock])] = Map::new()
+let tr_drawing : Map[Int, (Pin, Array[TrBlock])] = Map::new()
 
 fn pin_tr_text(p : Pin) -> String {
   match p.tr.untracked() {
@@ -864,20 +864,20 @@ fn pin_translate(p : Pin) -> Unit {
   p.ocr_hover.set(-1)
   signals::end_batch()
   tr_wave_start(p)
-  let wid = p.wid.v
   tr_id.v += 1
   let req = tr_id.v
   p.tr_req.v = req
-  let alive = fn() { pin_of_wid(wid) is Some((_, q)) && q.tr_req.v == req }
+  let alive = fn() { pin_alive(p) && p.tr_req.v == req }
   tr_lines_translated(lines, target, alive, source=p.source, fn(got) {
-    guard pin_of_wid(wid) is Some((_, q)) && q.tr_req.v == req else { return }
+    guard alive() else { return }
+    let q = p
     match got {
       Ok(parts) => {
         let filled : Array[TrBlock] = []
         for i, b in blocks {
           filled.push({ ..b, text: if tr_keep(b.src) { b.src } else if i < parts.length() { parts[i] } else { "" } })
         }
-        tr_drawing[req] = (wid, filled)
+        tr_drawing[req] = (p, filled)
         if ps_tr_render(req, pic, tr_spec(filled), if str_has_prefix(target, "zh") { 1 } else { 0 }) == 0 {
           tr_drawing.remove(req)
           pin_tr_failed(q, tr("译文没画出来。"))
@@ -894,8 +894,8 @@ fn pin_translate(p : Pin) -> Unit {
 /// of the pin as long as it lasts (Windows: its own timer; macOS: the tree's moments).
 fn tr_wave_start(p : Pin) -> Unit {
   p.tr_tick.set(ps_now_ms())
-  if hostapi::platform() == 0 {
-    match pin_roots.get(p.wid.v) {
+  if hostapi::platform() == 0 || p.wid.v == 0 {
+    match (if p.wid.v == 0 { overlay_root.v } else { pin_roots.get(p.wid.v) }) {
       Some(root) => {
         let step : signals::Ref[() -> Unit] = signals::ref_new(fn() { () })
         step.v = fn() {
@@ -914,7 +914,7 @@ fn tr_wave_start(p : Pin) -> Unit {
 }
 
 fn tr_wave_stop(p : Pin) -> Unit {
-  if hostapi::platform() != 0 {
+  if hostapi::platform() != 0 && p.wid.v > 0 {
     ps_pin_frames(p.wid.v, 2)
   }
 }
@@ -940,14 +940,14 @@ fn pin_tr_failed(p : Pin, why : String) -> Unit {
 
 fn tr_pic_told(o : json::JsonObject, bytes : Option[Bytes]) -> Unit {
   let req = jnum(o, "id", -1.0).to_int()
-  guard tr_drawing.get(req) is Some((wid, blocks)) else { return }
+  guard tr_drawing.get(req) is Some((p, blocks)) else { return }
   tr_drawing.remove(req)
   let words = match tr_words_got.get(req) {
     Some(v) => v
     None => []
   }
   tr_words_got.remove(req)
-  guard pin_of_wid(wid) is Some((_, p)) && p.tr_req.v == req else { return }
+  guard pin_alive(p) && p.tr_req.v == req else { return }
   let pic = match bytes {
     Some(v) if jnum(o, "ok", 0.0) != 0.0 && v.length() > 0 => v
     _ => {
@@ -956,7 +956,7 @@ fn tr_pic_told(o : json::JsonObject, bytes : Option[Bytes]) -> Unit {
       return
     }
   }
-  let key = "tr:\{wid}:\{req}"
+  let key = "tr:\{req}"
   ui::add_image(key, pic)
   pin_tr_forget(p)
   p.tr_req.v = 0

@@ -347,7 +347,7 @@ fn ocr_told(o : json::JsonObject, words : Option[Bytes]) -> Unit {
     None => { return }
   }
   ocr_pending.remove(id)
-  if p.ocr_req.v != id || pin_of_wid(p.wid.v).is_none() {
+  if p.ocr_req.v != id || !pin_alive(p) {
     return
   }
   p.ocr_req.v = 0
@@ -383,27 +383,6 @@ fn ocr_then_translate(p : Pin) -> Unit {
     PinOcr::Ready(ws, _) if ws.length() > 0 => pin_translate(p)
     _ => p.tr.set(TrError(tr("没有可以翻译的文字")))
   }
-}
-
-fn ocr_out() -> Unit {
-  if exporting.v != "" {
-    return
-  }
-  let r = match sel.untracked() {
-    Some(_v) => _v
-    None => { return }
-  }
-  exporting.v = "ocr"
-  ps_cloak(0, 1)
-  let m = mon.v
-  picture_of_part(framed=false, fn(png) {
-    exporting.v = ""
-    match png {
-      Some(png) => open_pin(png, m.x + r.x, m.y + r.y, r.w, r.h, start_ocr=true, source=ps_window_label(m.x + r.x + r.w / 2, m.y + r.y + r.h / 2))
-      None => ()
-    }
-    close_capture()
-  })
 }
 
 fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
@@ -538,8 +517,8 @@ fn ocr_bar_width(p : Pin) -> Double {
   if state is Failed(_) {
     parts.push(m("重试", 12.0) + 20.0)
   }
-  if words && !working {
-    parts.push(dmax(m("翻译", 12.0), m("原文", 12.0)) + 18.0)
+  if words {
+    parts.push(tr_segment_width())
   }
   if ready {
     let mut widest = 0.0
@@ -632,62 +611,7 @@ fn ocr_floating_bar(root : view::View, p : Pin, pad~ : Double = 6.0) -> Unit {
     .padding(view::Live::Is((pad, pad, pad, pad)))
     .gap(view::Live::Is(6.0))
     .laid_nowhere(view::Live::By(fn() { !p.ocr_on.get() }))
-    let _ = o.box(fn(eb) {
-      let _ = eb
-      .width(view::Live::By(fn() { Some(dmax(ocr_bar_width(p), ocr_err_w)) }))
-      .padding(view::Live::Is((12.0, 9.0, 12.0, 9.0)))
-      .gap(view::Live::Is(8.0))
-      .radius(view::Live::Is(11.0))
-      .ground(view::Live::Is(0x2A1C1EF2L))
-      .edge(view::Live::Is((1.0, 0xF2B8B544L)))
-      .presses(view::Live::Is(true))
-      .cursor(view::Live::Is(Some(view::Cursor::Arrow)))
-      .laid_nowhere(view::Live::By(fn() { ocr_bar_error(p) == "" }))
-      let _ = eb.box(fn(t) {
-        let _ = t
-        .words(view::Live::By(fn() { ocr_bar_error(p) }), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 400, line: 18.0, wrap: true })
-        .ink(view::Live::Is(0xF6C9C6FFL))
-      })
-      let _ = eb.box(fn(row) {
-        let _ = row
-        .row(view::Live::Is(true))
-        .gap(view::Live::Is(6.0))
-        .lines_up(view::Live::Is(Some(view::Along::Middle)))
-        .lies_along(view::Live::Is(view::Lies::End))
-        let button = fn(label : String, strong : Bool, act : () -> Unit) {
-          let _ = row.box(fn(b) {
-            hig_focus(b)
-            let _ = b
-            .height(view::Live::Is(Some(26.0)))
-            .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
-            .radius(view::Live::Is(7.0))
-            .lines_up(view::Live::Is(Some(view::Along::Middle)))
-            .presses(view::Live::Is(true))
-            .cursor(view::Live::Is(Some(view::Cursor::Hand)))
-            .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr(label))) }))
-            .on_press(act)
-            .ground(view::Live::By(fn() {
-              if strong {
-                if b.pressed() { 0x0E5EC0FFL } else if b.pointed() { 0x1E80F0FFL } else { 0x1472E0FFL }
-              } else if b.pressed() {
-                0xFFFFFF28L
-              } else if b.pointed() {
-                0xFFFFFF1AL
-              } else {
-                0xFFFFFF10L
-              }
-            }))
-            let _ = b.box(fn(t) {
-              let _ = t
-              .words(view::Live::By(fn() { tr(label) }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-              .ink(view::Live::Is(0xFFFFFFFFL))
-            })
-          })
-        }
-        button("重试", false, fn() { pin_toggle_translate(p) })
-        button("翻译设置…", true, fn() { open_settings(tab=3) })
-      })
-    })
+    ocr_error_box(o, p, fn() { dmax(ocr_bar_width(p), ocr_err_w) }, fn() { open_settings(tab=3) })
     let _ = o.box(fn(bar) {
       let _ = bar
       .row(view::Live::Is(true))
@@ -805,43 +729,7 @@ fn ocr_floating_bar(root : view::View, p : Pin, pad~ : Double = 6.0) -> Unit {
           .ink(view::Live::Is(0xFFFFFFFFL))
         })
       })
-      let _ = bar.box(fn(tb) {
-        hig_focus(tb)
-        let _ = tb
-        .height(view::Live::Is(Some(28.0)))
-        .padding(view::Live::Is((9.0, 0.0, 9.0, 0.0)))
-        .radius(view::Live::Is(7.0))
-        .lines_up(view::Live::Is(Some(view::Along::Middle)))
-        .lies_along(view::Live::Is(view::Lies::Middle))
-        .presses(view::Live::Is(true))
-        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
-        .laid_nowhere(view::Live::By(fn() {
-          match p.ocr.get() {
-            Ready(ws, _) => ws.length() == 0 || p.tr.get() is TrWorking
-            _ => true
-          }
-        }))
-        .says(view::Live::By(fn() {
-          Some(view::said(view::Role::Button, label=if p.tr_on.get() { tr("显示原文") } else { tr("翻译") }))
-        }))
-        .on_press(fn() { pin_toggle_translate(p) })
-        .ground(view::Live::By(fn() {
-          if tb.pressed() {
-            0xFFFFFF28L
-          } else if tb.pointed() {
-            0xFFFFFF1AL
-          } else if p.tr_on.get() {
-            0xFFFFFF14L
-          } else {
-            0L
-          }
-        }))
-        let _ = tb.box(fn(t) {
-          let _ = t
-          .words(view::Live::By(fn() { if p.tr_on.get() { tr("原文") } else { tr("翻译") } }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
-          .ink(view::Live::By(fn() { if tb.pointed() || p.tr_on.get() { 0xFFFFFFFFL } else { 0xC8CDD8FFL } }))
-        })
-      })
+      tr_segment(bar, p, 28.0)
       let _ = bar.box(fn(ab) {
         hig_focus(ab)
         let _ = ab
@@ -909,6 +797,66 @@ fn ocr_floating_bar(root : view::View, p : Pin, pad~ : Double = 6.0) -> Unit {
           .tint(view::Live::By(fn() { if xb.pointed() { 0xFFFFFFFFL } else { 0x9FA7B5FFL } }))
         })
       })
+    })
+  })
+}
+
+/// The panel telling a translation's failure in full, `wide()` points wide, with a retry and a way to the settings.
+fn ocr_error_box(parent : view::View, p : Pin, wide : () -> Double, to_settings : () -> Unit) -> Unit {
+  let _ = parent.box(fn(eb) {
+    let _ = eb
+    .width(view::Live::By(fn() { Some(wide()) }))
+    .padding(view::Live::Is((12.0, 9.0, 12.0, 9.0)))
+    .gap(view::Live::Is(8.0))
+    .radius(view::Live::Is(11.0))
+    .ground(view::Live::Is(0x2A1C1EF2L))
+    .edge(view::Live::Is((1.0, 0xF2B8B544L)))
+    .presses(view::Live::Is(true))
+    .cursor(view::Live::Is(Some(view::Cursor::Arrow)))
+    .laid_nowhere(view::Live::By(fn() { ocr_bar_error(p) == "" }))
+    let _ = eb.box(fn(t) {
+      let _ = t
+      .words(view::Live::By(fn() { ocr_bar_error(p) }), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 400, line: 18.0, wrap: true })
+      .ink(view::Live::Is(0xF6C9C6FFL))
+    })
+    let _ = eb.box(fn(row) {
+      let _ = row
+      .row(view::Live::Is(true))
+      .gap(view::Live::Is(6.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::End))
+      let button = fn(label : String, strong : Bool, act : () -> Unit) {
+        let _ = row.box(fn(b) {
+          hig_focus(b)
+          let _ = b
+          .height(view::Live::Is(Some(26.0)))
+          .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+          .radius(view::Live::Is(7.0))
+          .lines_up(view::Live::Is(Some(view::Along::Middle)))
+          .presses(view::Live::Is(true))
+          .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+          .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr(label))) }))
+          .on_press(act)
+          .ground(view::Live::By(fn() {
+            if strong {
+              if b.pressed() { 0x0E5EC0FFL } else if b.pointed() { 0x1E80F0FFL } else { 0x1472E0FFL }
+            } else if b.pressed() {
+              0xFFFFFF28L
+            } else if b.pointed() {
+              0xFFFFFF1AL
+            } else {
+              0xFFFFFF10L
+            }
+          }))
+          let _ = b.box(fn(t) {
+            let _ = t
+            .words(view::Live::By(fn() { tr(label) }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+            .ink(view::Live::Is(0xFFFFFFFFL))
+          })
+        })
+      }
+      button("重试", false, fn() { pin_toggle_translate(p) })
+      button("翻译设置…", true, to_settings)
     })
   })
 }
@@ -997,4 +945,79 @@ fn tr_wave_picture(p : Pin) -> Option[pixels::Vector] {
     i = hi + 1
   }
   if layers.length() == 0 { None } else { Some({ w: vw, h: vh, layers }) }
+}
+
+/// The 原文 | 译文 switch's width, in points.
+fn tr_segment_width() -> Double {
+  let m = fn(k : String) { ui::measure_text_width(tr(k), 12.5, weight=600) }
+  (m("原文") + m("译文") + 40.0 + 6.0).ceil()
+}
+
+/// Which of pin `p`'s two layers is shown, original or translated (`h` high), the shown one under a thumb that slides
+/// to the other; the translated one is asked for when it is first shown, and let go of if it is still being made.
+fn tr_segment(row : view::View, p : Pin, h : Double, while_reading~ : Bool = false) -> Unit {
+  let reading = fn() { while_reading && (p.ocr.get() is Reading || p.ocr.get() is Idle) }
+  let _ = row.box(fn(sg) {
+    let _ = sg
+    .row(view::Live::Is(true))
+    .height(view::Live::Is(Some(h)))
+    .padding(view::Live::Is((2.0, 2.0, 2.0, 2.0)))
+    .radius(view::Live::Is(8.0))
+    .ground(view::Live::Is(0x0F1013FFL))
+    .edge(view::Live::Is((1.0, 0xFFFFFF1CL)))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .says(view::Live::Is(Some(view::said(view::Role::RadioGroup, label=tr("显示")))))
+    .alpha(view::Live::By(fn() { if reading() { 0.45 } else { 1.0 } }))
+    .laid_nowhere(view::Live::By(fn() {
+      match p.ocr.get() {
+        Ready(ws, _) => ws.length() == 0
+        Reading | Idle => !while_reading
+        _ => true
+      }
+    }))
+    let views : Map[Int, view::View] = Map::new()
+    sliding_thumb(
+      sg,
+      fn() { if p.tr_on.get() { 1 } else { 0 } },
+      views,
+      6.0,
+      fn() { 0x41454FFFL },
+      edge=fn() { (1.0, 0xFFFFFF14L) },
+      snap_watch=fn() { if p.ocr.get() is Ready(_, _) { 1 } else { 0 } },
+    )
+    for i, label in ["原文", "译文"] {
+      let _ = sg.box(fn(b) {
+        views[i] = b
+        hig_focus(b)
+        let on = fn() { p.tr_on.get() == (i == 1) }
+        let hov = smooth_hover(b, live=fn() { !on() }, ms=100.0)
+        let _ = b
+        .height(view::Live::Is(Some(h - 6.0)))
+        .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+        .radius(view::Live::Is(6.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::By(fn() { !reading() }))
+        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+        .says(view::Live::By(fn() { Some(view::said(view::Role::Radio, label=tr(label), selected=on())) }))
+        .on_press(fn() {
+          if p.tr_on.untracked() != (i == 1) {
+            pin_toggle_translate(p)
+          }
+        })
+        .ground(view::Live::By(fn() { if on() { 0L } else { mix_rgba(0L, 0xFFFFFF12L, hov()) } }))
+        let _ = b.box(fn(t) {
+          let _ = t
+          .words(view::Live::By(fn() { tr(label) }), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 600, line: 16.0, wrap: false })
+          .ink(view::Live::By(fn() {
+            if on() {
+              0xFFFFFFFFL
+            } else {
+              mix_rgba(0xA9AEB9FFL, 0xFFFFFFFFL, hov())
+            }
+          }))
+        })
+      })
+    }
+  })
 }

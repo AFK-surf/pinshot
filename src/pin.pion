@@ -119,12 +119,21 @@ fn open_pin(
     }
     None => ()
   }
+  let p = new_pin(png, w, h, zoom=zoom, start_ocr=start_ocr, source=source)
+  show_pin(p, x, y, zoom=zoom)
+  if start_ocr {
+    pin_start_ocr(p, from_capture=true)
+  }
+}
+
+/// A pin's picture and state, with no window yet: the capture's text keeps one while it is read, and shows it as a
+/// pin when it is pinned.
+fn new_pin(png : Bytes, w : Int, h : Int, zoom~ : Double = 1.0, start_ocr~ : Bool = false, source~ : String = "") -> Pin {
   pin_n.v += 1
-  let what = "pin:\{pin_n.v}"
-  let key = "mem:" + what
+  let key = "mem:pin:\{pin_n.v}"
   ui::add_image(key, png)
   let s = settings.untracked()
-  let p : Pin = Pin::{
+  Pin::{
     wid: signals::ref_new(0),
     png,
     first_w: w,
@@ -175,12 +184,40 @@ fn open_pin(
     tr_req: signals::ref_new(0),
     tr_wanted: signals::ref_new(false),
   }
+}
+
+fn pin_what(p : Pin) -> String {
+  str_slice_bytes(p.key_first, 4, p.key_first.length())
+}
+
+/// Whether `p` is still kept: one of the pins open, or the capture's text.
+fn pin_alive(p : Pin) -> Bool {
+  if p.wid.v > 0 {
+    match pin_of_wid(p.wid.v) {
+      Some((_, q)) => q.key_first == p.key_first
+      None => false
+    }
+  } else {
+    match cap_text.untracked() {
+      Some(q) => q.key_first == p.key_first
+      None => false
+    }
+  }
+}
+
+/// Pin `p` opened in a window at `x`, `y` (screen pixels).
+fn show_pin(p : Pin, x : Int, y : Int, zoom~ : Double = 1.0) -> Unit {
+  let what = pin_what(p)
+  let (w, h) = (p.w, p.h)
+  let s = settings.untracked()
   pins[what] = p
   let wid = ui::window_open_here(what)
   if wid <= 0 {
     println("pin: no window (\{pins.length()} open)")
     pins.remove(what)
-    ui::forget_image(key)
+    pin_ocr_clear_pending(p)
+    pin_tr_clear(p)
+    ui::forget_image(p.key_first)
     return
   }
   p.wid.v = wid
@@ -200,9 +237,6 @@ fn open_pin(
     ps_opacity(wid, s.pin_alpha)
   }
   pins_hidden.v = false
-  if start_ocr {
-    pin_start_ocr(p, from_capture=true)
-  }
   log("pin \{w}x\{h} opened (\{pins.length()} open)")
 }
 
@@ -877,56 +911,14 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
         _ => ()
       }
       if p.ocr_selecting.v && d.kind != view::DragIs::Down {
-        match pin_sel_state(p) {
-          Ready(ws, _) if ws.length() > 0 => {
-            let (_, _, lw, lh) = root.laid_window_now()
-            let (u, v) = if lw > 0.0 && lh > 0.0 {
-              (clamp(d.x / lw, 0.0, 1.0), clamp(d.y / lh, 0.0, 1.0))
-            } else {
-              let (_, pu, pv, _, _) = pin_pointer_uv(p)
-              (clamp(pu, 0.0, 1.0), clamp(pv, 0.0, 1.0))
-            }
-            if d.kind == view::DragIs::Moved {
-              if !p.ocr_drag_moved.v &&
-                 (d.x - p.ocr_down_x.v).abs() + (d.y - p.ocr_down_y.v).abs() >= 3.0 {
-                p.ocr_drag_moved.v = true
-              }
-              if p.ocr_drag_moved.v {
-                let focus = ocr_nearest_word(ws, u, v)
-                if focus >= 0 {
-                  p.ocr_sel.set(Some((p.ocr_anchor.v, focus)))
-                }
-              }
-            } else {
-              p.ocr_selecting.v = false
-              if !p.ocr_drag_moved.v {
-                let idx = p.ocr_anchor.v
-                if !p.ocr_down_on_word.v {
-                  p.ocr_sel.set(None)
-                  p.ocr_clicks.v = 0
-                } else if idx >= 0 && idx < ws.length() {
-                  let prev_i = p.ocr_click_word.v
-                  let same = d.at - p.ocr_click_at.v <= 420.0 &&
-                    (prev_i == idx || (prev_i >= 0 && prev_i < ws.length() && ws[prev_i].line == ws[idx].line))
-                  let clicks = if same { (p.ocr_clicks.v % 3) + 1 } else { 1 }
-                  p.ocr_click_at.v = d.at
-                  p.ocr_click_word.v = idx
-                  p.ocr_clicks.v = clicks
-                  if clicks == 1 {
-                    p.ocr_sel.set(None)
-                  } else if clicks == 2 {
-                    p.ocr_sel.set(Some(ocr_token_range(ws, idx)))
-                  } else {
-                    p.ocr_sel.set(Some(ocr_line_range(ws, idx)))
-                  }
-                }
-              } else {
-                p.ocr_clicks.v = 0
-              }
-            }
-          }
-          _ => p.ocr_selecting.v = false
+        let (_, _, lw, lh) = root.laid_window_now()
+        let (u, v) = if lw > 0.0 && lh > 0.0 {
+          (clamp(d.x / lw, 0.0, 1.0), clamp(d.y / lh, 0.0, 1.0))
+        } else {
+          let (_, pu, pv, _, _) = pin_pointer_uv(p)
+          (clamp(pu, 0.0, 1.0), clamp(pv, 0.0, 1.0))
         }
+        ocr_sel_drag(p, d, u, v)
         return
       }
       if d.kind == view::DragIs::Down {
@@ -953,31 +945,15 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
           }
         }
         if p.ocr_on.untracked() {
-          match pin_sel_state(p) {
-            Ready(ws, _) if ws.length() > 0 => {
-              let (_, _, lw, lh) = root.laid_window_now()
-              let (u, v, pw, ph) = if lw > 0.0 && lh > 0.0 {
-                (clamp(d.x / lw, 0.0, 1.0), clamp(d.y / lh, 0.0, 1.0), lw, lh)
-              } else {
-                (pu, pv, ppw, pph)
-              }
-              let hit = ocr_hit_word(ws, u, v, pw, ph)
-              let anchor = if hit >= 0 { hit } else { ocr_nearest_word(ws, u, v) }
-              if anchor >= 0 {
-                p.ocr_selecting.v = true
-                p.ocr_anchor.v = anchor
-                p.ocr_down_on_word.v = hit >= 0
-                p.ocr_down_x.v = d.x
-                p.ocr_down_y.v = d.y
-                p.ocr_drag_moved.v = false
-                p.ocr_hover.set(hit)
-                return
-              }
-            }
-            _ => ()
+          let (_, _, lw, lh) = root.laid_window_now()
+          let (u, v, pw, ph) = if lw > 0.0 && lh > 0.0 {
+            (clamp(d.x / lw, 0.0, 1.0), clamp(d.y / lh, 0.0, 1.0), lw, lh)
+          } else {
+            (pu, pv, ppw, pph)
           }
-          p.ocr_sel.set(None)
-          p.ocr_clicks.v = 0
+          if ocr_sel_down(p, u, v, pw, ph, d.x, d.y) {
+            return
+          }
         }
         // (moved by the system's own move, the press then let go of as the move ends: mbui hears no release from
         // it, and took the next press for one, every other press not moving the pin)
@@ -1067,6 +1043,9 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
       ocr_bar_sync(p, what, w)
     })
     pin_actions(root, p)
+    if p.tr.untracked() is TrWorking {
+      tr_wave_start(p)
+    }
   }
 }
 
@@ -1203,5 +1182,78 @@ fn pin_active(wid : Int, on : Bool) -> Unit {
       }
     }
     (advance_ref.v)()
+  }
+}
+
+/// A press on pin text `p` at (`u`, `v`) of its picture (`pw` x `ph` points, the press at `x`, `y`): a selection begun
+/// at the word under it or nearest it (true), or the selection let go of (false: the press is the window's).
+fn ocr_sel_down(p : Pin, u : Double, v : Double, pw : Double, ph : Double, x : Double, y : Double) -> Bool {
+  match pin_sel_state(p) {
+    Ready(ws, _) if ws.length() > 0 => {
+      let hit = ocr_hit_word(ws, u, v, pw, ph)
+      let anchor = if hit >= 0 { hit } else { ocr_nearest_word(ws, u, v) }
+      if anchor >= 0 {
+        p.ocr_selecting.v = true
+        p.ocr_anchor.v = anchor
+        p.ocr_down_on_word.v = hit >= 0
+        p.ocr_down_x.v = x
+        p.ocr_down_y.v = y
+        p.ocr_drag_moved.v = false
+        p.ocr_hover.set(hit)
+        return true
+      }
+    }
+    _ => ()
+  }
+  p.ocr_sel.set(None)
+  p.ocr_clicks.v = 0
+  false
+}
+
+/// The selection begun by `ocr_sel_down` carried on by drag `d`, now at (`u`, `v`): stretched while it moves; on its
+/// release, a click (one, two or three: none, the word, the line).
+fn ocr_sel_drag(p : Pin, d : view::Drag, u : Double, v : Double) -> Unit {
+  match pin_sel_state(p) {
+    Ready(ws, _) if ws.length() > 0 => {
+      if d.kind == view::DragIs::Moved {
+        if !p.ocr_drag_moved.v &&
+           (d.x - p.ocr_down_x.v).abs() + (d.y - p.ocr_down_y.v).abs() >= 3.0 {
+          p.ocr_drag_moved.v = true
+        }
+        if p.ocr_drag_moved.v {
+          let focus = ocr_nearest_word(ws, u, v)
+          if focus >= 0 {
+            p.ocr_sel.set(Some((p.ocr_anchor.v, focus)))
+          }
+        }
+      } else {
+        p.ocr_selecting.v = false
+        if !p.ocr_drag_moved.v {
+          let idx = p.ocr_anchor.v
+          if !p.ocr_down_on_word.v {
+            p.ocr_sel.set(None)
+            p.ocr_clicks.v = 0
+          } else if idx >= 0 && idx < ws.length() {
+            let prev_i = p.ocr_click_word.v
+            let same = d.at - p.ocr_click_at.v <= 420.0 &&
+              (prev_i == idx || (prev_i >= 0 && prev_i < ws.length() && ws[prev_i].line == ws[idx].line))
+            let clicks = if same { (p.ocr_clicks.v % 3) + 1 } else { 1 }
+            p.ocr_click_at.v = d.at
+            p.ocr_click_word.v = idx
+            p.ocr_clicks.v = clicks
+            if clicks == 1 {
+              p.ocr_sel.set(None)
+            } else if clicks == 2 {
+              p.ocr_sel.set(Some(ocr_token_range(ws, idx)))
+            } else {
+              p.ocr_sel.set(Some(ocr_line_range(ws, idx)))
+            }
+          }
+        } else {
+          p.ocr_clicks.v = 0
+        }
+      }
+    }
+    _ => p.ocr_selecting.v = false
   }
 }
