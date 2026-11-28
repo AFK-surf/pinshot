@@ -2,7 +2,7 @@ import "signals"
 import "ui"
 import "view"
 
-let words_open : signals::Signal[Option[(Double, Double)]] = signals::signal_by(None, fn(a, b) {
+let words_open : signals::Signal[Option[(Double, Double)]] = signals::signal_by(None, same=fn(a, b) {
   match (a, b) {
     (None, None) => true
     (Some((ax, ay)), Some((bx, by))) => ax == bx && ay == by

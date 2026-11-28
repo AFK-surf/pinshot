@@ -13,7 +13,7 @@ struct Beauty {
   shadow : Bool
 }
 
-let beauty : signals::Signal[Beauty] = signals::signal_by(Beauty::{ back: 0, room: 1, shadow: true }, fn(a, b) { a == b })
+let beauty : signals::Signal[Beauty] = signals::signal_by(Beauty::{ back: 0, room: 1, shadow: true }, same=fn(a, b) { a == b })
 
 let beauty_backs : Array[(Int, Int, Int)] = [
   (0xFFB27A, 0xFF6F91, 0xA78BFA),
@@ -88,7 +88,7 @@ fn beauty_toggle() -> Unit {
   }
 }
 
-let wallpaper : signals::Signal[Option[(String, Double, Double)]] = signals::signal_by(None, fn(a, b) {
+let wallpaper : signals::Signal[Option[(String, Double, Double)]] = signals::signal_by(None, same=fn(a, b) {
   match (a, b) {
     (None, None) => true
     (Some((ak, aw, ah)), Some((bk, bw, bh))) => ak == bk && aw == bw && ah == bh

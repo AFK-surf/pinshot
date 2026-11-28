@@ -215,7 +215,7 @@ fn rolling_label(
   rolls~ : () -> Bool  = fn() { true },
 ) -> Unit {
   let first = signals::untracked(value)
-  let st : signals::Signal[RollTextState] = signals::signal_by(RollTextState::{ words: format(first), dir: 0.0 }, fn(a, b) { a == b })
+  let st : signals::Signal[RollTextState] = signals::signal_by(RollTextState::{ words: format(first), dir: 0.0 }, same=fn(a, b) { a == b })
   let last = signals::ref_new(first)
   let look = view::WordsLook::{ ..view::words_plain, size, weight, line, wrap: false }
   let _ = parent.box(fn(v) {

@@ -48,7 +48,7 @@ enum Update {
   Failed(String)
 }
 
-let update : signals::Signal[Update] = signals::signal_by(Update::Unasked, fn(a, b) { a == b })
+let update : signals::Signal[Update] = signals::signal_by(Update::Unasked, same=fn(a, b) { a == b })
 
 #derive(Eq)
 struct Release {

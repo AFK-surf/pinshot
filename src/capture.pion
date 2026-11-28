@@ -22,9 +22,9 @@ let asked_at : signals::Ref[Double] = signals::ref_new(0.0)
 
 let took_ms : signals::Ref[Double] = signals::ref_new(0.0)
 
-let pointer_px : signals::Signal[(Double, Double)] = signals::signal_by((0.0, 0.0), fn(a, b) { a.0 == b.0 && a.1 == b.1 })
+let pointer_px : signals::Signal[(Double, Double)] = signals::signal_by((0.0, 0.0), same=fn(a, b) { a.0 == b.0 && a.1 == b.1 })
 
-let sel : signals::Signal[Option[Rect]] = signals::signal_by(None, fn(a, b) {
+let sel : signals::Signal[Option[Rect]] = signals::signal_by(None, same=fn(a, b) {
   match (a, b) {
     (None, None) => true
     (Some(x), Some(y)) => x == y

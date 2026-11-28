@@ -149,7 +149,7 @@ let settings : signals::Signal[Settings] = signals::signal_by(Settings::{
   sound: true,
   language: 0,
   auto_update: false,
-}, fn(a, b) { a == b })
+}, same=fn(a, b) { a == b })
 
 let capture_key_ok : signals::Signal[Bool] = signals::signal(true)
 
@@ -380,7 +380,7 @@ fn open_settings(tab~ : Int = -1) -> Unit {
 
 let recording : signals::Signal[Int] = signals::signal(0)
 
-let key_trouble : signals::Signal[(Int, String)] = signals::signal_by((0, ""), fn(a, b) { a.0 == b.0 && a.1 == b.1 })
+let key_trouble : signals::Signal[(Int, String)] = signals::signal_by((0, ""), same=fn(a, b) { a.0 == b.0 && a.1 == b.1 })
 
 fn record_key(which : Int) -> Unit {
   let was = recording.untracked()
