@@ -556,6 +556,7 @@ fn pin_tr_text(p : Pin) -> String {
 fn pin_tr_clear(p : Pin) -> Unit {
   p.tr_req.v = 0
   p.tr_wanted.v = false
+  tr_layouts.remove(p.wid.v)
   signals::start_batch()
   p.tr_on.set(false)
   p.tr.set(TrIdle)
@@ -623,7 +624,11 @@ fn pin_translate(p : Pin) -> Unit {
         for i, b in blocks {
           filled.push({ ..b, text: if i < parts.length() { parts[i] } else { "" } })
         }
+        signals::start_batch()
+        q.ocr_sel.set(None)
+        q.ocr_hover.set(-1)
         q.tr.set(TrReady(tr_colors(filled, shown_picture(q))))
+        signals::end_batch()
       }
       TrFailed(why) => {
         signals::start_batch()
@@ -640,6 +645,10 @@ fn pin_translate(p : Pin) -> Unit {
 }
 
 fn pin_toggle_translate(p : Pin) -> Unit {
+  signals::start_batch()
+  p.ocr_sel.set(None)
+  p.ocr_hover.set(-1)
+  signals::end_batch()
   if p.tr_on.untracked() {
     p.tr_on.set(false)
   } else {
@@ -653,119 +662,254 @@ fn pin_toggle_translate(p : Pin) -> Unit {
 
 let tr_pool : Int = 96
 
+let tr_line_pool : Int = 320
+
 struct TrPlace {
   block : TrBlock
   x : Double
   y : Double
   w : Double
   h : Double
-  size : Double
 }
 
-fn tr_place(p : Pin, bs : Array[TrBlock], zx : Double, zy : Double) -> Array[TrPlace] {
-  let r = numbers_of(text_of(ps_window_rect(p.wid.v)))
-  let k = if r.length() >= 5 && r[4] > 0.0 { r[4] / 96.0 } else { 1.0 }
-  let vw = dmax(1.0, p.w.to_double() * zx / k)
-  let vh = dmax(1.0, p.h.to_double() * zy / k)
-  let out : Array[TrPlace] = []
-  for b in bs {
-    if out.length() >= tr_pool {
+struct TrLineOut {
+  text : String
+  x : Double
+  y : Double
+  size : Double
+  ink : Int64
+}
+
+struct TrLayout {
+  blocks : Array[TrBlock]
+  zx : Double
+  zy : Double
+  k : Double
+  places : Array[TrPlace]
+  lines : Array[TrLineOut]
+  words : Array[OcrWord]
+}
+
+let tr_layouts : Map[Int, TrLayout] = Map::new()
+
+fn tr_tokens(text : String) -> Array[(String, Bool)] {
+  let out : Array[(String, Bool)] = []
+  let sb = StringBuilder::new()
+  let mut word = false
+  let mut space = false
+  let flush = fn() {
+    if word {
+      out.push((sb.to_string(), space))
+      sb.reset()
+      word = false
+      space = false
+    }
+  }
+  for c in str_chars(text) {
+    let n = c.to_int()
+    if n == 0x20 || n == 0x09 || n == 0x0A || n == 0x0D || n == 0x3000 || n == 0xA0 {
+      flush()
+      if out.length() > 0 {
+        space = true
+      }
+    } else if is_unspaced(n) {
+      flush()
+      out.push((c.to_string(), space))
+      space = false
+    } else {
+      sb.write_char(c)
+      word = true
+    }
+  }
+  flush()
+  out
+}
+
+fn tr_wrap(tokens : Array[(String, Bool)], size : Double, most : Double) -> Array[Array[Int]] {
+  let lines : Array[Array[Int]] = []
+  let mut cur : Array[Int] = []
+  let mut text = ""
+  for i, t in tokens {
+    let (w, sp) = t
+    let next = if cur.length() > 0 && sp { text + " " + w } else { text + w }
+    if cur.length() > 0 && ui::measure_text_width(next, size, weight=500) > most {
+      lines.push(cur)
+      cur = [i]
+      text = w
+    } else {
+      cur.push(i)
+      text = next
+    }
+  }
+  if cur.length() > 0 {
+    lines.push(cur)
+  }
+  lines
+}
+
+fn tr_layout_build(bs : Array[TrBlock], pw : Double, ph : Double, zx : Double, zy : Double, k : Double) -> TrLayout {
+  let vw = dmax(1.0, pw * zx / k)
+  let vh = dmax(1.0, ph * zy / k)
+  let places : Array[TrPlace] = []
+  let lines : Array[TrLineOut] = []
+  let words : Array[OcrWord] = []
+  let mut line_n = 0
+  for bi, b in bs {
+    if places.length() >= tr_pool {
       break
     }
-    if tr_same(b.src, b.text) {
-      continue
-    }
+    let same = tr_same(b.src, b.text)
     let pad = clamp(b.lh * vh * 0.12, 1.0, 4.0)
     let x = dmax(0.0, b.x * vw - pad)
     let y = dmax(0.0, b.y * vh - pad)
     let w = dmin(vw - x, b.w * vw + pad * 2.0)
     let h = b.h * vh + pad * 2.0
-    let (size, fit_w, fit_h) = tr_fit_size(b.text, w - 2.0, vw - x - 2.0, h, b.lh * vh)
-    out.push(TrPlace::{ block: b, x, y, w: fit_w + 2.0, h: fit_h, size })
+    let shown = if same { b.src } else { b.text }
+    let (size, fit_w, fit_h) = if same {
+      (clamp(b.lh * vh, 7.0, 72.0), w - 2.0, h)
+    } else {
+      tr_fit_size(b.text, w - 2.0, vw - x - 2.0, h, b.lh * vh)
+    }
+    let tokens = tr_tokens(shown)
+    let wrapped = tr_wrap(tokens, size, if same { fit_w + size } else { fit_w })
+    let line_h = size * 1.3
+    let box_h = dmax(fit_h, wrapped.length().to_double() * line_h + 2.0)
+    if !same {
+      places.push(TrPlace::{ block: b, x, y, w: fit_w + 2.0, h: box_h })
+    }
+    let top = y + (box_h - wrapped.length().to_double() * line_h) / 2.0
+    for li, idxs in wrapped {
+      let ly = top + li.to_double() * line_h
+      let sb = StringBuilder::new()
+      for j, ti in idxs {
+        let (tw, sp) = tokens[ti]
+        let before = sb.to_string()
+        let lead = if j > 0 && sp { " " } else { "" }
+        let wx = x + 1.0 + ui::measure_text_width(before + lead, size, weight=500)
+        let ww = ui::measure_text_width(tw, size, weight=500)
+        sb.write_string(lead)
+        sb.write_string(tw)
+        if lines.length() < tr_line_pool {
+          words.push(OcrWord::{
+            line: line_n,
+            para: bi,
+            space: sp,
+            x: wx / vw,
+            y: ly / vh,
+            w: ww / vw,
+            h: line_h / vh,
+            text: tw,
+          })
+        }
+      }
+      if !same && lines.length() < tr_line_pool {
+        lines.push(TrLineOut::{ text: sb.to_string(), x: x + 1.0, y: ly, size, ink: b.ink })
+      }
+      line_n += 1
+    }
   }
-  out
+  { blocks: bs, zx, zy, k, places, lines, words }
+}
+
+fn tr_layout(p : Pin) -> Option[TrLayout] {
+  guard p.tr.untracked() is TrReady(bs) else { return None }
+  let zx = p.zx.untracked()
+  let zy = p.zy.untracked()
+  let r = numbers_of(text_of(ps_window_rect(p.wid.v)))
+  let k = if r.length() >= 5 && r[4] > 0.0 { r[4] / 96.0 } else { 1.0 }
+  match tr_layouts.get(p.wid.v) {
+    Some(l) if physical_equal(l.blocks, bs) && l.zx == zx && l.zy == zy && l.k == k => return Some(l)
+    _ => ()
+  }
+  let l = tr_layout_build(bs, p.w.to_double(), p.h.to_double(), zx, zy, k)
+  tr_layouts[p.wid.v] = l
+  Some(l)
 }
 
 fn tr_layer(root : view::View, p : Pin) -> Unit {
-  let placed : signals::Computed[Array[TrPlace]] = signals::computed_ref(fn(_) {
+  let laid : signals::Computed[Option[TrLayout]] = signals::computed_ref(fn(_) {
     if !p.tr_on.get() {
-      return []
+      return None
     }
     match p.tr.get() {
-      TrReady(bs) => tr_place(p, bs, p.zx.get(), p.zy.get())
-      _ => []
+      TrReady(_) => {
+        let _ = p.zx.get()
+        let _ = p.zy.get()
+        tr_layout(p)
+      }
+      _ => None
     }
   })
-  let blocks = fn() { placed.get() }
-  root.show(fn() { blocks().length() > 0 }, fn(layer) {
-    let _ = layer
-    .over(view::Live::Is(true))
-    .presses(view::Live::Is(false))
+  let place = fn(i : Int) -> Option[TrPlace] {
+    match laid.get() {
+      Some(l) if i < l.places.length() => Some(l.places[i])
+      _ => None
+    }
+  }
+  let line = fn(i : Int) -> Option[TrLineOut] {
+    match laid.get() {
+      Some(l) if i < l.lines.length() => Some(l.lines[i])
+      _ => None
+    }
+  }
+  root.show(fn() { laid.get().is_some() }, fn(layer) {
+    let _ = layer.over(view::Live::Is(true)).presses(view::Live::Is(false))
     for i in 0..<tr_pool {
       let _ = layer.box(fn(b) {
-        let at = fn() -> Option[(TrBlock, Double, Double, Double, Double, Double)] {
-          let ps = blocks()
-          if i >= ps.length() {
-            return None
-          }
-          let q = ps[i]
-          Some((q.block, q.x, q.y, q.w, q.h, q.size))
-        }
         let _ = b
         .over(view::Live::Is(true))
         .presses(view::Live::Is(false))
-        .laid_nowhere(view::Live::By(fn() { at().is_none() }))
+        .laid_nowhere(view::Live::By(fn() { place(i).is_none() }))
         .offset(view::Live::By(fn() {
-          match at() {
-            Some((_, x, y, _, _, _)) => (x, y)
+          match place(i) {
+            Some(q) => (q.x, q.y)
             None => (0.0, 0.0)
           }
         }))
-        .width(view::Live::By(fn() {
-          match at() {
-            Some((_, _, _, w, _, _)) => Some(w)
-            None => Some(0.0)
-          }
-        }))
-        .height(view::Live::By(fn() {
-          match at() {
-            Some((_, _, _, _, h, _)) => Some(h)
-            None => Some(0.0)
-          }
-        }))
+        .width(view::Live::By(fn() { Some(match place(i) { Some(q) => q.w; None => 0.0 }) }))
+        .height(view::Live::By(fn() { Some(match place(i) { Some(q) => q.h; None => 0.0 }) }))
         .radius(view::Live::Is(3.0))
         .ground(view::Live::By(fn() {
-          match at() {
-            Some((k, _, _, _, _, _)) => k.bg
+          match place(i) {
+            Some(q) => q.block.bg
             None => 0L
           }
         }))
-        .padding(view::Live::Is((1.0, 0.0, 1.0, 0.0)))
-        .lines_up(view::Live::Is(Some(view::Along::Start)))
-        .lies_along(view::Live::Is(view::Lies::Middle))
-        .clips(view::Live::Is(true))
-        let _ = b.box(fn(t) {
-          let _ = t
-          .words(view::Live::By(fn() {
-            match at() {
-              Some((k, _, _, _, _, _)) => k.text
-              None => ""
-            }
-          }))
-          .words_look(view::Live::By(fn() {
-            let size = match at() {
-              Some((_, _, _, _, _, s)) => s
-              None => 12.0
-            }
-            view::WordsLook::{ ..view::words_plain, size, weight: 500, line: (size * 1.3).round(), wrap: true }
-          }))
-          .ink(view::Live::By(fn() {
-            match at() {
-              Some((k, _, _, _, _, _)) => k.ink
-              None => 0L
-            }
-          }))
-        })
+      })
+    }
+    for i in 0..<tr_line_pool {
+      let _ = layer.box(fn(t) {
+        let _ = t
+        .over(view::Live::Is(true))
+        .presses(view::Live::Is(false))
+        .laid_nowhere(view::Live::By(fn() { line(i).is_none() }))
+        .offset(view::Live::By(fn() {
+          match line(i) {
+            Some(q) => (q.x, q.y)
+            None => (0.0, 0.0)
+          }
+        }))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .height(view::Live::By(fn() { Some(match line(i) { Some(q) => q.size * 1.3; None => 0.0 }) }))
+        .words(view::Live::By(fn() {
+          match line(i) {
+            Some(q) => q.text
+            None => ""
+          }
+        }))
+        .words_look(view::Live::By(fn() {
+          let size = match line(i) {
+            Some(q) => q.size
+            None => 12.0
+          }
+          view::WordsLook::{ ..view::words_plain, size, weight: 500, line: (size * 1.3).round(), wrap: false }
+        }))
+        .ink(view::Live::By(fn() {
+          match line(i) {
+            Some(q) => q.ink
+            None => 0L
+          }
+        }))
       })
     }
   })
@@ -871,6 +1015,21 @@ test "translation requests and answers" {
   }
   assert_true(tr_read_answer("openai", 401, "", "") is TrFailed(_))
   assert_true(tr_read_answer("google", 0, "timeout", "") is TrFailed(_))
+}
+
+test "translated words wrap into selectable lines" {
+  let toks = tr_tokens("Hello big world 你好")
+  assert_eq(toks.length(), 5)
+  assert_true(toks[1].1 && toks[3].1 && !toks[0].1 && !toks[4].1)
+  let b : TrBlock = { x: 0.1, y: 0.1, w: 0.3, h: 0.1, lh: 0.04, src: "x", text: "one two three four five six seven", bg: 0xFFFFFFFFL, ink: 0x000000FFL }
+  let l = tr_layout_build([b], 400.0, 400.0, 1.0, 1.0, 1.0)
+  assert_eq(l.places.length(), 1)
+  assert_eq(l.words.length(), 7)
+  assert_true(l.lines.length() >= 1)
+  assert_eq(ocr_text_range(l.words, 0, 6), "one two three four five six seven")
+  for w in l.words {
+    assert_true(w.para == 0 && w.x >= 0.0 && w.x + w.w <= 1.0)
+  }
 }
 
 test "translation blocks from OCR lines" {

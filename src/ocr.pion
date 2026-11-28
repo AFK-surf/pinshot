@@ -7,6 +7,7 @@ import "view"
 
 struct OcrWord {
   line : Int
+  para : Int
   space : Bool
   x : Double
   y : Double
@@ -58,7 +59,7 @@ fn ocr_parse_boxes(raw : String) -> Array[OcrWord] {
     let y = clamp(parse_double_or(parts[3], 0.0), 0.0, 1.0)
     let w = clamp(parse_double_or(parts[4], 0.0), 0.0, 1.0 - x)
     let h = clamp(parse_double_or(parts[5], 0.0), 0.0, 1.0 - y)
-    out.push(OcrWord::{ line, space, x, y, w, h, text })
+    out.push(OcrWord::{ line, para: line, space, x, y, w, h, text })
   }
   out
 }
@@ -73,7 +74,7 @@ fn ocr_text_range(words : Array[OcrWord], a : Int, b : Int) -> String {
   let sb = StringBuilder::new()
   for i in lo..=hi {
     if i > lo {
-      if words[i].line != words[i - 1].line {
+      if words[i].para != words[i - 1].para {
         sb.write_char('\n')
       } else if words[i].space {
         sb.write_char(' ')
@@ -308,7 +309,7 @@ fn pin_copy_ocr_text(p : Pin, text : String) -> Unit {
 }
 
 fn pin_copy_ocr_selected(p : Pin) -> Bool {
-  match (p.ocr.untracked(), p.ocr_sel.untracked()) {
+  match (pin_sel_state(p), p.ocr_sel.untracked()) {
     (PinOcr::Ready(words, _), Some((a, b))) if words.length() > 0 => {
       pin_copy_ocr_text(p, ocr_text_range(words, a, b))
       true
@@ -318,7 +319,7 @@ fn pin_copy_ocr_selected(p : Pin) -> Bool {
 }
 
 fn pin_copy_ocr_all(p : Pin) -> Bool {
-  match p.ocr.untracked() {
+  match pin_sel_state(p) {
     PinOcr::Ready(_, full) if full != "" => {
       pin_copy_ocr_text(p, full)
       true
@@ -403,10 +404,10 @@ fn ocr_out() -> Unit {
 }
 
 fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
-  if !p.ocr_on.get() || p.tr_on.get() {
+  if !p.ocr_on.get() {
     return None
   }
-  let words = match p.ocr.get() {
+  let words = match pin_sel_state_get(p) {
     PinOcr::Ready(ws, _) if ws.length() > 0 => ws
     _ => return None
   }
@@ -594,19 +595,17 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         .cursor(view::Live::Is(Some(view::Cursor::Hand)))
         .laid_nowhere(view::Live::By(fn() { !(p.ocr.get() is Ready(_, _)) }))
         .says(view::Live::By(fn() {
-          let label = if tr_shown(p) {
-            tr("复制译文")
-          } else if p.ocr_sel.get().is_some() {
+          let label = if p.ocr_sel.get().is_some() {
             tr("复制选中")
+          } else if tr_shown(p) {
+            tr("复制译文")
           } else {
             tr("复制全部")
           }
           Some(view::said(view::Role::Button, label=label))
         }))
         .on_press(fn() {
-          if tr_shown_now(p) {
-            pin_copy_ocr_text(p, pin_tr_text(p))
-          } else if !pin_copy_ocr_selected(p) {
+          if !pin_copy_ocr_selected(p) {
             let _ = pin_copy_ocr_all(p)
           }
         })
@@ -628,10 +627,10 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
             let copied = !root.drawn_past(p.ocr_copied_at.get() + 1200.0)
             if copied {
               "✓ " + tr("已复制")
-            } else if tr_shown(p) {
-              tr("复制译文")
             } else if p.ocr_sel.get().is_some() {
               tr("复制选中")
+            } else if tr_shown(p) {
+              tr("复制译文")
             } else {
               tr("复制全部")
             }
@@ -688,14 +687,14 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         .cursor(view::Live::Is(Some(view::Cursor::Hand)))
         .laid_nowhere(view::Live::By(fn() {
           let wide = p.w.to_double() * p.zx.get() >= 320.0
-          match p.ocr.get() {
-            Ready(ws, _) => !wide || ws.length() == 0 || p.tr_on.get()
+          match pin_sel_state_get(p) {
+            Ready(ws, _) => !wide || ws.length() == 0
             _ => true
           }
         }))
         .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr("全选"))) }))
         .on_press(fn() {
-          match p.ocr.untracked() {
+          match pin_sel_state(p) {
             PinOcr::Ready(ws, _) if ws.length() > 0 => p.ocr_sel.set(Some((0, ws.length() - 1)))
             _ => ()
           }
@@ -776,4 +775,28 @@ fn tr_shown(p : Pin) -> Bool {
 
 fn tr_shown_now(p : Pin) -> Bool {
   p.tr_on.untracked() && p.tr.untracked() is TrReady(_)
+}
+
+fn pin_sel_state(p : Pin) -> PinOcr {
+  if p.tr_on.untracked() {
+    match tr_layout(p) {
+      Some(l) => return PinOcr::Ready(l.words, pin_tr_text(p))
+      None => ()
+    }
+  }
+  p.ocr.untracked()
+}
+
+fn pin_sel_state_get(p : Pin) -> PinOcr {
+  if p.tr_on.get() {
+    match p.tr.get() {
+      TrReady(_) => {
+        let _ = p.zx.get()
+        let _ = p.zy.get()
+        return pin_sel_state(p)
+      }
+      _ => ()
+    }
+  }
+  p.ocr.get()
 }
