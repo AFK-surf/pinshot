@@ -1161,6 +1161,20 @@ static void follow_place(HWND child) {
   SetWindowPos(child, NULL, x, y, cw, ch, SWP_NOACTIVATE | SWP_NOZORDER | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
 
+// Pin `wid` drawn again every 16 ms for `n` more frames (0: stopped), each frame a "tick" told: what moves in it
+// (a translation being waited for) moves on.
+void ps_pin_frames(int32_t wid, int32_t n) {
+  HWND h = own_window(wid);
+  if (!h) return;
+  if (n <= 0) {
+    KillTimer(h, 0x5053);
+    RemovePropW(h, L"PinShot.Frames");
+    return;
+  }
+  SetPropW(h, L"PinShot.Frames", (HANDLE)(INT_PTR)n);
+  SetTimer(h, 0x5053, 16, NULL);
+}
+
 void mb_render_set_clear(int wid, int on);
 
 void ps_follow(int32_t child_wid, int32_t parent_wid, int32_t w, int32_t h) {

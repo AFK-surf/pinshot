@@ -1,3 +1,4 @@
+import "hostapi"
 import "json"
 import "pixels"
 import "signals"
@@ -64,7 +65,7 @@ fn tr_default_base(p : String) -> String {
 }
 
 fn tr_default_model(p : String) -> String {
-  if p == "deepseek" { "deepseek-flash" } else { "gpt-4o-mini" }
+  if p == "deepseek" { "deepseek-flash" } else { "gpt-5.4-mini" }
 }
 
 fn tr_key_env(p : String) -> String {
@@ -202,6 +203,35 @@ fn llm_request(base : String, model : String, key : String, text : String, targe
   }
 }
 
+/// OpenAI's own Responses API (`/responses`), no reasoning asked for (a translation needs none, only its first words
+/// soon), nothing kept on their side. Used where the base URL is OpenAI's; other compatible services get chat
+/// completions, which they all speak.
+fn responses_request(base : String, model : String, key : String, text : String, target : String, source~ : String = "") -> TrRequest {
+  let q = fn(s : String) { json_stringify(json::Json::Str(s)) }
+  let lines = text.split("\n")
+  let numbered = StringBuilder::new()
+  for i, l in lines {
+    if i > 0 {
+      numbered.write_char('\n')
+    }
+    numbered.write_string("\{i + 1}. " + l)
+  }
+  let body = "{\"model\":\{q(model)},\"store\":false,\"reasoning\":{\"effort\":\"none\"}," +
+    "\"instructions\":\{q(llm_prompt(target, lines.length(), source~))}," +
+    "\"input\":\{q(numbered.to_string())}}"
+  let mut url = trim_ws(base)
+  while str_has_suffix(url, "/") {
+    url = str_slice_bytes(url, 0, url.length() - 1)
+  }
+  {
+    verb: "POST",
+    url: url + "/responses",
+    headers: "Content-Type: application/json\r\nAuthorization: Bearer " + key,
+    body,
+    timeout: 45000,
+  }
+}
+
 fn tr_api_key(s : Settings) -> String {
   let own = trim_ws(tr_key_of(s, s.tr_provider))
   if own != "" {
@@ -222,6 +252,9 @@ fn tr_request_for(s : Settings, text : String, target : String, source~ : String
   }
   let base = if p == "openai" && trim_ws(s.tr_base) != "" { s.tr_base } else { tr_default_base(p) }
   let model = if trim_ws(tr_model_of(s, p)) != "" { trim_ws(tr_model_of(s, p)) } else { tr_default_model(p) }
+  if p == "openai" && str_contains(base, "api.openai.com") {
+    return Ok(responses_request(base, model, key, text, target, source~))
+  }
   Ok(llm_request(base, model, key, text, target, source~))
 }
 
@@ -257,6 +290,32 @@ fn parse_llm(p : String, body : String) -> TrAnswer {
   let none = TrFailed(trn("{} 没有给出译文。", tr_provider_name(p)))
   guard json_of(body) is Some(json::Json::Object(o)) else {
     return TrFailed(trn("{} 返回的内容看不懂。", tr_provider_name(p)))
+  }
+  // (the Responses API's answer: its output's message, its text parts)
+  match o.get("output") {
+    Some(json::Json::Array(items)) => {
+      let sb = StringBuilder::new()
+      for it in items {
+        match it {
+          json::Json::Object(m) if jstr(m, "type", "") == "message" =>
+            match m.get("content") {
+              Some(json::Json::Array(parts)) => {
+                for part in parts {
+                  match part {
+                    json::Json::Object(c) if jstr(c, "type", "") == "output_text" => sb.write_string(jstr(c, "text", ""))
+                    _ => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+          _ => ()
+        }
+      }
+      let t = trim_ws(sb.to_string())
+      return if t == "" { none } else { TrDone(t) }
+    }
+    _ => ()
   }
   match o.get("choices") {
     Some(json::Json::Array(cs)) if cs.length() > 0 =>
@@ -304,6 +363,9 @@ fn tr_read_answer(p : String, status : Int, err : String, body : String) -> TrAn
     return TrFailed(named("{} 找不到这个接口或模型（404）：检查接口地址和模型名。"))
   }
   if status == 429 {
+    if p == "google" {
+      return TrFailed(tr("Google 的免费网页接口暂时把你限流了（429）。过一会儿再试，或在翻译设置里换成 DeepSeek / OpenAI 兼容接口。"))
+    }
     return TrFailed(named("{} 说请求太频繁或额度用完了（429），稍后再试。"))
   }
   if status >= 500 {
@@ -737,6 +799,9 @@ fn pin_tr_forget(p : Pin) -> Unit {
 }
 
 fn pin_tr_clear(p : Pin) -> Unit {
+  if p.tr.untracked() is TrWorking {
+    tr_wave_stop(p)
+  }
   p.tr_req.v = 0
   p.tr_wanted.v = false
   pin_tr_forget(p)
@@ -798,6 +863,7 @@ fn pin_translate(p : Pin) -> Unit {
   p.ocr_sel.set(None)
   p.ocr_hover.set(-1)
   signals::end_batch()
+  tr_wave_start(p)
   let wid = p.wid.v
   tr_id.v += 1
   let req = tr_id.v
@@ -822,13 +888,54 @@ fn pin_translate(p : Pin) -> Unit {
   })
 }
 
+// ---- the wave while a translation is waited for ----
+
+/// The lines read washed over, one after another top to bottom, while the translation is waited for: frames asked
+/// of the pin as long as it lasts (Windows: its own timer; macOS: the tree's moments).
+fn tr_wave_start(p : Pin) -> Unit {
+  p.tr_tick.set(ps_now_ms())
+  if hostapi::platform() == 0 {
+    match pin_roots.get(p.wid.v) {
+      Some(root) => {
+        let step : signals::Ref[() -> Unit] = signals::ref_new(fn() { () })
+        step.v = fn() {
+          if p.tr.untracked() is TrWorking {
+            p.tr_tick.set(ps_now_ms())
+            let _ = root.at_moment(root.cause_at() + 16.0, step.v, later=true)
+          }
+        }
+        (step.v)()
+      }
+      None => ()
+    }
+  } else {
+    ps_pin_frames(p.wid.v, 100000)
+  }
+}
+
+fn tr_wave_stop(p : Pin) -> Unit {
+  if hostapi::platform() != 0 {
+    ps_pin_frames(p.wid.v, 2)
+  }
+}
+
+/// The wash over line `i` of `n` at moment `t` (ms): 0 to 1, a crest passing down the lines every 1.1 s.
+fn tr_wave(t : Double, i : Int, n : Int) -> Double {
+  let period = 1100.0
+  let phase = t / period - i.to_double() / dmax(4.0, n.to_double()) * 0.6
+  let f = phase - phase.floor()
+  let c = (f * 2.0 * 3.141592653589793).cos()
+  let up = (c + 1.0) * 0.5
+  up * up * up
+}
+
 fn pin_tr_failed(p : Pin, why : String) -> Unit {
   p.tr_req.v = 0
+  tr_wave_stop(p)
   signals::start_batch()
   p.tr.set(TrError(why))
   p.tr_on.set(false)
   signals::end_batch()
-  toast(why)
 }
 
 fn tr_pic_told(o : json::JsonObject, bytes : Option[Bytes]) -> Unit {
@@ -853,6 +960,7 @@ fn tr_pic_told(o : json::JsonObject, bytes : Option[Bytes]) -> Unit {
   ui::add_image(key, pic)
   pin_tr_forget(p)
   p.tr_req.v = 0
+  tr_wave_stop(p)
   signals::start_batch()
   p.ocr_sel.set(None)
   p.ocr_hover.set(-1)
@@ -1050,6 +1158,13 @@ test "translation requests and answers" {
     TrFailed(_) => assert_true(false)
   }
   assert_true(tr_read_answer("openai", 401, "", "") is TrFailed(_))
+  let rr = responses_request("https://api.openai.com/v1", "gpt-5.4-mini", "sk-y", "Hi", "zh-CN", source="Chrome\tNews")
+  assert_eq(rr.url, "https://api.openai.com/v1/responses")
+  assert_true(str_contains(rr.body, "\"effort\":\"none\"") && str_contains(rr.body, "\"store\":false") && str_contains(rr.body, "Chrome"))
+  match tr_read_answer("openai", 200, "", "{\"output\":[{\"type\":\"reasoning\"},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"1. 你好\"}]}]}") {
+    TrDone(t) => assert_eq(t, "1. 你好")
+    TrFailed(_) => assert_true(false)
+  }
   assert_true(tr_read_answer("google", 0, "timeout", "") is TrFailed(_))
   match tr_numbered_answer("2. 二\n1. 一\n4. 多余", 3) {
     Some(v) => assert_true(v[0] == "一" && v[1] == "二" && v[2] == "")

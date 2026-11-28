@@ -23,6 +23,7 @@ struct Pin {
   active : signals::Signal[Bool]
   active_at : signals::Signal[Double]
   flash : signals::Signal[Double]
+  tr_tick : signals::Signal[Double]
   edge : signals::Signal[Int]
   sizing : signals::Ref[Option[PinSizing]]
   ocr_on : signals::Signal[Bool]
@@ -142,6 +143,7 @@ fn open_pin(
     active: signals::signal(false),
     active_at: signals::signal(-10000.0),
     flash: signals::signal(0.0),
+    tr_tick: signals::signal(0.0),
     edge: signals::signal(0),
     sizing: signals::ref_new(None),
     ocr_on: signals::signal(false),
@@ -1053,7 +1055,17 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
         })
       })
     })
-    root.reacts(fn() { if p.ocr_on.get() { ocr_bar_width(p) } else { -1.0 } }, fn(w) { ocr_bar_sync(p, what, w) })
+    root.reacts(fn() {
+      if p.ocr_on.get() {
+        // (the error's length too: the window grows to hold it, and gives it back)
+        ocr_bar_width(p) + str_chars(ocr_bar_error(p)).length().to_double() * 1000.0
+      } else {
+        -1.0
+      }
+    }, fn(_) {
+      let w = signals::untracked(fn() { if p.ocr_on.get() { ocr_bar_width(p) } else { -1.0 } })
+      ocr_bar_sync(p, what, w)
+    })
     pin_actions(root, p)
   }
 }
@@ -1165,6 +1177,9 @@ fn pin_flash(_n : view::View, p : Pin) -> Double {
 
 fn pin_tick(wid : Int) -> Unit {
   guard pin_of_wid(wid) is Some((_, p)) else { return }
+  if p.tr.untracked() is TrWorking {
+    p.tr_tick.set(ps_now_ms())
+  }
   let x = clamp((ps_now_ms() - p.active_at.untracked()) / 360.0, 0.0, 1.0)
   let e = 1.0 - (1.0 - x) * (1.0 - x) * (1.0 - x)
   p.flash.set(1.0 - e)

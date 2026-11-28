@@ -410,6 +410,9 @@ fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
   if !p.ocr_on.get() {
     return None
   }
+  if p.tr.get() is TrWorking {
+    return tr_wave_picture(p)
+  }
   let words = match pin_sel_state_get(p) {
     PinOcr::Ready(ws, _) if ws.length() > 0 => ws
     _ => return None
@@ -557,6 +560,26 @@ fn ocr_bar_width(p : Pin) -> Double {
   w.ceil()
 }
 
+let ocr_err_w : Double = 320.0
+
+/// A translation's failure, as the text bar shows it above itself ("" none).
+fn ocr_bar_error(p : Pin) -> String {
+  match p.tr.get() {
+    TrError(why) => why
+    _ => ""
+  }
+}
+
+/// The error panel's height, `why` wrapped in a panel `w` wide: its lines, its buttons' row, padding and the gap.
+fn ocr_err_height(why : String, w : Double) -> Double {
+  if why == "" {
+    return 0.0
+  }
+  let room = dmax(60.0, w - 24.0)
+  let lines = dmax(1.0, (ui::measure_text_width(why, 12.5) * 1.08 / room).ceil())
+  lines * 18.0 + 30.0 + 18.0 + 6.0
+}
+
 /// The text bar's window kept beside pin `p` while its words are shown (made, sized to the bar, closed).
 fn ocr_bar_sync(p : Pin, what : String, w : Double) -> Unit {
   if w < 0.0 {
@@ -578,7 +601,9 @@ fn ocr_bar_sync(p : Pin, what : String, w : Double) -> Unit {
     let _ = ps_own(wid, 2)
   }
   let side = ocr_bar_pad * 2.0
-  ps_follow(p.bar_wid.v, p.wid.v, (w + side).to_int(), (36.0 + side).to_int())
+  let why = signals::untracked(fn() { ocr_bar_error(p) })
+  let full = if why == "" { w } else { dmax(w, ocr_err_w) }
+  ps_follow(p.bar_wid.v, p.wid.v, (full + side).ceil().to_int(), (36.0 + ocr_err_height(why, full) + side).ceil().to_int())
 }
 
 fn ocr_bar_window(what : String) -> (view::View) -> Unit {
@@ -605,7 +630,64 @@ fn ocr_floating_bar(root : view::View, p : Pin, pad~ : Double = 6.0) -> Unit {
     .lines_up(view::Live::Is(Some(view::Along::End)))
     .lies_along(view::Live::Is(view::Lies::End))
     .padding(view::Live::Is((pad, pad, pad, pad)))
+    .gap(view::Live::Is(6.0))
     .laid_nowhere(view::Live::By(fn() { !p.ocr_on.get() }))
+    let _ = o.box(fn(eb) {
+      let _ = eb
+      .width(view::Live::By(fn() { Some(dmax(ocr_bar_width(p), ocr_err_w)) }))
+      .padding(view::Live::Is((12.0, 9.0, 12.0, 9.0)))
+      .gap(view::Live::Is(8.0))
+      .radius(view::Live::Is(11.0))
+      .ground(view::Live::Is(0x2A1C1EF2L))
+      .edge(view::Live::Is((1.0, 0xF2B8B544L)))
+      .presses(view::Live::Is(true))
+      .cursor(view::Live::Is(Some(view::Cursor::Arrow)))
+      .laid_nowhere(view::Live::By(fn() { ocr_bar_error(p) == "" }))
+      let _ = eb.box(fn(t) {
+        let _ = t
+        .words(view::Live::By(fn() { ocr_bar_error(p) }), look=view::WordsLook::{ ..view::words_plain, size: 12.5, weight: 400, line: 18.0, wrap: true })
+        .ink(view::Live::Is(0xF6C9C6FFL))
+      })
+      let _ = eb.box(fn(row) {
+        let _ = row
+        .row(view::Live::Is(true))
+        .gap(view::Live::Is(6.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::End))
+        let button = fn(label : String, strong : Bool, act : () -> Unit) {
+          let _ = row.box(fn(b) {
+            hig_focus(b)
+            let _ = b
+            .height(view::Live::Is(Some(26.0)))
+            .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+            .radius(view::Live::Is(7.0))
+            .lines_up(view::Live::Is(Some(view::Along::Middle)))
+            .presses(view::Live::Is(true))
+            .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+            .says(view::Live::By(fn() { Some(view::said(view::Role::Button, label=tr(label))) }))
+            .on_press(act)
+            .ground(view::Live::By(fn() {
+              if strong {
+                if b.pressed() { 0x0E5EC0FFL } else if b.pointed() { 0x1E80F0FFL } else { 0x1472E0FFL }
+              } else if b.pressed() {
+                0xFFFFFF28L
+              } else if b.pointed() {
+                0xFFFFFF1AL
+              } else {
+                0xFFFFFF10L
+              }
+            }))
+            let _ = b.box(fn(t) {
+              let _ = t
+              .words(view::Live::By(fn() { tr(label) }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+              .ink(view::Live::Is(0xFFFFFFFFL))
+            })
+          })
+        }
+        button("重试", false, fn() { pin_toggle_translate(p) })
+        button("翻译设置…", true, fn() { open_settings(tab=3) })
+      })
+    })
     let _ = o.box(fn(bar) {
       let _ = bar
       .row(view::Live::Is(true))
@@ -879,4 +961,40 @@ fn pin_sel_state_get(p : Pin) -> PinOcr {
     }
   }
   p.ocr.get()
+}
+
+/// The lines read, each washed in light as the wave passes it, while their translation is waited for.
+fn tr_wave_picture(p : Pin) -> Option[pixels::Vector] {
+  let t = p.tr_tick.get()
+  let words = match p.ocr.untracked() {
+    Ready(ws, _) if ws.length() > 0 => ws
+    _ => return None
+  }
+  let vw = dmax(1.0, p.w.to_double() * p.zx.get())
+  let vh = dmax(1.0, p.h.to_double() * p.zy.get())
+  let n = words[words.length() - 1].line + 1
+  let layers : Array[pixels::VectorPath] = []
+  let mut i = 0
+  while i < words.length() {
+    let (lo, hi) = ocr_line_range(words, i)
+    let mut x0 = 1.0e9
+    let mut y0 = 1.0e9
+    let mut x1 = 0.0
+    let mut y1 = 0.0
+    for k in lo..=hi {
+      let w = words[k]
+      x0 = dmin(x0, w.x * vw)
+      y0 = dmin(y0, w.y * vh)
+      x1 = dmax(x1, (w.x + w.w) * vw)
+      y1 = dmax(y1, (w.y + w.h) * vh)
+    }
+    let lh = dmax(1.0, y1 - y0)
+    let px = clamp(lh * 0.12, 1.5, 4.0)
+    let py = clamp(lh * 0.1, 1.0, 3.0)
+    let a = (0.08 + 0.30 * tr_wave(t, words[lo].line, n)) * 255.0
+    let r = clamp(lh * 0.24, 2.0, 5.0)
+    layers.push(fill_layer(superellipse_rect_path(x0 - px, y0 - py, x1 - x0 + px * 2.0, y1 - y0 + py * 2.0, r), 0x2F9BFF00L | a.round().to_int64()))
+    i = hi + 1
+  }
+  if layers.length() == 0 { None } else { Some({ w: vw, h: vh, layers }) }
 }

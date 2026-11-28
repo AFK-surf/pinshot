@@ -473,6 +473,9 @@ void ps_toast_place(int wid, int width, int height) {
 }
 void ps_opacity(int wid, int alpha) { mb_app_window_of(wid).alphaValue = alpha / 255.0; }
 void ps_let_close(int wid) {}
+void ps_pin_frames(int32_t wid, int32_t n) {
+  (void)wid, (void)n;
+}
 void ps_follow(int32_t child_wid, int32_t parent_wid, int32_t w, int32_t h) {
   NSWindow *c = mb_app_window_of(child_wid);
   if (!c) return;
