@@ -67,6 +67,10 @@ fn side_cursor(side : (Int, Int)) -> view::Cursor {
 }
 
 fn overlay_cursor() -> Option[view::Cursor] {
+  match cap_text.get() {
+    Some(p) => return Some(cap_text_cursor(p))
+    None => ()
+  }
   match hand.get() {
     Drawing(_, _) | Marking | Erasing(_, _, _, _) => return Some(view::Cursor::Crosshair)
     Moving(_, _, _) | Dragging(_, _, _, _, _, -1, _) => return Some(view::Cursor::Arrow)
@@ -160,7 +164,7 @@ fn chrome_picture(c : view::View) -> Option[pixels::Vector] {
       } else {
         layers.push(stroke_layer(frame_r, 0x00000078L, casing_w))
         layers.push(stroke_layer(frame_r, 0xFFFFFFF2L, line))
-        if !(hand.get() is Marking) {
+        if !(hand.get() is Marking) && !cap_text_on() {
           let bl = clamp(dmin(fw, fh) * 0.16, 8.0 * k, 15.0 * k)
           let bw = dmax(2.5, (3.2 * k).round())
           let b_case = bw + dmax(2.0, (2.4 * k).round())
@@ -363,7 +367,14 @@ fn overlay_window(root : view::View) -> Unit {
     .cursor(view::Live::By(overlay_cursor))
     .on_pointer_moved(fn() {
       match stage.pointer_here() {
-        Some((x, y)) => pointer_px.set(to_px(x, y))
+        Some((x, y)) => {
+          let (px, py) = to_px(x, y)
+          pointer_px.set((px, py))
+          match cap_text.untracked() {
+            Some(p) => cap_text_hover(p, px, py)
+            None => ()
+          }
+        }
         None => ()
       }
     })
@@ -385,6 +396,7 @@ fn overlay_window(root : view::View) -> Unit {
     shown_follow(stage)
     beauty_layer(stage)
     marks_layer(stage, editing=true)
+    cap_text_layer(stage)
     let _ = stage.box(fn(c) { let _ = c.over(view::Live::Is(true)).presses(view::Live::Is(false)).picture(view::Live::By(fn() { chrome_picture(c) })) })
     size_label(stage)
     toolbar(stage)
@@ -671,6 +683,13 @@ let words_put_down : signals::Ref[Bool] = signals::ref_new(false)
 fn stage_drag(d : view::Drag) -> Unit {
   let (x, y) = to_px(d.x, d.y)
   pointer_px.set((x, y))
+  match cap_text.untracked() {
+    Some(p) => {
+      cap_text_drag(p, d, x, y)
+      return
+    }
+    None => ()
+  }
   match d.kind {
     Down => press_down(x, y)
     Moved => {
@@ -1007,7 +1026,9 @@ fn press_up(x : Double, y : Double) -> Unit {
 }
 
 fn step_back(at~ : Option[(Double, Double)] = None) -> Unit {
-  if words_open.untracked().is_some() {
+  if cap_text.untracked() is Some(p) {
+    cap_text_action("close", p)
+  } else if words_open.untracked().is_some() {
     overlay_disarm_discard()
     words_open.set(None)
   } else if draft.untracked().is_some() {
@@ -1118,6 +1139,13 @@ fn overlay_actions(root : view::View) -> Unit {
     let _ = root.on_action(name, fn(_) {
       if !capturing.untracked() {
         return false
+      }
+      match cap_text.untracked() {
+        Some(p) => {
+          cap_text_action(name, p)
+          return true
+        }
+        None => ()
       }
       if words_open.untracked().is_some() && name != "close" {
         return false

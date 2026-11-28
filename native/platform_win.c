@@ -1136,9 +1136,75 @@ moonbit_bytes_t ps_key_name(int32_t vk) {
   return ps_utf8_bytes(name);
 }
 
+// A window kept beside another (a pin's text bar beside the pin): below it, its right edge on the other's; above
+// it where the screen ends below; inside its foot where neither has room. Moved, shown and hidden with it.
+static void follow_place(HWND child) {
+  HWND parent = (HWND)GetPropW(child, L"PinShot.FollowOf");
+  if (!parent || !IsWindow(parent)) return;
+  int w = (int)(INT_PTR)GetPropW(child, L"PinShot.FollowW"), hh = (int)(INT_PTR)GetPropW(child, L"PinShot.FollowH");
+  RECT pr;
+  if (!GetWindowRect(parent, &pr)) return;
+  UINT dpi = GetDpiForWindow(parent);
+  if (!dpi) dpi = 96;
+  int cw = MulDiv(w, (int)dpi, 96), ch = MulDiv(hh, (int)dpi, 96), gap = MulDiv(2, (int)dpi, 96);
+  HMONITOR m = MonitorFromRect(&pr, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = {sizeof mi};
+  GetMonitorInfoW(m, &mi);
+  RECT a = mi.rcWork;
+  int x = pr.right - cw;
+  if (x + cw > a.right) x = a.right - cw;
+  if (x < a.left) x = a.left;
+  int y = pr.bottom + gap;
+  if (y + ch > a.bottom) y = pr.top - gap - ch;
+  if (y < a.top) y = pr.bottom - ch;
+  BOOL shown = IsWindowVisible(parent);
+  SetWindowPos(child, NULL, x, y, cw, ch, SWP_NOACTIVATE | SWP_NOZORDER | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+}
+
+// Pin `wid` drawn again every 16 ms for `n` more frames (0: stopped), each frame a "tick" told: what moves in it
+// (a translation being waited for) moves on.
+void ps_pin_frames(int32_t wid, int32_t n) {
+  HWND h = own_window(wid);
+  if (!h) return;
+  if (n <= 0) {
+    KillTimer(h, 0x5053);
+    RemovePropW(h, L"PinShot.Frames");
+    return;
+  }
+  SetPropW(h, L"PinShot.Frames", (HANDLE)(INT_PTR)n);
+  SetTimer(h, 0x5053, 16, NULL);
+}
+
+void mb_render_set_clear(int wid, int on);
+
+void ps_follow(int32_t child_wid, int32_t parent_wid, int32_t w, int32_t h) {
+  HWND child = own_window(child_wid);
+  if (!child) return;
+  mb_render_set_clear(child_wid, 1);
+  HWND parent = parent_wid > 0 ? own_window(parent_wid) : NULL;
+  HWND was = (HWND)GetPropW(child, L"PinShot.FollowOf");
+  if (was && was != parent) RemovePropW(was, L"PinShot.Follower");
+  if (!parent) {
+    RemovePropW(child, L"PinShot.FollowOf");
+    return;
+  }
+  SetPropW(child, L"PinShot.FollowOf", parent);
+  SetPropW(child, L"PinShot.FollowW", (HANDLE)(INT_PTR)w);
+  SetPropW(child, L"PinShot.FollowH", (HANDLE)(INT_PTR)h);
+  SetPropW(parent, L"PinShot.Follower", child);
+  // (owned by it: above it in the order of windows, whatever it is raised or lowered to)
+  SetWindowLongPtrW(child, GWLP_HWNDPARENT, (LONG_PTR)parent);
+  follow_place(child);
+}
+
 static LRESULT CALLBACK own_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR wid) {
   (void)id;
   switch (msg) {
+    case WM_WINDOWPOSCHANGED: {
+      HWND f = (HWND)GetPropW(h, L"PinShot.Follower");
+      if (f && IsWindow(f) && (HWND)GetPropW(f, L"PinShot.FollowOf") == h) follow_place(f);
+      break;
+    }
     case WM_QUERYENDSESSION:
       return TRUE;
     case WM_ENDSESSION:
@@ -1462,6 +1528,52 @@ void ps_opacity(int32_t wid, int32_t alpha) {
   }
   if (!(ex & WS_EX_LAYERED)) SetWindowLongPtrW(h, GWL_EXSTYLE, ex | WS_EX_LAYERED);
   SetLayeredWindowAttributes(h, 0, (BYTE)(alpha < 20 ? 20 : alpha), LWA_ALPHA);
+}
+
+// The program and title of the window (not PinShot's) at screen point x, y, as "program\ttitle": what a capture
+// there was taken of, said to a translation as where its words come from.
+typedef struct {
+  POINT at;
+  DWORD self;
+  HWND found;
+} LabelFind;
+
+static BOOL CALLBACK label_each(HWND h, LPARAM lp) {
+  LabelFind *f = (LabelFind *)lp;
+  DWORD pid = 0;
+  GetWindowThreadProcessId(h, &pid);
+  if (pid == f->self || !IsWindowVisible(h) || IsIconic(h)) return TRUE;
+  BOOL cloaked = FALSE;
+  if (SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked) return TRUE;
+  if (GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return TRUE;
+  RECT r;
+  if (!GetWindowRect(h, &r) || !PtInRect(&r, f->at)) return TRUE;
+  f->found = h;
+  return FALSE;
+}
+
+moonbit_bytes_t ps_window_label(int32_t x, int32_t y) {
+  LabelFind f = {{x, y}, GetCurrentProcessId(), NULL};
+  EnumWindows(label_each, (LPARAM)&f);
+  if (!f.found) return moonbit_make_bytes(0, 0);
+  wchar_t title[256] = {0}, exe[MAX_PATH] = {0};
+  GetWindowTextW(f.found, title, 255);
+  DWORD pid = 0;
+  GetWindowThreadProcessId(f.found, &pid);
+  HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (p) {
+    DWORD n = MAX_PATH;
+    if (!QueryFullProcessImageNameW(p, 0, exe, &n)) exe[0] = 0;
+    CloseHandle(p);
+  }
+  const wchar_t *base = wcsrchr(exe, L'\\');
+  base = base ? base + 1 : exe;
+  wchar_t both[400];
+  _snwprintf(both, 399, L"%ls\t%ls", base, title);
+  both[399] = 0;
+  for (wchar_t *c = both; *c; c++)
+    if (*c == L'\n' || *c == L'\r') *c = L' ';
+  return ps_utf8_bytes(both);
 }
 
 moonbit_bytes_t ps_window_rect(int32_t wid) {

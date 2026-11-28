@@ -13,8 +13,13 @@ fn motion_tween(ms : Double, ease~ : ui::Ease = ui::Ease::Out) -> motion::Spec {
   if reduce_motion() {
     motion::tween(0.0, ease=ease)
   } else {
-    motion::tween(ms, ease=ease)
+    motion::tween(ms * motion_slow(), ease=ease)
   }
+}
+
+/// (tests: motion drawn this many times slower, to be caught frame by frame)
+fn motion_slow() -> Double {
+  if ui::env("PINSHOT_TEST") != "" { parse_double_or(ui::env("PINSHOT_TEST_SLOW_MOTION"), 1.0) } else { 1.0 }
 }
 
 fn hig_focus(v : view::View) -> Unit {

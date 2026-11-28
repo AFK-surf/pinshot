@@ -53,6 +53,8 @@ pub fn main(_world : World) -> Int {
       rec_window
     } else if what == "rec_fps" {
       rec_fps_window
+    } else if str_has_prefix(what, "bar:") {
+      ocr_bar_window(str_slice_bytes(what, 4, what.length()))
     } else {
       pin_window(wid, what)
     }
@@ -64,6 +66,7 @@ pub fn main(_world : World) -> Int {
   ui::when_window_closed(fn(wid) {
     if wid == settings_wid.v {
       settings_wid.v = 0
+      tr_settings_flush()
       if recording.untracked() != 0 {
         stop_recording()
         apply_keys()
@@ -88,6 +91,12 @@ pub fn main(_world : World) -> Int {
       rec_fps_open.set(false)
     }
     pin_gone(wid)
+    for k in pins.keys() {
+      match pins.get(k) {
+        Some(q) if q.bar_wid.v == wid => q.bar_wid.v = 0
+        _ => ()
+      }
+    }
   })
   apply_keys()
   start_updates(updated, installed=installed)
@@ -136,6 +145,9 @@ fn told(json : String, bytes : Option[Bytes]) -> Unit {
     "capture-failed" => toast(tr("截图失败，请重试。"))
     "pin-clipboard" => pin_clipboard()
     "ocr" => ocr_told(o, bytes)
+    "http" => http_told(o, bytes)
+    "tr-words" => tr_words_told(o, bytes)
+    "tr-pic" => tr_pic_told(o, bytes)
     "long" => {
       let n = fn(k : String) { jnum(o, k, 0.0).to_int() }
       long_told(
@@ -226,7 +238,7 @@ fn told(json : String, bytes : Option[Bytes]) -> Unit {
         "settings" => open_settings()
         "folder" => ps_reveal(cstr(settings.untracked().save_dir))
         "check-update" => {
-          open_settings(tab=3)
+          open_settings(tab=4)
           check_update(true)
         }
         "quit" => ps_quit()

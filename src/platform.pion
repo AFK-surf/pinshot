@@ -169,6 +169,8 @@ extern "C" fn ps_mean(x : Int, y : Int, cell : Int) -> Int = "ps_mean"
 extern "C" fn c_ps_windows() -> Ptr = "ps_windows"
 extern "C" fn ps_window_shows(of : Int, i : Int, x : Int, y : Int) -> Int = "ps_window_shows"
 extern "C" fn ps_own(wid : Int, topmost : Int) -> Int = "ps_own"
+extern "C" fn ps_pin_frames(wid : Int, n : Int) -> Unit = "ps_pin_frames"
+extern "C" fn ps_follow(child : Int, parent : Int, w : Int, h : Int) -> Unit = "ps_follow"
 extern "C" fn ps_place(wid : Int, x : Int, y : Int, w : Int, h : Int, show : Int, focus : Int) -> Unit = "ps_place"
 extern "C" fn ps_hide(wid : Int) -> Unit = "ps_hide"
 extern "C" fn ps_let_close(wid : Int) -> Unit = "ps_let_close"
@@ -179,6 +181,7 @@ extern "C" fn ps_win_revealed(wid : Int) -> Int = "ps_win_revealed"
 extern "C" fn ps_topmost(wid : Int, on : Int, front : Int) -> Unit = "ps_topmost"
 extern "C" fn ps_opacity(wid : Int, alpha : Int) -> Unit = "ps_opacity"
 extern "C" fn c_ps_window_rect(wid : Int) -> Ptr = "ps_window_rect"
+extern "C" fn c_ps_window_label(x : Int, y : Int) -> Ptr = "ps_window_label"
 extern "C" fn ps_shift_down() -> Int = "ps_shift_down"
 extern "C" fn ps_reduce_motion() -> Int = "ps_reduce_motion"
 extern "C" fn c_ps_pointer() -> Ptr = "ps_pointer"
@@ -247,6 +250,8 @@ extern "C" fn c_ps_install_cli(v : Ptr, vl : Int64) -> Int = "pion_ps_install_cl
 extern "C" fn c_ps_install_sync_meta(v : Ptr, vl : Int64) -> Unit = "pion_ps_install_sync_meta"
 extern "C" fn c_ps_swap_exe(p : Ptr, pl : Int64, s : Ptr, sl : Int64) -> Int = "pion_ps_swap_exe"
 extern "C" fn c_ps_open_url(u : Ptr, ul : Int64) -> Unit = "pion_ps_open_url"
+extern "C" fn c_ps_tr_render(id : Int, p : Ptr, pl : Int64, s : Ptr, sl : Int64, zh : Int) -> Int = "pion_ps_tr_render"
+extern "C" fn c_ps_http(id : Int, v : Ptr, vl : Int64, u : Ptr, ul : Int64, h : Ptr, hl : Int64, b : Ptr, bl : Int64, timeout_ms : Int) -> Int = "pion_ps_http"
 extern "C" fn c_ps_stdout(s : Ptr, sl : Int64) -> Unit = "pion_ps_stdout"
 
 fn ps_args() -> Bytes { take_mb_bytes(c_ps_args()) }
@@ -256,6 +261,7 @@ fn ps_capture_take() -> Bytes { take_mb_bytes(c_ps_capture_take()) }
 fn ps_capture_crop_rgba(x : Int, y : Int, w : Int, h : Int) -> Bytes { take_mb_bytes(c_ps_capture_crop_rgba(x, y, w, h)) }
 fn ps_windows() -> Bytes { take_mb_bytes(c_ps_windows()) }
 fn ps_window_rect(wid : Int) -> Bytes { take_mb_bytes(c_ps_window_rect(wid)) }
+fn ps_window_label(x : Int, y : Int) -> String { text_of(take_mb_bytes(c_ps_window_label(x, y))) }
 fn ps_pointer() -> Bytes { take_mb_bytes(c_ps_pointer()) }
 fn ps_memory() -> Bytes { take_mb_bytes(c_ps_memory()) }
 fn ps_data_dir() -> Bytes { take_mb_bytes(c_ps_data_dir()) }
@@ -347,6 +353,24 @@ fn ps_swap_exe(path : Bytes, sha256 : Bytes) -> Int {
 }
 fn ps_open_url(url : Bytes) -> Unit {
   c_ps_open_url(bytes_data_ptr(url), url.length().to_int64())
+}
+fn ps_tr_render(id : Int, pic : Bytes, spec : String, zh : Int) -> Int {
+  let s = utf8_encode(spec)
+  c_ps_tr_render(id, bytes_data_ptr(pic), pic.length().to_int64(), bytes_data_ptr(s), s.length().to_int64(), zh)
+}
+fn ps_http(id : Int, verb : String, url : String, headers : String, body : String, timeout_ms : Int) -> Int {
+  let v = cstr(verb)
+  let u = cstr(url)
+  let h = cstr(headers)
+  let b = utf8_encode(body)
+  c_ps_http(
+    id,
+    bytes_data_ptr(v), v.length().to_int64(),
+    bytes_data_ptr(u), u.length().to_int64(),
+    bytes_data_ptr(h), h.length().to_int64(),
+    bytes_data_ptr(b), b.length().to_int64(),
+    timeout_ms,
+  )
 }
 
 fn close_window(wid : Int) -> Unit {
