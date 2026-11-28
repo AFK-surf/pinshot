@@ -682,7 +682,12 @@ fn style_row(row : view::View) -> Unit {
               let mt = marks.get()[i].tool
               !is_mosaic_tool(mt) && mt != Focus
             }
-            None => true
+            // (a mark being dragged is out of marks, drawn as the draft, until it is let go)
+            None =>
+              match draft.get() {
+                Some(d) if d.id == id => !is_mosaic_tool(d.tool) && d.tool != Focus
+                _ => true
+              }
           }
         None => true
       }
