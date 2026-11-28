@@ -28,6 +28,31 @@ static NSString *whyOf(NSError *e) {
   }
 }
 
+// (a key in the headers never goes on to where a redirect points: the redirect's answer is taken as it is)
+@interface PSNoRedirect : NSObject <NSURLSessionTaskDelegate>
+@end
+@implementation PSNoRedirect
+- (void)URLSession:(NSURLSession *)session
+                          task:(NSURLSessionTask *)task
+    willPerformHTTPRedirection:(NSHTTPURLResponse *)response
+                    newRequest:(NSURLRequest *)request
+             completionHandler:(void (^)(NSURLRequest *))completionHandler {
+  completionHandler(nil);
+}
+@end
+
+// One session for every request, made at the first.
+static NSURLSession *httpSession(void) {
+  static NSURLSession *s;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSURLSessionConfiguration *c = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    c.timeoutIntervalForResource = 90;
+    s = [NSURLSession sessionWithConfiguration:c delegate:[PSNoRedirect new] delegateQueue:nil];
+  });
+  return s;
+}
+
 int32_t ps_http(int32_t id, moonbit_bytes_t verb, moonbit_bytes_t url, moonbit_bytes_t headers, moonbit_bytes_t body,
                 int32_t timeout_ms) {
   NSURL *u = [NSURL URLWithString:[NSString stringWithUTF8String:(const char *)url]];
@@ -50,10 +75,7 @@ int32_t ps_http(int32_t id, moonbit_bytes_t verb, moonbit_bytes_t url, moonbit_b
   }
   int32_t bn = (int32_t)Moonbit_array_length(body);
   if (bn > 0) r.HTTPBody = [NSData dataWithBytes:body length:bn];
-  NSURLSessionConfiguration *c = NSURLSessionConfiguration.ephemeralSessionConfiguration;
-  c.timeoutIntervalForRequest = r.timeoutInterval;
-  c.timeoutIntervalForResource = r.timeoutInterval * 2;
-  NSURLSession *s = [NSURLSession sessionWithConfiguration:c];
+  NSURLSession *s = httpSession();
   NSURLSessionDataTask *t = [s dataTaskWithRequest:r
                                  completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
                                    if (err) {
@@ -66,7 +88,6 @@ int32_t ps_http(int32_t id, moonbit_bytes_t verb, moonbit_bytes_t url, moonbit_b
                                                        : 0;
                                      tell(id, status, status ? @"" : @"network", data);
                                    }
-                                   [s finishTasksAndInvalidate];
                                  }];
   [t resume];
   return 1;

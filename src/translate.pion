@@ -30,6 +30,7 @@ struct TrBlock {
 struct TrShown {
   blocks : Array[TrBlock]
   key : String
+  pic : Bytes
   words : Array[OcrWord]
   full : String
 }
@@ -412,6 +413,7 @@ fn http_told(o : json::JsonObject, body : Option[Bytes]) -> Unit {
 fn tr_lines_translated(
   lines : Array[String],
   target : String,
+  alive : () -> Bool,
   done : (Result[Array[String], String]) -> Unit,
 ) -> Unit {
   let pieces : Array[(Int, Int)] = []
@@ -433,6 +435,9 @@ fn tr_lines_translated(
   let llm = settings.untracked().tr_provider != "google"
   let step : signals::Ref[(Int) -> Unit] = signals::ref_new(fn(_) { () })
   step.v = fn(k : Int) {
+    if !alive() {
+      return
+    }
     if k >= pieces.length() {
       done(Ok(out))
       return
@@ -742,7 +747,8 @@ fn pin_translate(p : Pin) -> Unit {
   tr_id.v += 1
   let req = tr_id.v
   p.tr_req.v = req
-  tr_lines_translated(lines, target, fn(got) {
+  let alive = fn() { pin_of_wid(wid) is Some((_, q)) && q.tr_req.v == req }
+  tr_lines_translated(lines, target, alive, fn(got) {
     guard pin_of_wid(wid) is Some((_, q)) && q.tr_req.v == req else { return }
     match got {
       Ok(parts) => {
@@ -774,12 +780,12 @@ fn tr_pic_told(o : json::JsonObject, bytes : Option[Bytes]) -> Unit {
   let req = jnum(o, "id", -1.0).to_int()
   guard tr_drawing.get(req) is Some((wid, blocks)) else { return }
   tr_drawing.remove(req)
-  guard pin_of_wid(wid) is Some((_, p)) && p.tr_req.v == req else { return }
   let words = match tr_words_got.get(req) {
     Some(v) => v
     None => []
   }
   tr_words_got.remove(req)
+  guard pin_of_wid(wid) is Some((_, p)) && p.tr_req.v == req else { return }
   let pic = match bytes {
     Some(v) if jnum(o, "ok", 0.0) != 0.0 && v.length() > 0 => v
     _ => {
@@ -795,7 +801,7 @@ fn tr_pic_told(o : json::JsonObject, bytes : Option[Bytes]) -> Unit {
   signals::start_batch()
   p.ocr_sel.set(None)
   p.ocr_hover.set(-1)
-  p.tr.set(TrReady(TrShown::{ blocks: blocks, key: key, words: words, full: tr_full_text(blocks) }))
+  p.tr.set(TrReady(TrShown::{ blocks: blocks, key: key, pic: pic, words: words, full: tr_full_text(blocks) }))
   signals::end_batch()
   log("translate \{req}: drawn, \{words.length()} words")
 }
@@ -823,6 +829,17 @@ fn pin_toggle_translate(p : Pin) -> Unit {
   }
 }
 
+/// The picture a copy or a save of the pin takes: the translated one while it is shown.
+fn pin_out_picture(p : Pin) -> Bytes {
+  if p.tr_on.untracked() {
+    match p.tr.untracked() {
+      TrReady(s) => return s.pic
+      _ => ()
+    }
+  }
+  shown_picture(p)
+}
+
 /// The picture the pin shows: the translated one while the translation is on.
 fn pin_shown_key(p : Pin) -> String {
   if p.tr_on.get() {
@@ -837,6 +854,16 @@ fn pin_shown_key(p : Pin) -> String {
 // ---- settings ----
 
 let tr_save_gen : signals::Ref[Int] = signals::ref_new(0)
+
+let tr_save_dirty : signals::Ref[Bool] = signals::ref_new(false)
+
+/// What was typed in the settings and not yet written, written now (the settings window closing).
+fn tr_settings_flush() -> Unit {
+  if tr_save_dirty.v {
+    tr_save_dirty.v = false
+    save_settings()
+  }
+}
 
 fn translate_page(p : view::View) -> Unit {
   let key_field : ui::Field = ui::Field::new()
@@ -854,11 +881,12 @@ fn translate_page(p : view::View) -> Unit {
   // (typed in without being written at each key: kept, then written once the typing stops)
   let quietly = fn(f : (Settings) -> Settings) {
     settings.set(f(settings.untracked()))
+    tr_save_dirty.v = true
     tr_save_gen.v += 1
     let g = tr_save_gen.v
     let _ = p.at_moment(p.cause_at() + 700.0, fn() {
       if g == tr_save_gen.v {
-        save_settings()
+        tr_settings_flush()
       }
     }, later=true)
   }

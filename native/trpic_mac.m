@@ -94,23 +94,10 @@ static void trRun(int32_t id, NSData *pic, NSString *spec, int zh) {
   TrBlockIn *blocks = calloc(count ? count : 1, sizeof(TrBlockIn));
   for (NSUInteger i = 0; i < count; i++) [rows[i] getValue:&blocks[i]];
 
-  // (the context's rows run from the picture's top: Core Graphics' y is flipped for drawing below)
-  NSMutableString *words = [NSMutableString string];
-  int lineN = 0;
+  // backgrounds first, from the picture as it was (no block drawn yet)
+  int *bgs = calloc(count ? count * 3 : 3, sizeof(int));
   for (NSUInteger bi = 0; bi < count; bi++) {
     TrBlockIn b = blocks[bi];
-    NSString *text = texts[bi];
-    if (!text.length) continue;
-    CGFloat pad = MIN(MAX(b.lh * H * 0.12, 1.0), 6.0);
-    CGFloat x = MAX(0.0, b.x * W - pad), y = MAX(0.0, b.y * H - pad);
-    CGFloat w = MIN((CGFloat)W - x, b.w * W + pad * 2.0), h = b.h * H + pad * 2.0;
-    CGFloat room = (CGFloat)H - y;
-    for (NSUInteger j = 0; j < count; j++) {
-      if (j == bi) continue;
-      CGFloat oy = blocks[j].y * H, ox0 = blocks[j].x * W, ox1 = (blocks[j].x + blocks[j].w) * W;
-      if (oy > y + 1.0 && ox1 > x && ox0 < x + w) room = MIN(room, oy - y - 1.0);
-    }
-    room = MAX(room, h);
     int r = 255, g = 255, bl = 255;
     {
       NSMutableData *rs = [NSMutableData data], *gs = [NSMutableData data], *bs = [NSMutableData data];
@@ -129,10 +116,41 @@ static void trRun(int32_t id, NSData *pic, NSString *spec, int zh) {
       for (long yy = y0; yy <= y1; yy += 2) take(x0, yy), take(x1, yy);
       if (rs.length) r = trMedian(rs), g = trMedian(gs), bl = trMedian(bs);
     }
+    bgs[bi * 3] = r, bgs[bi * 3 + 1] = g, bgs[bi * 3 + 2] = bl;
+  }
+
+  // (the context's rows run from the picture's top: Core Graphics' y is flipped for drawing below)
+  NSMutableString *words = [NSMutableString string];
+  int lineN = 0;
+  for (NSUInteger bi = 0; bi < count; bi++) {
+    TrBlockIn b = blocks[bi];
+    NSString *text = texts[bi];
+    if (!text.length) continue;
+    CGFloat pad = MIN(MAX(b.lh * H * 0.12, 1.0), 6.0);
+    CGFloat x = MAX(0.0, b.x * W - pad), y = MAX(0.0, b.y * H - pad);
+    CGFloat w = MIN((CGFloat)W - x, b.w * W + pad * 2.0), h = b.h * H + pad * 2.0;
+    CGFloat mostW = (CGFloat)W - x - 1.0;
+    for (NSUInteger j = 0; j < count; j++) {
+      if (j == bi) continue;
+      CGFloat op = MIN(MAX(blocks[j].lh * H * 0.12, 1.0), 6.0);
+      CGFloat oy0 = blocks[j].y * H - op, oy1 = (blocks[j].y + blocks[j].h) * H + op, ox0 = blocks[j].x * W - op;
+      if (oy1 > y && oy0 < y + h && ox0 >= x + w * 0.5) mostW = MIN(mostW, ox0 - x - 2.0);
+    }
+    mostW = MAX(mostW, w);
+    CGFloat (^roomFor)(CGFloat) = ^CGFloat(CGFloat width) {
+      CGFloat room = (CGFloat)H - y;
+      for (NSUInteger j = 0; j < count; j++) {
+        if (j == bi) continue;
+        CGFloat op = MIN(MAX(blocks[j].lh * H * 0.12, 1.0), 6.0);
+        CGFloat oy = blocks[j].y * H - op, ox0 = blocks[j].x * W, ox1 = (blocks[j].x + blocks[j].w) * W;
+        if (oy > y + 1.0 && ox1 > x && ox0 < x + width) room = MIN(room, oy - y - 1.0);
+      }
+      return MAX(room, h);
+    };
+    int r = bgs[bi * 3], g = bgs[bi * 3 + 1], bl = bgs[bi * 3 + 2];
     CGFloat lum = (0.299 * r + 0.587 * g + 0.114 * bl) / 255.0;
     CGColorRef ink = lum > 0.55 ? CGColorCreateSRGB(0.08, 0.08, 0.08, 1) : CGColorCreateSRGB(0.96, 0.96, 0.96, 1);
     CGFloat s0 = MIN(MAX(b.lh * H, 7.0), 160.0), size = s0, th = 0;
-    CGFloat mostW = (CGFloat)W - x - 1.0;
     CTFrameRef frame = NULL;
     if (!b.draw) {
       frame = trFrame(text, size, w + size, zh, ink, &th);
@@ -148,6 +166,7 @@ static void trRun(int32_t id, NSData *pic, NSString *spec, int zh) {
         }
       }
       if (!fit) {
+        CGFloat room = roomFor(mostW);
         for (CGFloat s = MAX(7.0, s0 * 0.8); s >= MAX(7.0, s0 * 0.6); s -= MAX(0.5, s0 * 0.04)) {
           if (frame) CFRelease(frame);
           frame = trFrame(text, s, mostW, zh, ink, &th);
@@ -161,7 +180,7 @@ static void trRun(int32_t id, NSData *pic, NSString *spec, int zh) {
         w = MAX(w, MIN(mostW, widest + 4.0));
         CFRelease(frame);
         frame = trFrame(text, size, w, zh, ink, &th);
-        h = MIN(MAX(h, th + 2.0), room);
+        h = MIN(MAX(h, th + 2.0), roomFor(w));
       }
     }
     CGFloat ty = y + MAX(0.0, (h - th) / 2.0);
@@ -202,7 +221,7 @@ static void trRun(int32_t id, NSData *pic, NSString *spec, int zh) {
           i++;
           continue;
         }
-        NSUInteger j = i + 1;
+        NSUInteger j = i + (CFStringIsSurrogateHighCharacter(c) && i + 1 < end ? 2 : 1);
         if (!trUnspaced(c))
           while (j < end && !trBlank([text characterAtIndex:j]) && !trUnspaced([text characterAtIndex:j])) j++;
         CGFloat a = CTLineGetOffsetForStringIndex(line, (CFIndex)i, NULL);
@@ -220,6 +239,7 @@ static void trRun(int32_t id, NSData *pic, NSString *spec, int zh) {
     CGColorRelease(ink);
   }
   free(blocks);
+  free(bgs);
 
   CGImageRef done = CGBitmapContextCreateImage(ctx);
   CGContextRelease(ctx);

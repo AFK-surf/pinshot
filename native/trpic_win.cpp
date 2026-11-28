@@ -140,8 +140,8 @@ static void tr_run(TrJob *job) {
       BYTE *px = NULL;
       lock->GetStride(&stride);
       lock->GetDataPointer(&size, &px);
-      for (UINT y = 0; y < H && solid; y += 7)
-        for (UINT x = 0; x < W; x += 7)
+      for (UINT y = 0; y < H && solid; y++)
+        for (UINT x = 0; x < W; x++)
           if (px[y * stride + x * 4 + 3] != 255) {
             solid = false;
             break;
@@ -206,18 +206,30 @@ static void tr_run(TrJob *job) {
     float y = (float)std::max(0.0, b.y * H - pad);
     float w = (float)std::min((double)W - x, b.w * W + pad * 2.0);
     float h = (float)(b.h * H + pad * 2.0);
-    // the room below it: down to the next block under it
-    float room = (float)H - y;
+    auto pad_of = [&](const Block &o) { return (float)std::min(std::max(o.lh * H * 0.12, 1.0), 6.0); };
+    // the room right of it: up to the next block beside it (in its band), else the picture's edge
+    float most_w = (float)W - x - 1.0f;
     for (size_t j = 0; j < blocks.size(); j++) {
       if (j == bi) continue;
       const Block &o = blocks[j];
-      float oy = (float)(o.y * H), ox0 = (float)(o.x * W), ox1 = (float)((o.x + o.w) * W);
-      if (oy > y + 1.0f && ox1 > x && ox0 < x + w) room = std::min(room, oy - y - 1.0f);
+      float oy0 = (float)(o.y * H) - pad_of(o), oy1 = (float)((o.y + o.h) * H) + pad_of(o);
+      float ox0 = (float)(o.x * W) - pad_of(o);
+      if (oy1 > y && oy0 < y + h && ox0 >= x + w * 0.5f) most_w = std::min(most_w, ox0 - x - 2.0f);
     }
-    room = std::max(room, h);
+    most_w = std::max(most_w, w);
+    // the room below it, for a width: down to the next block under it
+    auto room_for = [&](float width) {
+      float room = (float)H - y;
+      for (size_t j = 0; j < blocks.size(); j++) {
+        if (j == bi) continue;
+        const Block &o = blocks[j];
+        float oy = (float)(o.y * H) - pad_of(o), ox0 = (float)(o.x * W), ox1 = (float)((o.x + o.w) * W);
+        if (oy > y + 1.0f && ox1 > x && ox0 < x + width) room = std::min(room, oy - y - 1.0f);
+      }
+      return std::max(room, h);
+    };
     float s0 = (float)std::min(std::max(b.lh * H, 7.0), 160.0);
     float size = s0;
-    float most_w = (float)W - x - 1.0f;
     ComPtr<IDWriteTextLayout> lay;
     DWRITE_TEXT_METRICS m = {};
     bool fit = false;
@@ -236,8 +248,9 @@ static void tr_run(TrJob *job) {
       }
       if (!fit && lay) {
         float least = std::max(7.0f, s0 * 0.8f);
+        float room = room_for(most_w);
         for (float s = least; s >= std::max(7.0f, s0 * 0.6f); s -= std::max(0.5f, s0 * 0.04f)) {
-          if (!layout_at(b.text, s, std::max(w, most_w), 100000.0f, lay)) break;
+          if (!layout_at(b.text, s, most_w, 100000.0f, lay)) break;
           lay->GetMetrics(&m);
           size = s;
           if (m.height <= room + 1.0f) break;
@@ -245,7 +258,7 @@ static void tr_run(TrJob *job) {
         w = std::max(w, std::min(most_w, m.widthIncludingTrailingWhitespace + 4.0f));
         layout_at(b.text, size, w, 100000.0f, lay);
         lay->GetMetrics(&m);
-        h = std::min(std::max(h, m.height + 2.0f), room);
+        h = std::min(std::max(h, m.height + 2.0f), room_for(w));
       }
     }
     if (!lay) continue;
@@ -275,12 +288,15 @@ static void tr_run(TrJob *job) {
         i++;
         continue;
       }
-      size_t j = i + 1;
+      size_t j = i + (IS_HIGH_SURROGATE(t[i]) && i + 1 < t.size() ? 2 : 1);
       if (!unspaced(t[i]))
         while (j < t.size() && !blank(t[j]) && !unspaced(t[j])) j++;
-      DWRITE_HIT_TEST_METRICS hm[4];
+      DWRITE_HIT_TEST_METRICS hm[16];
       UINT32 got = 0;
-      if (SUCCEEDED(lay->HitTestTextRange((UINT32)i, (UINT32)(j - i), x + 1.0f, ty, hm, 4, &got)) && got > 0) {
+      HRESULT hr_hit = lay->HitTestTextRange((UINT32)i, (UINT32)(j - i), x + 1.0f, ty, hm, 16, &got);
+      if (hr_hit == E_NOT_SUFFICIENT_BUFFER) got = 16, hr_hit = S_OK;
+      if (got > 16) got = 16;
+      if (SUCCEEDED(hr_hit) && got > 0) {
         if (last_top >= 0.0f && hm[0].top > last_top + 0.5f) line_n++;
         last_top = hm[0].top;
         float ww = 0.0f;
@@ -307,35 +323,9 @@ static void tr_run(TrJob *job) {
     return;
   }
 
+  // (a PNG, not raw pixels: what the pin keeps to show, copy and save is a few MB, not 33 for a 4K picture)
   std::vector<uint8_t> out;
-  WICRect all = {0, 0, (INT)W, (INT)H};
-  if (solid) {
-    ComPtr<IWICBitmapLock> lock;
-    if (SUCCEEDED(bmp->Lock(&all, WICBitmapLockRead, &lock))) {
-      UINT stride = 0, size = 0;
-      BYTE *px = NULL;
-      lock->GetStride(&stride);
-      lock->GetDataPointer(&size, &px);
-      size_t n = (size_t)W * H * 4;
-      out.resize(54 + n);
-      uint8_t *o = out.data();
-      auto le32 = [&](size_t at, uint32_t v) {
-        o[at] = v & 255, o[at + 1] = (v >> 8) & 255, o[at + 2] = (v >> 16) & 255, o[at + 3] = (v >> 24) & 255;
-      };
-      o[0] = 'B', o[1] = 'M';
-      le32(2, (uint32_t)(54 + n));
-      le32(10, 54);
-      le32(14, 40);
-      le32(18, W);
-      le32(22, (uint32_t)(-(int32_t)H));
-      o[26] = 1, o[28] = 32;
-      le32(34, (uint32_t)n);
-      for (UINT y = 0; y < H; y++) {
-        memcpy(o + 54 + (size_t)y * W * 4, px + (size_t)y * stride, (size_t)W * 4);
-        for (UINT x = 0; x < W; x++) o[54 + ((size_t)y * W + x) * 4 + 3] = 255;
-      }
-    }
-  } else {
+  {
     ComPtr<IStream> mem;
     ComPtr<IWICBitmapEncoder> enc;
     ComPtr<IWICBitmapFrameEncode> fe;
@@ -344,18 +334,19 @@ static void tr_run(TrJob *job) {
         SUCCEEDED(enc->Initialize(mem.Get(), WICBitmapEncoderNoCache)) &&
         SUCCEEDED(enc->CreateNewFrame(&fe, NULL)) && SUCCEEDED(fe->Initialize(NULL)) &&
         SUCCEEDED(fe->SetSize(W, H))) {
-      WICPixelFormatGUID pf = GUID_WICPixelFormat32bppBGRA;
+      WICPixelFormatGUID want = solid ? GUID_WICPixelFormat24bppBGR : GUID_WICPixelFormat32bppBGRA;
+      WICPixelFormatGUID pf = want;
       fe->SetPixelFormat(&pf);
-      ComPtr<IWICBitmapSource> straight;
-      if (SUCCEEDED(WICConvertBitmapSource(GUID_WICPixelFormat32bppBGRA, bmp.Get(), &straight)) &&
-          SUCCEEDED(fe->WriteSource(straight.Get(), NULL)) && SUCCEEDED(fe->Commit()) && SUCCEEDED(enc->Commit())) {
+      ComPtr<IWICBitmapSource> conv_out;
+      if (SUCCEEDED(WICConvertBitmapSource(pf, bmp.Get(), &conv_out)) &&
+          SUCCEEDED(fe->WriteSource(conv_out.Get(), NULL)) && SUCCEEDED(fe->Commit()) && SUCCEEDED(enc->Commit())) {
         HGLOBAL hg = NULL;
         if (SUCCEEDED(GetHGlobalFromStream(mem.Get(), &hg))) {
           STATSTG st = {};
           mem->Stat(&st, STATFLAG_NONAME);
-          void *p = GlobalLock(hg);
-          if (p) {
-            out.assign((uint8_t *)p, (uint8_t *)p + (size_t)st.cbSize.QuadPart);
+          void *pp = GlobalLock(hg);
+          if (pp) {
+            out.assign((uint8_t *)pp, (uint8_t *)pp + (size_t)st.cbSize.QuadPart);
             GlobalUnlock(hg);
           }
         }

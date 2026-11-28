@@ -659,17 +659,17 @@ fn set_alpha(p : Pin, a : Int) -> Unit {
 fn copy_pin(p : Pin) -> Unit {
   let test_to = ui::env("PINSHOT_TEST_COPY")
   if test_to != "" {
-    let _ = ps_write_file(cstr(test_to), shown_picture(p))
+    let _ = ps_write_file(cstr(test_to), pin_out_picture(p))
     return
   }
-  hostapi::clipboard_set_image(shown_picture(p))
+  hostapi::clipboard_set_image(pin_out_picture(p))
 }
 
 fn save_pin(p : Pin) -> Unit {
   let s = settings.untracked()
   let path = text_of(ps_save_dialog(p.wid.v, cstr(s.save_dir), cstr(file_name())))
   if path != "" {
-    write_picture_file(path, shown_picture(p))
+    write_picture_file(path, pin_out_picture(p))
   }
 }
 

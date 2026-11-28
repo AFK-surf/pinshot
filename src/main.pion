@@ -64,6 +64,7 @@ pub fn main(_world : World) -> Int {
   ui::when_window_closed(fn(wid) {
     if wid == settings_wid.v {
       settings_wid.v = 0
+      tr_settings_flush()
       if recording.untracked() != 0 {
         stop_recording()
         apply_keys()
