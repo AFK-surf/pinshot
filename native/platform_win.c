@@ -1577,6 +1577,27 @@ moonbit_bytes_t ps_read_file(moonbit_bytes_t path) {
   return b;
 }
 
+void ps_delete_file(moonbit_bytes_t path) {
+  wchar_t *w = ps_wide((const char *)path);
+  if (w) {
+    DeleteFileW(w);
+    free(w);
+  }
+}
+
+int32_t ps_rect_shown(int32_t x, int32_t y, int32_t w, int32_t h) {
+  RECT r = {x, y, x + w, y + h};
+  if (w <= 0 || h <= 0) return 0;
+  HMONITOR m = MonitorFromRect(&r, MONITOR_DEFAULTTONULL);
+  if (!m) return 0;
+  MONITORINFO mi = {sizeof mi};
+  if (!GetMonitorInfoW(m, &mi)) return 0;
+  RECT in;
+  // (enough of it on a screen to take hold of: a quarter of its width and its top 24 pixels)
+  if (!IntersectRect(&in, &r, &mi.rcWork)) return 0;
+  return (in.right - in.left) * 4 >= w && in.top <= y + 24 && in.bottom - in.top >= (h < 24 ? h : 24);
+}
+
 int32_t ps_write_file(moonbit_bytes_t path, moonbit_bytes_t data) {
   wchar_t *w = ps_wide((const char *)path);
   size_t n = wcslen(w);

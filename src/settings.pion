@@ -342,7 +342,7 @@ fn apply_keys() -> Unit {
   capture_key_ok.set(ps_hotkey(1, s.capture_key.mods, s.capture_key.vk) == 1)
   pin_key_ok.set(ps_hotkey(2, s.pin_key.mods, pv) == 1)
   restore_key_ok.set(ps_hotkey(4, s.restore_key.mods, s.restore_key.vk) == 1)
-  log("keys: capture \{cw} \{if capture_key_ok.untracked() { "ok" } else { "taken by another program" }}, pin \{pw} \{if pin_key_ok.untracked() { "ok" } else { "taken by another program" }}")
+  log("keys: capture \{cw} \{if capture_key_ok.untracked() { "ok" } else { "taken by another program" }}, pin \{pw} \{if pin_key_ok.untracked() { "ok" } else { "taken by another program" }}, reopen \{key_words(s.restore_key, restore_choices)} \{if restore_key_ok.untracked() { "ok" } else { "taken by another program" }}")
   if !capture_key_ok.untracked() {
     ps_tray_note(
       cstr(tr("截图快捷键被其他程序占用：") + cw),

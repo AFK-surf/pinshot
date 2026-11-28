@@ -512,6 +512,13 @@ moonbit_bytes_t ps_wallpaper(void) {
 moonbit_bytes_t ps_read_file(moonbit_bytes_t path) {
   return ps_data([NSData dataWithContentsOfFile:str(path)]);
 }
+void ps_delete_file(moonbit_bytes_t path) {
+  [NSFileManager.defaultManager removeItemAtPath:str(path) error:nil];
+}
+int32_t ps_rect_shown(int32_t x, int32_t y, int32_t w, int32_t h) {
+  (void)x, (void)y, (void)w, (void)h;
+  return 1;
+}
 int ps_write_file(moonbit_bytes_t path, moonbit_bytes_t bytes) {
   NSString *dest = str(path);
   [NSFileManager.defaultManager createDirectoryAtPath:dest.stringByDeletingLastPathComponent

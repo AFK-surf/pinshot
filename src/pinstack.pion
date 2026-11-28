@@ -1,6 +1,8 @@
+import "hostapi"
 import "json"
 import "pixels"
 import "signals"
+import "ui"
 
 struct Shelved {
   slot : Int
@@ -19,7 +21,15 @@ struct Shelved {
 let shelf_most : Int = 50
 
 fn shelf_dir() -> String {
-  file_in(text_of(ps_data_dir()), "pins")
+  let data = text_of(ps_data_dir())
+  let local = ui::env("LOCALAPPDATA")
+  // (on Windows not in the roaming folder: pictures are not to travel with a profile)
+  if hostapi::platform() == 3 && local != "" {
+    let parts = data.split("\\")
+    file_in(file_in(local, parts[parts.length() - 1]), "pins")
+  } else {
+    file_in(data, "pins")
+  }
 }
 
 fn shelf_png(slot : Int) -> String {
@@ -118,12 +128,12 @@ fn shelf_push(items : Array[Shelved], s : Shelved) -> Array[Shelved] {
   out
 }
 
-fn shelve_pin(p : Pin) -> Unit {
+/// `p` kept on `items` (its picture written to a free slot); the stack as it is then.
+fn shelve_into(items : Array[Shelved], p : Pin) -> Array[Shelved] {
   let r = numbers_of(text_of(ps_window_rect(p.wid.v)))
   if r.length() < 4 {
-    return
+    return items
   }
-  let items = shelf_read()
   let kept : Array[Shelved] = []
   let start = if items.length() >= shelf_most { items.length() - shelf_most + 1 } else { 0 }
   for i in start..<items.length() {
@@ -131,11 +141,11 @@ fn shelve_pin(p : Pin) -> Unit {
   }
   let slot = shelf_free_slot(kept)
   if slot < 0 {
-    return
+    return items
   }
   if ps_write_file(cstr(shelf_png(slot)), p.png) != 1 {
     log("pin stack: could not keep the picture")
-    return
+    return items
   }
   let s = Shelved::{
     slot,
@@ -150,9 +160,29 @@ fn shelve_pin(p : Pin) -> Unit {
     alpha: p.alpha.untracked(),
     top: p.top.untracked(),
   }
-  let now = shelf_push(kept, s)
+  shelf_push(kept, s)
+}
+
+fn shelve_pin(p : Pin) -> Unit {
+  let now = shelve_into(shelf_read(), p)
   shelf_write(now)
-  log("pin stack: kept in \{slot} (\{now.length()} kept)")
+  log("pin stack: kept (\{now.length()} kept)")
+}
+
+/// Several pins kept at once (closing them all): the stack read and written once.
+fn shelve_pins(wids : Array[Int]) -> Unit {
+  let mut items = shelf_read()
+  for w in wids {
+    match pin_of_wid(w) {
+      Some((_, p)) if p.shelve.v => {
+        p.shelve.v = false
+        items = shelve_into(items, p)
+      }
+      _ => ()
+    }
+  }
+  shelf_write(items)
+  log("pin stack: \{wids.length()} kept at once (\{items.length()} kept)")
 }
 
 fn restore_pin() -> Unit {
@@ -160,23 +190,35 @@ fn restore_pin() -> Unit {
   while items.length() > 0 {
     let s = items[items.length() - 1]
     let _ = items.pop()
-    let png = ps_read_file(cstr(shelf_png(s.slot)))
+    let file = cstr(shelf_png(s.slot))
+    let png = ps_read_file(file)
     guard png.length() > 0 && pixels::image_size(png) is Some((w, h)) else { continue }
-    shelf_write(items)
+    // (where it was, or under the pointer where that screen is gone)
+    let (x, y) = if ps_rect_shown(s.x, s.y, s.w, s.h) == 1 {
+      (s.x, s.y)
+    } else {
+      let q = numbers_of(text_of(ps_pointer()))
+      if q.length() == 2 { (q[0].to_int() - s.w / 2, q[1].to_int() - s.h / 2) } else { (100, 100) }
+    }
     let before = pin_n.v
-    open_pin(png, s.x, s.y, w, h)
+    let plain = s.turns == 0 && !s.flipped && s.zx == s.zy
+    open_pin(png, x, y, w, h, zoom=if plain { s.zx } else { 1.0 })
+    if pin_n.v == before && find_pin_by_png(png).is_none() {
+      log("pin stack: \{s.slot} could not be opened")
+      return
+    }
+    shelf_write(items)
+    ps_delete_file(file)
     if pin_n.v == before {
       log("pin stack: \{s.slot} already open")
       return
     }
     match pins.get("pin:\{pin_n.v}") {
       Some(p) => {
-        if s.turns != 0 || s.flipped {
+        if !plain {
           orient_pin(p, s.turns, s.flipped, s.zx, s.zy)
-        } else if s.zx != 1.0 || s.zy != 1.0 {
-          zoom_pin(p, s.zx, s.zy)
+          ps_place(p.wid.v, x, y, s.w, s.h, 0, 0)
         }
-        ps_place(p.wid.v, s.x, s.y, s.w, s.h, 0, 0)
         if s.alpha != p.alpha.untracked() {
           set_alpha(p, s.alpha)
         }
