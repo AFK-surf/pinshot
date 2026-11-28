@@ -495,7 +495,7 @@ fn blur_mark(b : view::View, m : Mark, k : Double) -> Unit {
         .width(view::Live::Is(Some(g.gw.to_double() * cell / k)))
         .height(view::Live::Is(Some(g.gh.to_double() * cell / k)))
         .shrink(view::Live::Is(0.0))
-        .offset(view::Live::Is(((g.gx0.to_double() * cell - g.r.x.to_double()) / k, (g.gy0.to_double() * cell - g.r.y.to_double()) / k)))
+        .offset(view::Live::Is((-g.r.x.to_double() / k, -g.r.y.to_double() / k)))
         .image(view::Live::Is(Some((g.key, "", dmax(g.gw.to_double(), g.gh.to_double()).to_int()))))
       })
     })
