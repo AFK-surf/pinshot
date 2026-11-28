@@ -200,16 +200,17 @@ fn restore_pin() -> Unit {
       let q = numbers_of(text_of(ps_pointer()))
       if q.length() == 2 { (q[0].to_int() - s.w / 2, q[1].to_int() - s.h / 2) } else { (100, 100) }
     }
-    let before = pin_n.v
+    let already = find_pin_by_png(png).is_some()
     let plain = s.turns == 0 && !s.flipped && s.zx == s.zy
     open_pin(png, x, y, w, h, zoom=if plain { s.zx } else { 1.0 })
-    if pin_n.v == before && find_pin_by_png(png).is_none() {
+    // (open_pin counts a pin before its window is made: whether it is open is asked of the pins themselves)
+    if find_pin_by_png(png).is_none() {
       log("pin stack: \{s.slot} could not be opened")
       return
     }
     shelf_write(items)
     ps_delete_file(file)
-    if pin_n.v == before {
+    if already {
       log("pin stack: \{s.slot} already open")
       return
     }
