@@ -41,6 +41,10 @@ struct Pin {
   ocr_click_at : signals::Ref[Double]
   ocr_click_word : signals::Ref[Int]
   ocr_clicks : signals::Ref[Int]
+  tr_on : signals::Signal[Bool]
+  tr : signals::Signal[PinTr]
+  tr_req : signals::Ref[Int]
+  tr_wanted : signals::Ref[Bool]
 }
 
 struct PinSizing {
@@ -151,6 +155,10 @@ fn open_pin(png : Bytes, x : Int, y : Int, w : Int, h : Int, zoom~ : Double = 1.
     ocr_click_at: signals::ref_new(-10000.0),
     ocr_click_word: signals::ref_new(-1),
     ocr_clicks: signals::ref_new(0),
+    tr_on: signals::signal(false),
+    tr: signals::signal_ref(TrIdle),
+    tr_req: signals::ref_new(0),
+    tr_wanted: signals::ref_new(false),
   }
   pins[what] = p
   let wid = ui::window_open_here(what)
@@ -199,6 +207,12 @@ fn pin_clipboard() -> Unit {
   let p = numbers_of(text_of(ps_pointer()))
   let (x, y) = if p.length() == 2 { (p[0].to_int() - w / 2, p[1].to_int() - h / 2) } else { (100, 100) }
   open_pin(b, x, y, w, h)
+  if ui::env("PINSHOT_TEST_TRANSLATE") != "" {
+    match pins.get("pin:\{pin_n.v}") {
+      Some(p) => pin_translate(p)
+      None => ()
+    }
+  }
 }
 
 fn pin_of_wid(wid : Int) -> Option[(String, Pin)] {
@@ -349,6 +363,7 @@ fn orient_pin(p : Pin, turns : Int, flipped : Bool, zx : Double, zy : Double) ->
   signals::end_batch()
   ps_place(p.wid.v, (cx - nw / 2.0).round().to_int(), (cy - nh / 2.0).round().to_int(), nw.to_int(), nh.to_int(), 0, 0)
   pin_ocr_clear_pending(p)
+  pin_tr_clear(p)
   p.ocr_selecting.v = false
   signals::start_batch()
   p.ocr.set(Idle)
@@ -672,6 +687,11 @@ fn pin_menu(p : Pin) -> Unit {
     } else if ocr_ready {
       lines.push("copy-all\t" + tr("复制全部文字") + "\t" + key_hint("Ctrl+C"))
     }
+    if p.tr_on.untracked() {
+      lines.push("translate\t" + tr("显示原文") + "\t")
+    } else if !(p.ocr.untracked() is Failed(_)) {
+      lines.push("translate\t" + tr("翻译") + "\t")
+    }
     lines.push("ocr-off\t" + tr("退出选字") + "\t" + key_hint("Ctrl+O"))
     lines.push("-")
     lines.push("copy\t" + tr("复制图片") + "\t")
@@ -680,6 +700,7 @@ fn pin_menu(p : Pin) -> Unit {
     lines.push("copy\t" + tr("复制") + "\t" + key_hint("Ctrl+C"))
     lines.push("save\t" + tr("另存为…") + "\t")
     lines.push("ocr\t" + tr("提取文字") + "\t" + key_hint("Ctrl+O"))
+    lines.push("translate\t" + tr("翻译") + "\t")
   }
   for item in [
     "-",
@@ -711,6 +732,7 @@ fn pin_menu(p : Pin) -> Unit {
     "copy" => copy_pin(p)
     "save" => save_pin(p)
     "ocr" => pin_start_ocr(p)
+    "translate" => pin_toggle_translate(p)
     "top" => {
       p.top.set(!top)
       ps_topmost(p.wid.v, if top { 0 } else { 1 }, 0)
@@ -793,7 +815,7 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
       let e = p.edge.get()
       if e != 0 {
         Some(edge_cursor(e))
-      } else if p.ocr_on.get() {
+      } else if p.ocr_on.get() && !p.tr_on.get() {
         match p.ocr.get() {
           Ready(ws, _) if ws.length() > 0 => Some(view::Cursor::IBeam)
           _ => Some(view::Cursor::Arrow)
@@ -804,7 +826,7 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
     }))
     .on_pointer_moved(fn() {
       if p.sizing.v.is_none() {
-        if !p.ocr_on.untracked() {
+        if !p.ocr_on.untracked() || p.tr_on.untracked() {
           p.edge.set(pin_edge(p))
         } else {
           let (e, u, v, pw, ph) = pin_pointer_uv(p)
@@ -909,7 +931,7 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
             return
           }
         }
-        if p.ocr_on.untracked() {
+        if p.ocr_on.untracked() && !p.tr_on.untracked() {
           match p.ocr.untracked() {
             Ready(ws, _) if ws.length() > 0 => {
               let (_, _, lw, lh) = root.laid_window_now()
@@ -958,6 +980,7 @@ fn pin_window(wid : Int, what : String) -> (view::View) -> Unit {
     let _ = root.box(fn(lt) {
       let _ = lt.over(view::Live::Is(true)).presses(view::Live::Is(false)).picture(view::Live::By(fn() { ocr_overlay_picture(p, root.pointed()) }))
     })
+    tr_layer(root, p)
     let _ = root.box(fn(e) {
       let _ = e
       .over(view::Live::Is(true))
@@ -1071,7 +1094,9 @@ fn pin_actions(root : view::View, p : Pin) -> Unit {
     })
   }
   on("close", fn() {
-    if p.ocr_on.untracked() && p.ocr_sel.untracked().is_some() {
+    if p.tr_on.untracked() {
+      p.tr_on.set(false)
+    } else if p.ocr_on.untracked() && p.ocr_sel.untracked().is_some() {
       p.ocr_sel.set(None)
     } else if p.ocr_on.untracked() && !p.ocr_from_capture.v {
       pin_exit_ocr(p)
@@ -1080,7 +1105,9 @@ fn pin_actions(root : view::View, p : Pin) -> Unit {
     }
   })
   on("copy", fn() {
-    if p.ocr_on.untracked() && p.ocr.untracked() is Ready(_, _) {
+    if p.tr_on.untracked() && p.tr.untracked() is TrReady(_) {
+      pin_copy_ocr_text(p, pin_tr_text(p))
+    } else if p.ocr_on.untracked() && p.ocr.untracked() is Ready(_, _) {
       if !pin_copy_ocr_selected(p) {
         let _ = pin_copy_ocr_all(p)
       }

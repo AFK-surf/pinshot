@@ -272,13 +272,18 @@ fn pin_start_ocr(p : Pin, from_capture~ : Bool = false) -> Unit {
 
 fn pin_retry_ocr(p : Pin) -> Unit {
   pin_ocr_clear_pending(p)
+  let wanted = p.tr_wanted.v
+  pin_tr_clear(p)
+  p.tr_wanted.v = wanted
   p.ocr.set(Idle)
   pin_start_ocr(p)
 }
 
 fn pin_exit_ocr(p : Pin) -> Unit {
   p.ocr_selecting.v = false
+  p.tr_wanted.v = false
   signals::start_batch()
+  p.tr_on.set(false)
   p.ocr_on.set(false)
   p.ocr_sel.set(None)
   p.ocr_hover.set(-1)
@@ -344,6 +349,7 @@ fn ocr_told(o : json::JsonObject, words : Option[Bytes]) -> Unit {
   p.ocr_req.v = 0
   if why != "" {
     p.ocr.set(PinOcr::Failed(why))
+    ocr_then_translate(p)
     return
   }
   if fmt == "boxes" {
@@ -360,6 +366,18 @@ fn ocr_told(o : json::JsonObject, words : Option[Bytes]) -> Unit {
     } else {
       p.ocr.set(PinOcr::Ready([], raw))
     }
+  }
+  ocr_then_translate(p)
+}
+
+fn ocr_then_translate(p : Pin) -> Unit {
+  if !p.tr_wanted.v {
+    return
+  }
+  p.tr_wanted.v = false
+  match p.ocr.untracked() {
+    PinOcr::Ready(ws, _) if ws.length() > 0 => pin_translate(p)
+    _ => p.tr.set(TrError(tr("没有可以翻译的文字")))
   }
 }
 
@@ -385,7 +403,7 @@ fn ocr_out() -> Unit {
 }
 
 fn ocr_overlay_picture(p : Pin, pointed : Bool) -> Option[pixels::Vector] {
-  if !p.ocr_on.get() {
+  if !p.ocr_on.get() || p.tr_on.get() {
     return None
   }
   let words = match p.ocr.get() {
@@ -517,13 +535,14 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
       let _ = bar.box(fn(st) {
         let _ = st
         .padding(view::Live::Is((6.0, 0.0, 4.0, 0.0)))
-        .laid_nowhere(view::Live::By(fn() { p.ocr.get() is Ready(_, _) }))
+        .laid_nowhere(view::Live::By(fn() { p.ocr.get() is Ready(_, _) && !(p.tr.get() is TrWorking) }))
         let _ = st.box(fn(t) {
           let _ = t
           .words(view::Live::By(fn() {
-            match p.ocr.get() {
-              Reading => tr("识别中…")
-              Failed(why) => ocr_failed_short(why)
+            match (p.ocr.get(), p.tr.get()) {
+              (Reading, _) => tr("识别中…")
+              (Failed(why), _) => ocr_failed_short(why)
+              (_, TrWorking) => tr("翻译中…")
               _ => ""
             }
           }), look=view::WordsLook::{ ..view::words_plain, size: 11.5, weight: 500, line: 15.0, wrap: false })
@@ -575,11 +594,19 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         .cursor(view::Live::Is(Some(view::Cursor::Hand)))
         .laid_nowhere(view::Live::By(fn() { !(p.ocr.get() is Ready(_, _)) }))
         .says(view::Live::By(fn() {
-          let label = if p.ocr_sel.get().is_some() { tr("复制选中") } else { tr("复制全部") }
+          let label = if tr_shown(p) {
+            tr("复制译文")
+          } else if p.ocr_sel.get().is_some() {
+            tr("复制选中")
+          } else {
+            tr("复制全部")
+          }
           Some(view::said(view::Role::Button, label=label))
         }))
         .on_press(fn() {
-          if !pin_copy_ocr_selected(p) {
+          if tr_shown_now(p) {
+            pin_copy_ocr_text(p, pin_tr_text(p))
+          } else if !pin_copy_ocr_selected(p) {
             let _ = pin_copy_ocr_all(p)
           }
         })
@@ -601,6 +628,8 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
             let copied = !root.drawn_past(p.ocr_copied_at.get() + 1200.0)
             if copied {
               "✓ " + tr("已复制")
+            } else if tr_shown(p) {
+              tr("复制译文")
             } else if p.ocr_sel.get().is_some() {
               tr("复制选中")
             } else {
@@ -608,6 +637,43 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
             }
           }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
           .ink(view::Live::Is(0xFFFFFFFFL))
+        })
+      })
+      let _ = bar.box(fn(tb) {
+        hig_focus(tb)
+        let _ = tb
+        .height(view::Live::Is(Some(28.0)))
+        .padding(view::Live::Is((9.0, 0.0, 9.0, 0.0)))
+        .radius(view::Live::Is(7.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .presses(view::Live::Is(true))
+        .cursor(view::Live::Is(Some(view::Cursor::Hand)))
+        .laid_nowhere(view::Live::By(fn() {
+          match p.ocr.get() {
+            Ready(ws, _) => ws.length() == 0 || p.tr.get() is TrWorking
+            _ => true
+          }
+        }))
+        .says(view::Live::By(fn() {
+          Some(view::said(view::Role::Button, label=if p.tr_on.get() { tr("显示原文") } else { tr("翻译") }))
+        }))
+        .on_press(fn() { pin_toggle_translate(p) })
+        .ground(view::Live::By(fn() {
+          if tb.pressed() {
+            0xFFFFFF28L
+          } else if tb.pointed() {
+            0xFFFFFF1AL
+          } else if p.tr_on.get() {
+            0xFFFFFF14L
+          } else {
+            0L
+          }
+        }))
+        let _ = tb.box(fn(t) {
+          let _ = t
+          .words(view::Live::By(fn() { if p.tr_on.get() { tr("原文") } else { tr("翻译") } }), look=view::WordsLook::{ ..view::words_plain, size: 12.0, weight: 500, line: 16.0, wrap: false })
+          .ink(view::Live::By(fn() { if tb.pointed() || p.tr_on.get() { 0xFFFFFFFFL } else { 0xC8CDD8FFL } }))
         })
       })
       let _ = bar.box(fn(ab) {
@@ -621,9 +687,9 @@ fn ocr_floating_bar(root : view::View, p : Pin) -> Unit {
         .presses(view::Live::Is(true))
         .cursor(view::Live::Is(Some(view::Cursor::Hand)))
         .laid_nowhere(view::Live::By(fn() {
-          let wide = p.w.to_double() * p.zx.get() >= 260.0
+          let wide = p.w.to_double() * p.zx.get() >= 320.0
           match p.ocr.get() {
-            Ready(ws, _) => !wide || ws.length() == 0
+            Ready(ws, _) => !wide || ws.length() == 0 || p.tr_on.get()
             _ => true
           }
         }))
@@ -702,4 +768,12 @@ test "ocr box parsing, joining and hit-testing" {
   assert_true(l0.0 == 0 && l0.1 == 2)
   let l4 = ocr_line_range(ws, 4)
   assert_true(l4.0 == 3 && l4.1 == 4)
+}
+
+fn tr_shown(p : Pin) -> Bool {
+  p.tr_on.get() && p.tr.get() is TrReady(_)
+}
+
+fn tr_shown_now(p : Pin) -> Bool {
+  p.tr_on.untracked() && p.tr.untracked() is TrReady(_)
 }
